@@ -1,0 +1,534 @@
+name: Build Nustrim Clean
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: Publish/update the release for the current version
+        required: false
+        default: false
+        type: boolean
+      prepare_clean_bridge:
+        description: One-time RC27 -> clean repo bridge (sets 0.16.1-clean1 / versionCode 45)
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nustrim-clean-build-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  LOCKED_CERT_SHA256: "30C625B9112CD04D43B631D6020D0D52E61695111B8E2125F29AD19651EB165D"
+  CLEAN_BRIDGE_VERSION_NAME: "0.16.1-clean1"
+  CLEAN_BRIDGE_VERSION_CODE: "45"
+
+jobs:
+  build:
+    name: Build, sign, verify and optionally publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Verify clean repository identity
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f .nustrim-clean
+          grep -q '^generation=clean$' .nustrim-clean
+          grep -q '^baseline=v0.16.0-rc27$' .nustrim-clean
+          grep -q '^repository=nudroid12/Nustrim$' .nustrim-clean
+
+          grep -q 'applicationId = "app.nudroidlabs.nustrim"' app/build.gradle.kts
+          grep -q '^android.useAndroidX=true$' gradle.properties
+
+          grep -q \
+            'https://github.com/nudroid12/Nustrim/releases/latest/download/update.json' \
+            app/src/main/java/app/nudroidlabs/nustrim/core/update/AppUpdater.kt
+
+          if grep -R -n \
+            --exclude='*.md' \
+            --exclude='*.txt' \
+            -E 'NuBrowse|NuBrowseApp|app\.nubrowse' \
+            app gradle.properties settings.gradle.kts build.gradle.kts 2>/dev/null; then
+            echo "::error::Contamination detected in clean Nustrim source/config."
+            exit 20
+          fi
+
+      - name: Prepare one-time clean bridge version
+        if: github.event_name == 'workflow_dispatch' && inputs.prepare_clean_bridge
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path("app/build.gradle.kts")
+          text = path.read_text(encoding="utf-8")
+
+          code_match = re.search(r'versionCode\s*=\s*(\d+)', text)
+          name_match = re.search(r'versionName\s*=\s*"([^"]+)"', text)
+          if not code_match or not name_match:
+              raise SystemExit("Could not parse version metadata")
+
+          current_code = int(code_match.group(1))
+          current_name = name_match.group(1)
+          target_code = 45
+          target_name = "0.16.1-clean1"
+
+          if current_code > target_code:
+              raise SystemExit(
+                  f"Current versionCode {current_code} is already newer than clean bridge {target_code}"
+              )
+
+          if current_code == target_code and current_name != target_name:
+              raise SystemExit(
+                  f"versionCode 45 already belongs to unexpected versionName {current_name}"
+              )
+
+          text = re.sub(
+              r'versionCode\s*=\s*\d+',
+              f'versionCode = {target_code}',
+              text,
+              count=1,
+          )
+          text = re.sub(
+              r'versionName\s*=\s*"[^"]+"',
+              f'versionName = "{target_name}"',
+              text,
+              count=1,
+          )
+
+          path.write_text(text, encoding="utf-8")
+          print(f"Bridge target: {target_name} ({target_code})")
+          PY
+
+          git diff --check
+
+          changed="$(git diff --name-only)"
+          if [ -n "$changed" ] && [ "$changed" != "app/build.gradle.kts" ]; then
+            echo "::error::Bridge preparation changed unexpected files:"
+            printf '%s\n' "$changed"
+            exit 21
+          fi
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle 9.5.0 with cache
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "9.5.0"
+
+      - name: Prepare and validate permanent signing
+        if: github.event_name != 'pull_request'
+        shell: bash
+        env:
+          KEYSTORE_B64: ${{ secrets.NUSTRIM_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.NUSTRIM_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.NUSTRIM_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.NUSTRIM_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          for name in KEYSTORE_B64 KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::Signing secret $name is missing."
+              exit 30
+            fi
+          done
+
+          KS="$RUNNER_TEMP/nustrim-release.jks"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$KS"
+          chmod 600 "$KS"
+
+          keytool -list \
+            -keystore "$KS" \
+            -storepass "$KEYSTORE_PASSWORD" \
+            -alias "$KEY_ALIAS" >/dev/null
+
+          CERT="$(
+            keytool -exportcert -rfc \
+              -keystore "$KS" \
+              -storepass "$KEYSTORE_PASSWORD" \
+              -alias "$KEY_ALIAS" |
+            openssl x509 -noout -fingerprint -sha256 |
+            cut -d= -f2 |
+            tr -d ':' |
+            tr '[:lower:]' '[:upper:]'
+          )"
+
+          if [ "$CERT" != "$LOCKED_CERT_SHA256" ]; then
+            echo "::error::Keystore certificate does not match Nustrim permanent certificate."
+            echo "Expected: $LOCKED_CERT_SHA256"
+            echo "Current : $CERT"
+            exit 31
+          fi
+
+          echo "NUSTRIM_KEYSTORE_PATH=$KS" >> "$GITHUB_ENV"
+          echo "NUSTRIM_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "NUSTRIM_KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
+          echo "NUSTRIM_KEY_PASSWORD=$KEY_PASSWORD" >> "$GITHUB_ENV"
+
+      - name: Build pull request debug APK
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          gradle --no-daemon --build-cache \
+            :app:lintDebug \
+            :app:testDebugUnitTest \
+            :app:assembleDebug \
+            --stacktrace \
+            --console=plain \
+            2>&1 | tee "$RUNNER_TEMP/nustrim-clean-build.log"
+
+      - name: Build permanent signed release APK
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          gradle --no-daemon --build-cache \
+            :app:lintRelease \
+            :app:testDebugUnitTest \
+            :app:assembleRelease \
+            --stacktrace \
+            --console=plain \
+            2>&1 | tee "$RUNNER_TEMP/nustrim-clean-build.log"
+
+          test -s app/build/outputs/apk/release/app-release.apk
+
+      - name: Verify APK identity, version and permanent certificate
+        if: github.event_name != 'pull_request'
+        id: verify
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APK="app/build/outputs/apk/release/app-release.apk"
+
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)"
+          AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -1)"
+          test -x "$APKSIGNER"
+          test -x "$AAPT"
+
+          "$APKSIGNER" verify --verbose --print-certs "$APK" |
+            tee "$RUNNER_TEMP/nustrim-clean-signature.txt"
+
+          CERT="$(
+            sed -n -E 's/^.*certificate SHA-256 digest:[[:space:]]*//p' \
+              "$RUNNER_TEMP/nustrim-clean-signature.txt" |
+            head -1 |
+            tr -d ':' |
+            tr '[:lower:]' '[:upper:]'
+          )"
+
+          if [ -z "$CERT" ] || [ "$CERT" != "$LOCKED_CERT_SHA256" ]; then
+            echo "::error::Built APK certificate is not the locked Nustrim permanent certificate."
+            echo "Expected: $LOCKED_CERT_SHA256"
+            echo "Current : ${CERT:-missing}"
+            exit 40
+          fi
+
+          BADGING="$("$AAPT" dump badging "$APK" | head -1)"
+          echo "$BADGING"
+
+          PACKAGE="$(printf '%s\n' "$BADGING" | sed -n -E "s/^package: name='([^']+)'.*/\1/p")"
+          APK_CODE="$(printf '%s\n' "$BADGING" | sed -n -E "s/^.*versionCode='([^']+)'.*/\1/p")"
+          APK_NAME="$(printf '%s\n' "$BADGING" | sed -n -E "s/^.*versionName='([^']+)'.*/\1/p")"
+
+          SRC_CODE="$(sed -n -E 's/.*versionCode[[:space:]]*=[[:space:]]*([0-9]+).*/\1/p' app/build.gradle.kts | head -1)"
+          SRC_NAME="$(sed -n -E 's/.*versionName[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' app/build.gradle.kts | head -1)"
+
+          test "$PACKAGE" = "app.nudroidlabs.nustrim"
+          test "$APK_CODE" = "$SRC_CODE"
+          test "$APK_NAME" = "$SRC_NAME"
+
+          echo "cert_sha=$CERT" >> "$GITHUB_OUTPUT"
+          echo "version_code=$SRC_CODE" >> "$GITHUB_OUTPUT"
+          echo "version_name=$SRC_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare updater assets
+        if: github.event_name != 'pull_request'
+        id: assets
+        shell: bash
+        env:
+          CERT_SHA: ${{ steps.verify.outputs.cert_sha }}
+          VERSION_CODE: ${{ steps.verify.outputs.version_code }}
+          VERSION_NAME: ${{ steps.verify.outputs.version_name }}
+        run: |
+          set -euo pipefail
+
+          export CERT_SHA VERSION_CODE VERSION_NAME
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import json
+          import os
+
+          version_code = int(os.environ["VERSION_CODE"])
+          version_name = os.environ["VERSION_NAME"]
+          cert = os.environ["CERT_SHA"]
+
+          src = Path("app/build/outputs/apk/release/app-release.apk")
+          dst = Path(f"Nustrim-{version_name}.apk")
+          dst.write_bytes(src.read_bytes())
+
+          sha = hashlib.sha256(dst.read_bytes()).hexdigest()
+          size = dst.stat().st_size
+          tag = f"v{version_name}"
+          repo = os.environ["GITHUB_REPOSITORY"]
+
+          manifest = {
+              "versionCode": version_code,
+              "versionName": version_name,
+              "apkUrl": (
+                  f"https://github.com/{repo}/releases/download/"
+                  f"{tag}/{dst.name}"
+              ),
+              "sha256": sha,
+              "changelog": (
+                  "Clean Nustrim permanent-signed release from the new repository."
+              ),
+              "sizeBytes": size,
+              "signingMode": "permanent",
+              "signingCertSha256": cert,
+          }
+
+          Path("update.json").write_text(
+              json.dumps(manifest, indent=2) + "\n",
+              encoding="utf-8",
+          )
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"tag={tag}\n")
+              fh.write(f"apk={dst.name}\n")
+              fh.write(f"sha256={sha}\n")
+              fh.write(f"size={size}\n")
+          PY
+
+      - name: Commit clean bridge metadata only after verified build
+        if: github.event_name == 'workflow_dispatch' && inputs.prepare_clean_bridge
+        id: bridge_commit
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          changed="$(git diff --name-only)"
+          if [ -n "$changed" ] && [ "$changed" != "app/build.gradle.kts" ]; then
+            echo "::error::Unexpected source change before bridge commit:"
+            printf '%s\n' "$changed"
+            exit 50
+          fi
+
+          if git diff --quiet -- app/build.gradle.kts; then
+            echo "Bridge version metadata is already committed."
+          else
+            git add app/build.gradle.kts
+            git commit -m 'release: clean repository signing bridge'
+            git push origin HEAD:main
+          fi
+
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Publish updater release
+        if: >-
+          github.event_name == 'workflow_dispatch' &&
+          (inputs.publish_release || inputs.prepare_clean_bridge)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.assets.outputs.tag }}
+          APK: ${{ steps.assets.outputs.apk }}
+          VERSION: ${{ steps.verify.outputs.version_name }}
+          CERT: ${{ steps.verify.outputs.cert_sha }}
+        run: |
+          set -euo pipefail
+
+          TARGET_SHA="$(git rev-parse HEAD)"
+
+          cat > "$RUNNER_TEMP/release-notes.md" <<EOF
+          Nustrim $VERSION
+
+          Clean permanent-signed release from nudroid12/Nustrim.
+
+          Signing certificate SHA-256:
+          $CERT
+          EOF
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$APK" update.json --clobber
+            gh release edit "$TAG" \
+              --target "$TARGET_SHA" \
+              --title "Nustrim $VERSION" \
+              --notes-file "$RUNNER_TEMP/release-notes.md" \
+              --latest
+          else
+            gh release create "$TAG" "$APK" update.json \
+              --target "$TARGET_SHA" \
+              --title "Nustrim $VERSION" \
+              --notes-file "$RUNNER_TEMP/release-notes.md" \
+              --latest
+          fi
+
+      - name: Verify live updater release
+        if: >-
+          github.event_name == 'workflow_dispatch' &&
+          (inputs.publish_release || inputs.prepare_clean_bridge)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.assets.outputs.tag }}
+          APK_NAME: ${{ steps.assets.outputs.apk }}
+          EXPECTED_NAME: ${{ steps.verify.outputs.version_name }}
+          EXPECTED_CODE: ${{ steps.verify.outputs.version_code }}
+          EXPECTED_SHA: ${{ steps.assets.outputs.sha256 }}
+          EXPECTED_SIZE: ${{ steps.assets.outputs.size }}
+          EXPECTED_CERT: ${{ steps.verify.outputs.cert_sha }}
+        run: |
+          set -euo pipefail
+
+          latest="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)"
+          test "$latest" = "$TAG"
+
+          LIVE="$RUNNER_TEMP/live-updater"
+          rm -rf "$LIVE"
+          mkdir -p "$LIVE"
+
+          gh release download "$TAG" \
+            --pattern update.json \
+            --pattern "$APK_NAME" \
+            --dir "$LIVE" \
+            --clobber
+
+          export LIVE TAG APK_NAME EXPECTED_NAME EXPECTED_CODE EXPECTED_SHA EXPECTED_SIZE EXPECTED_CERT
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import json
+          import os
+
+          root = Path(os.environ["LIVE"])
+          apk = root / os.environ["APK_NAME"]
+          manifest = json.loads((root / "update.json").read_text(encoding="utf-8"))
+
+          expected_url = (
+              f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/releases/download/"
+              f"{os.environ['TAG']}/{apk.name}"
+          )
+
+          checks = {
+              "versionName": manifest.get("versionName") == os.environ["EXPECTED_NAME"],
+              "versionCode": int(manifest.get("versionCode", -1)) == int(os.environ["EXPECTED_CODE"]),
+              "apkUrl": manifest.get("apkUrl") == expected_url,
+              "sizeBytes": int(manifest.get("sizeBytes", -1)) == int(os.environ["EXPECTED_SIZE"]),
+              "signingMode": manifest.get("signingMode") == "permanent",
+              "signingCertSha256": (
+                  str(manifest.get("signingCertSha256", "")).upper()
+                  == os.environ["EXPECTED_CERT"].upper()
+              ),
+          }
+
+          for name, passed in checks.items():
+              if not passed:
+                  raise SystemExit(f"Live updater verification failed: {name}")
+
+          actual_sha = hashlib.sha256(apk.read_bytes()).hexdigest()
+          if actual_sha.lower() != os.environ["EXPECTED_SHA"].lower():
+              raise SystemExit("Live APK SHA-256 does not match prepared release")
+
+          if str(manifest.get("sha256", "")).lower() != actual_sha.lower():
+              raise SystemExit("update.json SHA-256 does not match live APK")
+
+          print(
+              f"Live updater verified: "
+              f"{manifest['versionName']} ({manifest['versionCode']})"
+          )
+          PY
+
+      - name: Upload verified APK
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v7
+        with:
+          name: nustrim-clean-permanent-${{ steps.verify.outputs.version_name }}
+          path: |
+            Nustrim-${{ steps.verify.outputs.version_name }}.apk
+            update.json
+            ${{ runner.temp }}/nustrim-clean-signature.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Collect diagnose on failure
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+
+          D="$RUNNER_TEMP/nustrim-clean-build-diagnose"
+          mkdir -p "$D"
+
+          cp "$RUNNER_TEMP/nustrim-clean-build.log" "$D/" 2>/dev/null
+          cp "$RUNNER_TEMP/nustrim-clean-signature.txt" "$D/" 2>/dev/null
+          cp app/build.gradle.kts "$D/" 2>/dev/null
+          cp gradle.properties "$D/" 2>/dev/null
+          cp .nustrim-clean "$D/" 2>/dev/null
+          cp update.json "$D/" 2>/dev/null
+
+          git status --short > "$D/git-status.txt" 2>&1
+          git diff > "$D/git-diff.txt" 2>&1
+
+      - name: Upload diagnose on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nustrim-clean-signing-updater-diagnose
+          path: ${{ runner.temp }}/nustrim-clean-build-diagnose
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Summary
+        if: success() && github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          {
+            echo '## Clean Nustrim permanent build passed'
+            echo ''
+            echo '- Version: ${{ steps.verify.outputs.version_name }}'
+            echo '- versionCode: ${{ steps.verify.outputs.version_code }}'
+            echo '- Package: app.nudroidlabs.nustrim'
+            echo '- Permanent signing certificate: verified'
+            echo '- Certificate SHA-256: ${{ steps.verify.outputs.cert_sha }}'
+            if [ "${{ inputs.prepare_clean_bridge || false }}" = "true" ]; then
+              echo '- Clean bridge: prepared and published'
+              echo '- One-time manual install over RC27 is now ready'
+            fi
+            if [ "${{ inputs.publish_release || false }}" = "true" ] || \
+               [ "${{ inputs.prepare_clean_bridge || false }}" = "true" ]; then
+              echo '- New-repository updater release: live and verified'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
