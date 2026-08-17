@@ -193,6 +193,7 @@ import app.nudroidlabs.nustrim.core.update.UpdateInfo
 import app.nudroidlabs.nustrim.features.streams.StreamResolver
 import app.nudroidlabs.nustrim.features.streams.StreamProviderProgress
 import app.nudroidlabs.nustrim.features.streams.SubtitleResolver
+import app.nudroidlabs.nustrim.tv2.shell.NustrimTv2Shell
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -842,158 +843,47 @@ private fun MainShell(
     }
 
     if (isTv) {
-        val navFocusRequesters = remember {
-            MainSection.entries.associateWith { FocusRequester() }
-        }
-        val scope = rememberCoroutineScope()
-        var focusedDestination by remember { mutableStateOf<MainSection?>(null) }
-        var sidebarExpanded by remember { mutableStateOf(false) }
-        var contentFocusRequestToken by remember { mutableIntStateOf(1) }
-        val sidebarCollapsedWidth = 68.dp
-        val sidebarExpandedWidth = 202.dp
-        val sidebarWidth by animateDpAsState(
-            targetValue = if (sidebarExpanded) sidebarExpandedWidth else sidebarCollapsedWidth,
-            animationSpec = tween(durationMillis = if (physicalTv) 90 else 120),
-            label = "tv-sidebar-width"
-        )
-
-        fun focusContent() {
-            sidebarExpanded = false
-            focusedDestination = null
-            contentFocusRequestToken += 1
-        }
-
-        fun updateSidebarFocus(destination: MainSection, focused: Boolean) {
-            if (focused) {
-                focusedDestination = destination
-                sidebarExpanded = true
-            } else if (focusedDestination == destination) {
-                focusedDestination = null
-                scope.launch {
-                    delay(90)
-                    if (focusedDestination == null) sidebarExpanded = false
+    NustrimTv2Shell(
+        selectedId = selected.name.lowercase(Locale.ROOT),
+        onSelect = { destinationId ->
+            MainSection.entries
+                .firstOrNull {
+                    it.name.equals(destinationId, ignoreCase = true)
                 }
-            }
+                ?.let(onSection)
         }
+    ) { contentFocusRequestToken, selectedRailRequester ->
+        CompositionLocalProvider(
+            LocalTvSidebarFocusRequester provides selectedRailRequester
+        ) {
+            content(true, contentFocusRequestToken)
+        }
+    }
 
-        BackHandler(enabled = sidebarExpanded) { focusContent() }
-
-        Box(Modifier.fillMaxSize()) {
+    // Keep the existing developer remote-test overlay outside TV2.
+    // It is a development tool, not part of the TV2 design layer.
+    if (remoteTestActive) {
+        val blockerInteraction = remember { MutableInteractionSource() }
+        Box(modifier = Modifier.fillMaxSize()) {
             Box(
-                Modifier
-                    .fillMaxSize()
-                    .padding(start = sidebarCollapsedWidth)
-            ) {
-                CompositionLocalProvider(
-                    LocalTvSidebarFocusRequester provides navFocusRequesters.getValue(selected)
-                ) {
-                    content(true, contentFocusRequestToken)
-                }
-            }
-
-            Surface(
                 modifier = Modifier
-                    .align(Alignment.CenterStart)
-                    .fillMaxHeight()
-                    .width(sidebarWidth),
-                color = Color(0xFF0D0E11),
-                tonalElevation = 6.dp
-            ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(
-                            horizontal = if (sidebarExpanded) 16.dp else 8.dp,
-                            vertical = 18.dp
-                        )
-                ) {
-                    if (sidebarExpanded) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier
-                                .align(Alignment.TopStart)
-                                .fillMaxWidth()
-                                .padding(horizontal = 8.dp, vertical = 4.dp)
-                        ) {
-                            NustrimMark(38)
-                            Spacer(Modifier.width(10.dp))
-                            Column {
-                                Text(
-                                    "Nustrim",
-                                    fontSize = 20.sp,
-                                    fontWeight = FontWeight.Black
-                                )
-                                Text(
-                                    "TV",
-                                    color = AppTextMuted,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-                        }
-                    }
-
-                    Column(
-                        modifier = Modifier
-                            .align(Alignment.Center)
-                            .fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(9.dp),
-                        horizontalAlignment = if (sidebarExpanded) Alignment.Start else Alignment.CenterHorizontally
-                    ) {
-                        MainSection.entries.forEach { destination ->
-                            TvNavItem(
-                                destination = destination,
-                                selected = destination == selected,
-                                expanded = sidebarExpanded,
-                                requester = navFocusRequesters.getValue(destination),
-                                onFocusChanged = { focused -> updateSidebarFocus(destination, focused) },
-                                onMoveRight = { focusContent() },
-                                onClick = {
-                                    onSection(destination)
-                                    focusContent()
-                                }
-                            )
-                        }
-                    }
-
-                    if (sidebarExpanded) {
-                        Text(
-                            "D-pad navigation",
-                            color = AppTextMuted,
-                            fontSize = 9.sp,
-                            modifier = Modifier
-                                .align(Alignment.BottomStart)
-                                .padding(horizontal = 10.dp)
-                        )
-                    }
-                }
-            }
-
-            // Remote Test is developer-only. When disabled, no overlay, touch
-            // blocker, virtual buttons or remote-specific effects are composed.
-            if (remoteTestActive) {
-                val blockerInteraction = remember { MutableInteractionSource() }
-                Box(modifier = Modifier.fillMaxSize()) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(Color.Black.copy(alpha = 0.08f))
-                            .focusProperties { canFocus = false }
-                            .clickable(
-                                interactionSource = blockerInteraction,
-                                indication = null
-                            ) { }
-                    )
-                    TvTestRemote(
-                        activity = activity,
-                        modifier = Modifier
-                            .align(Alignment.BottomEnd)
-                            .padding(18.dp),
-                        onClose = onRemoteTestClose
-                    )
-                }
-            }
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.08f))
+                    .focusProperties { canFocus = false }
+                    .clickable(
+                        interactionSource = blockerInteraction,
+                        indication = null
+                    ) { }
+            )
+            TvTestRemote(
+                activity = activity,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(18.dp),
+                onClose = onRemoteTestClose
+            )
         }
+    }
     } else {
         Scaffold(
             containerColor = AppBackground,
