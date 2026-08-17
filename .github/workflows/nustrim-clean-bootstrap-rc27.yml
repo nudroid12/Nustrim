@@ -131,13 +131,13 @@ jobs:
             'https://github.com/nudroid12/Nustrim/releases/latest/download/update.json' \
             app/src/main/java/app/nudroidlabs/nustrim/core/update/AppUpdater.kt
 
+          # Scan only app/build configuration, never the workflow file itself.
           if grep -R -n \
-            --exclude-dir=.git \
             --exclude='*.md' \
             --exclude='*.txt' \
             -E 'NuBrowse|NuBrowseApp|app\.nubrowse' \
-            .; then
-            echo "::error::NuBrowse contamination detected in clean bootstrap."
+            app gradle.properties settings.gradle.kts build.gradle.kts 2>/dev/null; then
+            echo "::error::NuBrowse contamination detected in Nustrim source/config."
             exit 20
           fi
 
@@ -248,7 +248,7 @@ jobs:
             echo '- Android package: app.nudroidlabs.nustrim'
             echo '- versionCode: 44'
             echo '- Old workflows: not imported'
-            echo '- NuBrowse contamination audit: passed'
+            echo '- Nustrim source/config contamination audit: passed'
             echo '- Android debug build: passed'
             echo '- Updater endpoint: nudroid12/Nustrim'
             echo ''
