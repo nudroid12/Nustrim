@@ -684,7 +684,7 @@ jobs:
             sort
           )"
 
-          actual="$(git status --short | sed -E 's/^.. //' | sort)"
+          actual="$(git status --short --untracked-files=all | sed -E 's/^.. //' | sort)"
 
           if [ "$actual" != "$expected" ]; then
             echo "::error::Unexpected Stage 1 change set."
