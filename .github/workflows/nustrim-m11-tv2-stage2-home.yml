@@ -1,4 +1,4 @@
-name: Nustrim M11 TV2 Stage 2 Home
+name: Nustrim M11 TV2 Stage 2 Home R1
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: nustrim-m11-tv2-stage2-home
+  group: nustrim-m11-tv2-stage2-home-r1
   cancel-in-progress: false
 
 env:
@@ -38,24 +38,54 @@ jobs:
         with:
           gradle-version: "9.5.0"
 
+      - name: Prepare Stage 2 diagnose
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/nustrim-tv2-stage2-diagnose"
+          {
+            echo "NUSTRIM TV2 STAGE 2 R1 DIAGNOSE"
+            echo "================================"
+            echo "run_id=${GITHUB_RUN_ID}"
+            echo "sha=${GITHUB_SHA}"
+            echo "ref=${GITHUB_REF}"
+            echo
+            echo "[initial git status]"
+            git status --short
+          } > "$RUNNER_TEMP/nustrim-tv2-stage2-diagnose/preflight.txt"
+
       - name: Verify TV2 Stage 1 baseline
         shell: bash
         run: |
           set -euo pipefail
 
-          test -f .nustrim-tv2
-          test -f app/src/main/java/app/nudroidlabs/nustrim/tv2/design/Tv2Tokens.kt
-          test -f app/src/main/java/app/nudroidlabs/nustrim/tv2/navigation/NustrimTv2Destination.kt
-          test -f app/src/main/java/app/nudroidlabs/nustrim/tv2/shell/NustrimTv2Shell.kt
+          DIAG="$RUNNER_TEMP/nustrim-tv2-stage2-diagnose/preflight.txt"
+          fail() {
+            echo "::error::$1"
+            echo "FAIL: $1" >> "$DIAG"
+            exit 1
+          }
 
-          grep -Eq '^generation=2$' .nustrim-tv2
-          grep -Eq '^stage=(foundation-1|home-2)$' .nustrim-tv2
-          grep -q 'NustrimTv2Shell' app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt
+          [[ -f .nustrim-tv2 ]] || fail "Missing .nustrim-tv2 marker."
+          [[ -f app/src/main/java/app/nudroidlabs/nustrim/tv2/design/Tv2Tokens.kt ]] || fail "Missing TV2 design tokens."
+          [[ -f app/src/main/java/app/nudroidlabs/nustrim/tv2/navigation/NustrimTv2Destination.kt ]] || fail "Missing TV2 destination model."
+          [[ -f app/src/main/java/app/nudroidlabs/nustrim/tv2/shell/NustrimTv2Shell.kt ]] || fail "Missing TV2 shell."
 
-          if grep -R -n -E 'NuBrowse|NuBrowseApp|app\.nubrowse' app/src/main app/build.gradle.kts 2>/dev/null; then
-            echo "::error::NuBrowse contamination detected in the Nustrim app baseline."
-            exit 10
+          grep -Eq '^generation=2$' .nustrim-tv2 || fail ".nustrim-tv2 generation is not 2."
+          grep -Eq '^stage=(foundation-1|home-2)$' .nustrim-tv2 || fail ".nustrim-tv2 stage is neither foundation-1 nor home-2."
+          grep -q 'NustrimTv2Shell' app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt || fail "NustrimApp.kt is not wired to NustrimTv2Shell."
+
+          if grep -R -n -E 'NuBrowse|NuBrowseApp|app\.nubrowse' app/src/main app/build.gradle.kts 2>/dev/null | tee -a "$DIAG"; then
+            fail "NuBrowse contamination detected in the Nustrim app baseline."
           fi
+
+          {
+            echo
+            echo "[baseline marker]"
+            cat .nustrim-tv2
+            echo
+            echo "PASS: TV2 Stage 1 baseline"
+          } >> "$DIAG"
 
       - name: Create isolated TV2 Home presentation
         shell: bash
@@ -618,32 +648,47 @@ jobs:
           APP="app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt"
           HOME="app/src/main/java/app/nudroidlabs/nustrim/tv2/home/Tv2Home.kt"
 
-          test -f "$HOME"
-          grep -q 'Tv2FocusedBackdrop' "$APP"
-          grep -q 'Tv2PosterCard' "$APP"
-          grep -q 'delay(3_000)' "$HOME"
-          grep -q 'heldMs >= 650L' "$HOME"
-          grep -q 'Key.DirectionLeft' "$HOME"
-          grep -q 'sidebarRequester = LocalTvSidebarFocusRequester.current' "$APP"
-          grep -q '^stage=home-2$' .nustrim-tv2
-          grep -q "versionName = \"${TV2_VERSION}\"" app/build.gradle.kts
-          grep -q "^${TV2_VERSION}$" .nustrim-version
+          DIAG="$RUNNER_TEMP/nustrim-tv2-stage2-diagnose/audit.txt"
+          fail() {
+            echo "::error::$1"
+            echo "FAIL: $1" >> "$DIAG"
+            git diff --stat >> "$DIAG" 2>&1 || true
+            exit 1
+          }
 
-          if grep -R -n 'com\.nuvio' app/src/main/java/app/nudroidlabs/nustrim/tv2; then
-            echo "::error::TV2 must remain independently implemented without Nuvio package imports."
-            exit 20
+          [[ -f "$HOME" ]] || fail "Tv2Home.kt was not created."
+          grep -q 'Tv2FocusedBackdrop' "$APP" || fail "Tv2FocusedBackdrop was not wired into NustrimApp.kt."
+          grep -q 'Tv2PosterCard' "$APP" || fail "Tv2PosterCard was not wired into NustrimApp.kt."
+          grep -q 'delay(3_000)' "$HOME" || fail "3 second landscape-preview contract is missing."
+          grep -q 'heldMs >= 650L' "$HOME" || fail "650 ms long-press contract is missing."
+          grep -q 'Key.DirectionLeft' "$HOME" || fail "D-pad left handling is missing."
+          grep -q 'sidebarRequester = LocalTvSidebarFocusRequester.current' "$APP" || fail "Sidebar focus handoff was not wired."
+          grep -q '^stage=home-2$' .nustrim-tv2 || fail "TV2 marker was not advanced to home-2."
+          grep -q "versionName = \"${TV2_VERSION}\"" app/build.gradle.kts || fail "app versionName was not updated to ${TV2_VERSION}."
+          grep -q "^${TV2_VERSION}$" .nustrim-version || fail ".nustrim-version was not synchronised."
+
+          if grep -R -n 'com\.nuvio' app/src/main/java/app/nudroidlabs/nustrim/tv2 | tee "$DIAG"; then
+            fail "TV2 contains a forbidden Nuvio package import."
           fi
 
-          if grep -R -n -E 'NuBrowse|NuBrowseApp|app\.nubrowse' app/src/main app/build.gradle.kts 2>/dev/null; then
-            echo "::error::NuBrowse contamination detected after Stage 2 patch."
-            exit 21
+          if grep -R -n -E 'NuBrowse|NuBrowseApp|app\.nubrowse' app/src/main app/build.gradle.kts 2>/dev/null | tee -a "$DIAG"; then
+            fail "NuBrowse contamination detected after Stage 2 patch."
           fi
 
-          git diff --check
+          git diff --check || fail "git diff --check found whitespace or patch corruption."
+
+          {
+            echo "PASS: Stage 2 invariant audit"
+            echo
+            echo "[git status]"
+            git status --short
+            echo
+            echo "[diff stat]"
+            git diff --stat
+          } >> "$DIAG"
+
           git status --short
           git diff --stat
-
-          mkdir -p "$RUNNER_TEMP/nustrim-tv2-stage2-diagnose"
           git diff > "$RUNNER_TEMP/nustrim-tv2-stage2-diagnose/stage2.patch"
           cp .nustrim-tv2 "$RUNNER_TEMP/nustrim-tv2-stage2-diagnose/tv2-marker.txt"
           cp app/build.gradle.kts "$RUNNER_TEMP/nustrim-tv2-stage2-diagnose/app-build.gradle.kts"
@@ -654,11 +699,20 @@ jobs:
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/nustrim-tv2-stage2-diagnose"
 
+          set +e
           gradle --no-daemon --build-cache \
             :app:compileDebugKotlin \
             --stacktrace \
             --console=plain \
             2>&1 | tee "$RUNNER_TEMP/nustrim-tv2-stage2-diagnose/compile.log"
+          code=${PIPESTATUS[0]}
+          set -e
+
+          if [[ "$code" -ne 0 ]]; then
+            echo "::error::TV2 Stage 2 Kotlin compile failed. The last relevant lines are printed below."
+            tail -n 140 "$RUNNER_TEMP/nustrim-tv2-stage2-diagnose/compile.log" || true
+            exit "$code"
+          fi
 
       - name: Commit and push Stage 2
         shell: bash
@@ -684,13 +738,13 @@ jobs:
           git commit -m "feat(tv2): build Stage 2 home experience"
           git push origin HEAD:main
 
-      - name: Upload Stage 2 diagnose on failure
-        if: failure()
+      - name: Upload Stage 2 diagnose
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: nustrim-m11-tv2-stage2-home-diagnose
           path: ${{ runner.temp }}/nustrim-tv2-stage2-diagnose
-          if-no-files-found: warn
+          if-no-files-found: ignore
           retention-days: 7
 
       - name: Summary
@@ -698,7 +752,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo "## Nustrim M11 TV2 Stage 2 Home"
+            echo "## Nustrim M11 TV2 Stage 2 Home R1"
             echo
             echo "- TV2 reference remains locked to ${TV2_REFERENCE}."
             echo "- Added isolated tv2/home presentation layer."
