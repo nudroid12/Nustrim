@@ -1,0 +1,1019 @@
+name: Nustrim M11 TV2 Stage 1 Clean Foundation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nustrim-tv2-stage1
+  cancel-in-progress: false
+
+env:
+  TARGET_VERSION_NAME: "0.17.0-tv2-rc1"
+  TARGET_VERSION_CODE: "46"
+  LOCKED_CERT_SHA256: "30C625B9112CD04D43B631D6020D0D52E61695111B8E2125F29AD19651EB165D"
+
+jobs:
+  stage1:
+    name: Build clean TV2 shell foundation
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout clean repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Verify exact clean bridge baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f .nustrim-clean
+          grep -q '^generation=clean$' .nustrim-clean
+          grep -q '^baseline=v0.16.0-rc27$' .nustrim-clean
+          grep -q '^repository=nudroid12/Nustrim$' .nustrim-clean
+
+          test ! -e .nustrim-tv2
+
+          grep -q 'applicationId = "app.nudroidlabs.nustrim"' app/build.gradle.kts
+          grep -q 'versionCode = 45' app/build.gradle.kts
+          grep -q 'versionName = "0.16.1-clean1"' app/build.gradle.kts
+
+          grep -q \
+            'https://github.com/nudroid12/Nustrim/releases/latest/download/update.json' \
+            app/src/main/java/app/nudroidlabs/nustrim/core/update/AppUpdater.kt
+
+          grep -q '^android.useAndroidX=true$' gradle.properties
+
+          if grep -R -n \
+            --exclude='*.md' \
+            --exclude='*.txt' \
+            -E 'NuBrowse|NuBrowseApp|app\.nubrowse' \
+            app gradle.properties settings.gradle.kts build.gradle.kts 2>/dev/null; then
+            echo "::error::Contamination detected before TV2 Stage 1."
+            exit 20
+          fi
+
+      - name: Create independent TV2 foundation
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ROOT="app/src/main/java/app/nudroidlabs/nustrim/tv2"
+          mkdir -p "$ROOT/design" "$ROOT/navigation" "$ROOT/shell"
+
+          cat > "$ROOT/design/Tv2Design.kt" <<'KOTLIN'
+          package app.nudroidlabs.nustrim.tv2.design
+
+          import androidx.compose.foundation.shape.RoundedCornerShape
+          import androidx.compose.ui.graphics.Color
+          import androidx.compose.ui.unit.dp
+
+          /**
+           * Nustrim TV2 design primitives.
+           *
+           * Independently implemented for Nustrim.
+           * The organisation into explicit spacing, motion and shape tokens follows
+           * the TV-first design-system approach used by the locked UX reference.
+           */
+          object Tv2Spacing {
+              val screenHorizontal = 48.dp
+              val screenVertical = 32.dp
+
+              val railCompactWidth = 72.dp
+              val railExpandedWidth = 220.dp
+              val railHorizontalPadding = 10.dp
+              val railVerticalPadding = 24.dp
+              val railItemGap = 8.dp
+
+              val itemHorizontal = 14.dp
+              val itemVertical = 12.dp
+              val iconLabelGap = 12.dp
+          }
+
+          object Tv2Motion {
+              const val focusDurationMs = 180
+              const val railDurationMs = 180
+              const val focusScale = 1.02f
+          }
+
+          object Tv2Shapes {
+              val navItem = RoundedCornerShape(18.dp)
+              val panel = RoundedCornerShape(20.dp)
+          }
+
+          object Tv2Colors {
+              val background = Color(0xFF090A0C)
+              val rail = Color(0xF20C0D10)
+              val railBorder = Color(0x1FFFFFFF)
+
+              val text = Color(0xFFF5F6F8)
+              val textMuted = Color(0xFF9B9EA6)
+
+              val active = Color(0xFF25282E)
+              val focused = Color(0xFFF2F4F7)
+              val focusedContent = Color(0xFF16181C)
+          }
+          KOTLIN
+
+          cat > "$ROOT/navigation/Tv2Destination.kt" <<'KOTLIN'
+          package app.nudroidlabs.nustrim.tv2.navigation
+
+          import androidx.compose.material.icons.Icons
+          import androidx.compose.material.icons.outlined.Home
+          import androidx.compose.material.icons.outlined.LibraryAdd
+          import androidx.compose.material.icons.outlined.Search
+          import androidx.compose.material.icons.outlined.Settings
+          import androidx.compose.ui.graphics.vector.ImageVector
+
+          enum class Tv2Destination(
+              val id: String,
+              val label: String,
+              val icon: ImageVector
+          ) {
+              HOME("home", "Home", Icons.Outlined.Home),
+              SEARCH("search", "Search", Icons.Outlined.Search),
+              LIBRARY("library", "Library", Icons.Outlined.LibraryAdd),
+              SETTINGS("settings", "Settings", Icons.Outlined.Settings);
+
+              companion object {
+                  fun fromId(id: String): Tv2Destination =
+                      entries.firstOrNull { it.id.equals(id, ignoreCase = true) } ?: HOME
+              }
+          }
+          KOTLIN
+
+          cat > "$ROOT/shell/NustrimTv2Shell.kt" <<'KOTLIN'
+          package app.nudroidlabs.nustrim.tv2.shell
+
+          import androidx.activity.compose.BackHandler
+          import androidx.compose.animation.core.animateDpAsState
+          import androidx.compose.animation.core.animateFloatAsState
+          import androidx.compose.animation.core.tween
+          import androidx.compose.foundation.BorderStroke
+          import androidx.compose.foundation.clickable
+          import androidx.compose.foundation.focusable
+          import androidx.compose.foundation.layout.Arrangement
+          import androidx.compose.foundation.layout.Box
+          import androidx.compose.foundation.layout.Column
+          import androidx.compose.foundation.layout.Row
+          import androidx.compose.foundation.layout.Spacer
+          import androidx.compose.foundation.layout.fillMaxHeight
+          import androidx.compose.foundation.layout.fillMaxSize
+          import androidx.compose.foundation.layout.fillMaxWidth
+          import androidx.compose.foundation.layout.padding
+          import androidx.compose.foundation.layout.size
+          import androidx.compose.foundation.layout.width
+          import androidx.compose.foundation.layout.widthIn
+          import androidx.compose.runtime.Composable
+          import androidx.compose.runtime.getValue
+          import androidx.compose.runtime.mutableIntStateOf
+          import androidx.compose.runtime.mutableStateOf
+          import androidx.compose.runtime.remember
+          import androidx.compose.runtime.setValue
+          import androidx.compose.ui.Alignment
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.draw.clip
+          import androidx.compose.ui.focus.FocusRequester
+          import androidx.compose.ui.focus.focusRequester
+          import androidx.compose.ui.focus.onFocusChanged
+          import androidx.compose.ui.graphics.graphicsLayer
+          import androidx.compose.ui.input.key.Key
+          import androidx.compose.ui.input.key.KeyEventType
+          import androidx.compose.ui.input.key.key
+          import androidx.compose.ui.input.key.onPreviewKeyEvent
+          import androidx.compose.ui.input.key.type
+          import androidx.compose.ui.text.font.FontWeight
+          import androidx.compose.ui.unit.dp
+          import androidx.compose.ui.unit.sp
+          import androidx.compose.ui.zIndex
+          import androidx.compose.material3.HorizontalDivider
+          import androidx.compose.material3.Icon
+          import androidx.compose.material3.Surface
+          import androidx.compose.material3.Text
+          import app.nudroidlabs.nustrim.tv2.design.Tv2Colors
+          import app.nudroidlabs.nustrim.tv2.design.Tv2Motion
+          import app.nudroidlabs.nustrim.tv2.design.Tv2Shapes
+          import app.nudroidlabs.nustrim.tv2.design.Tv2Spacing
+          import app.nudroidlabs.nustrim.tv2.navigation.Tv2Destination
+
+          /**
+           * TV2 root shell.
+           *
+           * Stage 1 owns only navigation rail behaviour and the content viewport.
+           * Screens are rebuilt in later stages.
+           */
+          @Composable
+          fun NustrimTv2Shell(
+              selectedId: String,
+              onSelect: (String) -> Unit,
+              content: @Composable (
+                  contentFocusRequestToken: Int,
+                  selectedRailRequester: FocusRequester
+              ) -> Unit
+          ) {
+              val selected = Tv2Destination.fromId(selectedId)
+              val requesters = remember {
+                  Tv2Destination.entries.associateWith { FocusRequester() }
+              }
+
+              var railExpanded by remember { mutableStateOf(false) }
+              var contentFocusRequestToken by remember { mutableIntStateOf(1) }
+
+              val railWidth by animateDpAsState(
+                  targetValue = if (railExpanded) {
+                      Tv2Spacing.railExpandedWidth
+                  } else {
+                      Tv2Spacing.railCompactWidth
+                  },
+                  animationSpec = tween(Tv2Motion.railDurationMs),
+                  label = "tv2-rail-width"
+              )
+
+              fun moveToContent() {
+                  railExpanded = false
+                  contentFocusRequestToken += 1
+              }
+
+              BackHandler(enabled = railExpanded) {
+                  moveToContent()
+              }
+
+              Box(
+                  modifier = Modifier
+                      .fillMaxSize()
+                      .clickable(enabled = false) {}
+              ) {
+                  Box(
+                      modifier = Modifier
+                          .fillMaxSize()
+                          .padding(start = Tv2Spacing.railCompactWidth)
+                  ) {
+                      content(
+                          contentFocusRequestToken,
+                          requesters.getValue(selected)
+                      )
+                  }
+
+                  Surface(
+                      modifier = Modifier
+                          .zIndex(20f)
+                          .fillMaxHeight()
+                          .width(railWidth),
+                      color = Tv2Colors.rail,
+                      border = BorderStroke(1.dp, Tv2Colors.railBorder)
+                  ) {
+                      Column(
+                          modifier = Modifier
+                              .fillMaxSize()
+                              .padding(
+                                  horizontal = Tv2Spacing.railHorizontalPadding,
+                                  vertical = Tv2Spacing.railVerticalPadding
+                              )
+                      ) {
+                          Tv2Brand(expanded = railExpanded)
+
+                          Spacer(Modifier.weight(1f))
+
+                          Column(
+                              modifier = Modifier.fillMaxWidth(),
+                              verticalArrangement = Arrangement.spacedBy(Tv2Spacing.railItemGap)
+                          ) {
+                              Tv2Destination.entries.forEach { destination ->
+                                  Tv2RailItem(
+                                      destination = destination,
+                                      selected = destination == selected,
+                                      expanded = railExpanded,
+                                      requester = requesters.getValue(destination),
+                                      onFocused = {
+                                          railExpanded = true
+                                      },
+                                      onMoveRight = {
+                                          moveToContent()
+                                      },
+                                      onClick = {
+                                          if (destination != selected) {
+                                              onSelect(destination.id)
+                                          }
+                                          moveToContent()
+                                      }
+                                  )
+                              }
+                          }
+
+                          Spacer(Modifier.weight(1f))
+
+                          if (railExpanded) {
+                              Text(
+                                  text = "Nustrim TV",
+                                  color = Tv2Colors.textMuted,
+                                  fontSize = 11.sp,
+                                  modifier = Modifier.padding(horizontal = 8.dp)
+                              )
+                          }
+                      }
+                  }
+              }
+          }
+
+          @Composable
+          private fun Tv2Brand(expanded: Boolean) {
+              Row(
+                  modifier = Modifier
+                      .fillMaxWidth()
+                      .padding(horizontal = 7.dp, vertical = 2.dp),
+                  verticalAlignment = Alignment.CenterVertically
+              ) {
+                  Surface(
+                      modifier = Modifier.size(36.dp),
+                      shape = Tv2Shapes.navItem,
+                      color = Tv2Colors.active
+                  ) {
+                      Box(contentAlignment = Alignment.Center) {
+                          Text(
+                              text = "N",
+                              color = Tv2Colors.text,
+                              fontWeight = FontWeight.Black,
+                              fontSize = 17.sp
+                          )
+                      }
+                  }
+
+                  if (expanded) {
+                      Spacer(Modifier.width(Tv2Spacing.iconLabelGap))
+                      Text(
+                          text = "Nustrim",
+                          color = Tv2Colors.text,
+                          fontWeight = FontWeight.SemiBold,
+                          fontSize = 18.sp
+                      )
+                  }
+              }
+
+              if (expanded) {
+                  Spacer(Modifier.size(15.dp))
+                  HorizontalDivider(color = Tv2Colors.railBorder)
+              }
+          }
+
+          @Composable
+          private fun Tv2RailItem(
+              destination: Tv2Destination,
+              selected: Boolean,
+              expanded: Boolean,
+              requester: FocusRequester,
+              onFocused: () -> Unit,
+              onMoveRight: () -> Unit,
+              onClick: () -> Unit
+          ) {
+              var focused by remember { mutableStateOf(false) }
+
+              val scale by animateFloatAsState(
+                  targetValue = if (focused) Tv2Motion.focusScale else 1f,
+                  animationSpec = tween(Tv2Motion.focusDurationMs),
+                  label = "tv2-nav-scale-${destination.id}"
+              )
+
+              Surface(
+                  modifier = Modifier
+                      .fillMaxWidth()
+                      .graphicsLayer {
+                          scaleX = scale
+                          scaleY = scale
+                      }
+                      .focusRequester(requester)
+                      .onFocusChanged {
+                          focused = it.isFocused
+                          if (it.isFocused) onFocused()
+                      }
+                      .onPreviewKeyEvent { event ->
+                          if (
+                              event.type == KeyEventType.KeyDown &&
+                              event.key == Key.DirectionRight
+                          ) {
+                              onMoveRight()
+                              true
+                          } else {
+                              false
+                          }
+                      }
+                      .clip(Tv2Shapes.navItem)
+                      .clickable(onClick = onClick)
+                      .focusable(),
+                  shape = Tv2Shapes.navItem,
+                  color = when {
+                      focused -> Tv2Colors.focused
+                      selected -> Tv2Colors.active
+                      else -> androidx.compose.ui.graphics.Color.Transparent
+                  }
+              ) {
+                  Row(
+                      modifier = Modifier
+                          .fillMaxWidth()
+                          .padding(
+                              horizontal = if (expanded) Tv2Spacing.itemHorizontal else 0.dp,
+                              vertical = Tv2Spacing.itemVertical
+                          ),
+                      horizontalArrangement = if (expanded) {
+                          Arrangement.Start
+                      } else {
+                          Arrangement.Center
+                      },
+                      verticalAlignment = Alignment.CenterVertically
+                  ) {
+                      Icon(
+                          imageVector = destination.icon,
+                          contentDescription = destination.label,
+                          modifier = Modifier.size(24.dp),
+                          tint = when {
+                              focused -> Tv2Colors.focusedContent
+                              else -> Tv2Colors.text
+                          }
+                      )
+
+                      if (expanded) {
+                          Spacer(Modifier.width(Tv2Spacing.iconLabelGap))
+                          Text(
+                              text = destination.label,
+                              color = if (focused) {
+                                  Tv2Colors.focusedContent
+                              } else {
+                                  Tv2Colors.text
+                              },
+                              fontWeight = if (focused || selected) {
+                                  FontWeight.SemiBold
+                              } else {
+                                  FontWeight.Normal
+                              },
+                              fontSize = 16.sp,
+                              maxLines = 1,
+                              modifier = Modifier.widthIn(min = 90.dp)
+                          )
+                      }
+                  }
+              }
+          }
+          KOTLIN
+
+          cat > .nustrim-tv2 <<'EOF'
+          generation=2
+          architecture=clean-layer
+          reference=NuvioTV 0.8.3-beta
+          direction=modern-minimalist
+          stage=1
+          EOF
+
+      - name: Integrate TV2 shell without rewriting screens
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path(
+              "app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt"
+          )
+          text = path.read_text(encoding="utf-8")
+
+          import_anchor = "import app.nudroidlabs.nustrim.features.streams.SubtitleResolver\n"
+          new_import = (
+              "import app.nudroidlabs.nustrim.tv2.shell.NustrimTv2Shell\n"
+          )
+
+          if new_import not in text:
+              if import_anchor not in text:
+                  raise SystemExit("Could not locate NustrimApp import anchor")
+              text = text.replace(
+                  import_anchor,
+                  import_anchor + new_import,
+                  1,
+              )
+
+          start_marker = """    if (isTv) {
+              val navFocusRequesters = remember {
+          """
+          end_marker = """    } else {
+              Scaffold(
+          """
+
+          start = text.find(start_marker)
+          if start < 0:
+              raise SystemExit("Could not locate legacy TV shell start")
+
+          end = text.find(end_marker, start)
+          if end < 0:
+              raise SystemExit("Could not locate legacy TV shell end")
+
+          replacement = """    if (isTv) {
+              NustrimTv2Shell(
+                  selectedId = selected.name.lowercase(Locale.ROOT),
+                  onSelect = { destinationId ->
+                      MainSection.entries
+                          .firstOrNull {
+                              it.name.equals(destinationId, ignoreCase = true)
+                          }
+                          ?.let(onSection)
+                  }
+              ) { contentFocusRequestToken, selectedRailRequester ->
+                  CompositionLocalProvider(
+                      LocalTvSidebarFocusRequester provides selectedRailRequester
+                  ) {
+                      content(true, contentFocusRequestToken)
+                  }
+              }
+
+              // Keep the existing developer remote-test overlay outside TV2.
+              // It is a development tool, not part of the TV2 design layer.
+              if (remoteTestActive) {
+                  val blockerInteraction = remember { MutableInteractionSource() }
+                  Box(modifier = Modifier.fillMaxSize()) {
+                      Box(
+                          modifier = Modifier
+                              .fillMaxSize()
+                              .background(Color.Black.copy(alpha = 0.08f))
+                              .focusProperties { canFocus = false }
+                              .clickable(
+                                  interactionSource = blockerInteraction,
+                                  indication = null
+                              ) { }
+                      )
+                      TvTestRemote(
+                          activity = activity,
+                          modifier = Modifier
+                              .align(Alignment.BottomEnd)
+                              .padding(18.dp),
+                          onClose = onRemoteTestClose
+                      )
+                  }
+              }
+          """
+
+          text = text[:start] + replacement + text[end:]
+
+          if text.count("NustrimTv2Shell(") != 1:
+              raise SystemExit("Expected exactly one TV2 shell integration")
+
+          path.write_text(text, encoding="utf-8")
+          PY
+
+      - name: Set TV2 RC1 version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path("app/build.gradle.kts")
+          text = path.read_text(encoding="utf-8")
+
+          code_match = re.search(r'versionCode\s*=\s*(\d+)', text)
+          name_match = re.search(r'versionName\s*=\s*"([^"]+)"', text)
+          if not code_match or not name_match:
+              raise SystemExit("Could not parse version metadata")
+
+          if int(code_match.group(1)) != 45:
+              raise SystemExit(
+                  f"Expected versionCode 45, found {code_match.group(1)}"
+              )
+          if name_match.group(1) != "0.16.1-clean1":
+              raise SystemExit(
+                  f"Expected 0.16.1-clean1, found {name_match.group(1)}"
+              )
+
+          text = re.sub(
+              r'versionCode\s*=\s*\d+',
+              'versionCode = 46',
+              text,
+              count=1,
+          )
+          text = re.sub(
+              r'versionName\s*=\s*"[^"]+"',
+              'versionName = "0.17.0-tv2-rc1"',
+              text,
+              count=1,
+          )
+
+          path.write_text(text, encoding="utf-8")
+          PY
+
+      - name: Audit Stage 1 source boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f .nustrim-tv2
+          grep -q '^generation=2$' .nustrim-tv2
+          grep -q '^architecture=clean-layer$' .nustrim-tv2
+          grep -q '^reference=NuvioTV 0.8.3-beta$' .nustrim-tv2
+          grep -q '^direction=modern-minimalist$' .nustrim-tv2
+          grep -q '^stage=1$' .nustrim-tv2
+
+          grep -q 'versionCode = 46' app/build.gradle.kts
+          grep -q 'versionName = "0.17.0-tv2-rc1"' app/build.gradle.kts
+
+          test -f \
+            app/src/main/java/app/nudroidlabs/nustrim/tv2/design/Tv2Design.kt
+          test -f \
+            app/src/main/java/app/nudroidlabs/nustrim/tv2/navigation/Tv2Destination.kt
+          test -f \
+            app/src/main/java/app/nudroidlabs/nustrim/tv2/shell/NustrimTv2Shell.kt
+
+          grep -q 'import app.nudroidlabs.nustrim.tv2.shell.NustrimTv2Shell' \
+            app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt
+          grep -q 'content(true, contentFocusRequestToken)' \
+            app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt
+          grep -q 'content(false, 0)' \
+            app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt
+
+          if grep -R -n \
+            -E '^package com\.nuvio|^import com\.nuvio' \
+            app/src/main/java/app/nudroidlabs/nustrim/tv2; then
+            echo "::error::Nuvio source/package reference detected in TV2 implementation."
+            exit 30
+          fi
+
+          if grep -R -n \
+            -E 'NuBrowse|NuBrowseApp|app\.nubrowse' \
+            app gradle.properties settings.gradle.kts build.gradle.kts 2>/dev/null; then
+            echo "::error::Contamination detected in Stage 1 source."
+            exit 31
+          fi
+
+          expected="$(
+            printf '%s\n' \
+              '.nustrim-tv2' \
+              'app/build.gradle.kts' \
+              'app/src/main/java/app/nudroidlabs/nustrim/tv2/design/Tv2Design.kt' \
+              'app/src/main/java/app/nudroidlabs/nustrim/tv2/navigation/Tv2Destination.kt' \
+              'app/src/main/java/app/nudroidlabs/nustrim/tv2/shell/NustrimTv2Shell.kt' \
+              'app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt' |
+            sort
+          )"
+
+          actual="$(git status --short | sed -E 's/^.. //' | sort)"
+
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::Unexpected Stage 1 change set."
+            echo "Expected:"
+            printf '%s\n' "$expected"
+            echo "Actual:"
+            printf '%s\n' "$actual"
+            exit 32
+          fi
+
+          git diff --check
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle 9.5.0 with cache
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "9.5.0"
+
+      - name: Prepare permanent signing
+        shell: bash
+        env:
+          KEYSTORE_B64: ${{ secrets.NUSTRIM_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.NUSTRIM_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.NUSTRIM_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.NUSTRIM_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          for name in KEYSTORE_B64 KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::Signing secret $name is missing."
+              exit 40
+            fi
+          done
+
+          KS="$RUNNER_TEMP/nustrim-release.jks"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$KS"
+          chmod 600 "$KS"
+
+          keytool -list \
+            -keystore "$KS" \
+            -storepass "$KEYSTORE_PASSWORD" \
+            -alias "$KEY_ALIAS" >/dev/null
+
+          CERT="$(
+            keytool -exportcert -rfc \
+              -keystore "$KS" \
+              -storepass "$KEYSTORE_PASSWORD" \
+              -alias "$KEY_ALIAS" |
+            openssl x509 -noout -fingerprint -sha256 |
+            cut -d= -f2 |
+            tr -d ':' |
+            tr '[:lower:]' '[:upper:]'
+          )"
+
+          test "$CERT" = "$LOCKED_CERT_SHA256"
+
+          echo "NUSTRIM_KEYSTORE_PATH=$KS" >> "$GITHUB_ENV"
+          echo "NUSTRIM_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "NUSTRIM_KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
+          echo "NUSTRIM_KEY_PASSWORD=$KEY_PASSWORD" >> "$GITHUB_ENV"
+
+      - name: Full signed release build before commit
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          gradle --no-daemon --build-cache \
+            :app:lintRelease \
+            :app:testDebugUnitTest \
+            :app:assembleRelease \
+            --stacktrace \
+            --console=plain \
+            2>&1 | tee "$RUNNER_TEMP/tv2-stage1-build.log"
+
+          test -s app/build/outputs/apk/release/app-release.apk
+
+      - name: Verify signed TV2 RC1 APK
+        id: apk
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APK="app/build/outputs/apk/release/app-release.apk"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)"
+          AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -1)"
+
+          "$APKSIGNER" verify --verbose --print-certs "$APK" |
+            tee "$RUNNER_TEMP/tv2-stage1-signature.txt"
+
+          CERT="$(
+            sed -n -E 's/^.*certificate SHA-256 digest:[[:space:]]*//p' \
+              "$RUNNER_TEMP/tv2-stage1-signature.txt" |
+            head -1 |
+            tr -d ':' |
+            tr '[:lower:]' '[:upper:]'
+          )"
+          test "$CERT" = "$LOCKED_CERT_SHA256"
+
+          BADGING="$("$AAPT" dump badging "$APK" | head -1)"
+          PACKAGE="$(printf '%s\n' "$BADGING" | sed -n -E "s/^package: name='([^']+)'.*/\1/p")"
+          CODE="$(printf '%s\n' "$BADGING" | sed -n -E "s/^.*versionCode='([^']+)'.*/\1/p")"
+          NAME="$(printf '%s\n' "$BADGING" | sed -n -E "s/^.*versionName='([^']+)'.*/\1/p")"
+
+          test "$PACKAGE" = "app.nudroidlabs.nustrim"
+          test "$CODE" = "46"
+          test "$NAME" = "0.17.0-tv2-rc1"
+
+          RELEASE_APK="Nustrim-$NAME.apk"
+          cp "$APK" "$RELEASE_APK"
+
+          SHA="$(sha256sum "$RELEASE_APK" | awk '{print $1}')"
+          SIZE="$(stat -c '%s' "$RELEASE_APK")"
+
+          echo "apk=$RELEASE_APK" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "size=$SIZE" >> "$GITHUB_OUTPUT"
+          echo "cert=$CERT" >> "$GITHUB_OUTPUT"
+
+      - name: Commit TV2 Stage 1 only after build passed
+        id: commit
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          git add \
+            .nustrim-tv2 \
+            app/build.gradle.kts \
+            app/src/main/java/app/nudroidlabs/nustrim/tv2 \
+            app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt
+
+          git diff --cached --check
+
+          if ! git diff --cached --quiet -- .github/workflows; then
+            echo "::error::Stage 1 must not modify workflow files."
+            exit 50
+          fi
+
+          git commit -m 'feat(tv2): clean shell foundation'
+          git push origin HEAD:main
+
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Create updater assets
+        shell: bash
+        env:
+          APK_NAME: ${{ steps.apk.outputs.apk }}
+          APK_SHA: ${{ steps.apk.outputs.sha }}
+          APK_SIZE: ${{ steps.apk.outputs.size }}
+          CERT_SHA: ${{ steps.apk.outputs.cert }}
+        run: |
+          set -euo pipefail
+
+          export APK_NAME APK_SHA APK_SIZE CERT_SHA
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          import os
+
+          version_name = "0.17.0-tv2-rc1"
+          tag = f"v{version_name}"
+          repo = os.environ["GITHUB_REPOSITORY"]
+
+          manifest = {
+              "versionCode": 46,
+              "versionName": version_name,
+              "apkUrl": (
+                  f"https://github.com/{repo}/releases/download/"
+                  f"{tag}/{os.environ['APK_NAME']}"
+              ),
+              "sha256": os.environ["APK_SHA"],
+              "changelog": (
+                  "TV2 Stage 1: clean modern-minimalist navigation and design foundation."
+              ),
+              "sizeBytes": int(os.environ["APK_SIZE"]),
+              "signingMode": "permanent",
+              "signingCertSha256": os.environ["CERT_SHA"],
+          }
+
+          Path("update.json").write_text(
+              json.dumps(manifest, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Publish TV2 RC1
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.commit.outputs.sha }}
+          APK_NAME: ${{ steps.apk.outputs.apk }}
+        run: |
+          set -euo pipefail
+
+          TAG="v0.17.0-tv2-rc1"
+
+          cat > "$RUNNER_TEMP/tv2-stage1-notes.md" <<'EOF'
+          Nustrim TV2 RC1
+
+          Clean TV2 foundation.
+
+          This stage introduces a separate TV2 design, navigation and shell
+          layer while intentionally keeping the existing screens as temporary
+          content. Home is rebuilt from zero in Stage 2.
+
+          UX reference: NuvioTV 0.8.3-beta.
+          Implementation: independent Nustrim code.
+          EOF
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$APK_NAME" update.json --clobber
+            gh release edit "$TAG" \
+              --target "$TARGET_SHA" \
+              --title "Nustrim 0.17.0-tv2-rc1" \
+              --notes-file "$RUNNER_TEMP/tv2-stage1-notes.md" \
+              --latest
+          else
+            gh release create "$TAG" "$APK_NAME" update.json \
+              --target "$TARGET_SHA" \
+              --title "Nustrim 0.17.0-tv2-rc1" \
+              --notes-file "$RUNNER_TEMP/tv2-stage1-notes.md" \
+              --latest
+          fi
+
+      - name: Verify live updater
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APK_NAME: ${{ steps.apk.outputs.apk }}
+          EXPECTED_SHA: ${{ steps.apk.outputs.sha }}
+          EXPECTED_SIZE: ${{ steps.apk.outputs.size }}
+          EXPECTED_CERT: ${{ steps.apk.outputs.cert }}
+        run: |
+          set -euo pipefail
+
+          TAG="v0.17.0-tv2-rc1"
+          latest="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)"
+          test "$latest" = "$TAG"
+
+          LIVE="$RUNNER_TEMP/tv2-stage1-live"
+          rm -rf "$LIVE"
+          mkdir -p "$LIVE"
+
+          gh release download "$TAG" \
+            --pattern update.json \
+            --pattern "$APK_NAME" \
+            --dir "$LIVE" \
+            --clobber
+
+          export LIVE APK_NAME EXPECTED_SHA EXPECTED_SIZE EXPECTED_CERT
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import json
+          import os
+
+          root = Path(os.environ["LIVE"])
+          apk = root / os.environ["APK_NAME"]
+          manifest = json.loads(
+              (root / "update.json").read_text(encoding="utf-8")
+          )
+
+          assert manifest["versionName"] == "0.17.0-tv2-rc1"
+          assert int(manifest["versionCode"]) == 46
+          assert manifest["signingMode"] == "permanent"
+          assert (
+              manifest["signingCertSha256"].upper()
+              == os.environ["EXPECTED_CERT"].upper()
+          )
+          assert int(manifest["sizeBytes"]) == int(os.environ["EXPECTED_SIZE"])
+
+          sha = hashlib.sha256(apk.read_bytes()).hexdigest()
+          assert sha.lower() == os.environ["EXPECTED_SHA"].lower()
+          assert manifest["sha256"].lower() == sha.lower()
+
+          expected_url = (
+              f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/"
+              f"releases/download/v0.17.0-tv2-rc1/{apk.name}"
+          )
+          assert manifest["apkUrl"] == expected_url
+
+          print("TV2 RC1 live updater verification passed")
+          PY
+
+      - name: Upload verified TV2 RC1
+        uses: actions/upload-artifact@v7
+        with:
+          name: nustrim-tv2-rc1
+          path: |
+            Nustrim-0.17.0-tv2-rc1.apk
+            update.json
+            ${{ runner.temp }}/tv2-stage1-signature.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Collect diagnose on failure
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+
+          D="$RUNNER_TEMP/tv2-stage1-diagnose"
+          mkdir -p "$D"
+
+          cp "$RUNNER_TEMP/tv2-stage1-build.log" "$D/" 2>/dev/null
+          cp "$RUNNER_TEMP/tv2-stage1-signature.txt" "$D/" 2>/dev/null
+          cp app/build.gradle.kts "$D/" 2>/dev/null
+          cp .nustrim-clean "$D/" 2>/dev/null
+          cp .nustrim-tv2 "$D/" 2>/dev/null
+          cp app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt \
+            "$D/" 2>/dev/null
+
+          git status --short > "$D/git-status.txt" 2>&1
+          git diff > "$D/git-diff.txt" 2>&1
+
+          find app/src/main/java/app/nudroidlabs/nustrim/tv2 \
+            -type f -maxdepth 5 -print \
+            > "$D/tv2-files.txt" 2>&1
+
+      - name: Upload diagnose on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nustrim-m11-tv2-stage1-clean-foundation-diagnose
+          path: ${{ runner.temp }}/tv2-stage1-diagnose
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Summary
+        if: success()
+        shell: bash
+        run: |
+          {
+            echo '## M11 TV2 Stage 1 passed'
+            echo ''
+            echo '- Version: 0.17.0-tv2-rc1'
+            echo '- versionCode: 46'
+            echo '- Architecture: clean TV2 layer'
+            echo '- UX reference: NuvioTV 0.8.3-beta'
+            echo '- Direction: modern minimalist'
+            echo '- Old TV shell: bypassed'
+            echo '- Old screens: retained temporarily as content'
+            echo '- Mobile mode: unchanged'
+            echo '- Permanent signing: verified'
+            echo '- Live updater: verified'
+            echo ''
+            echo 'Next: TV2 Stage 2, rebuild Home from zero.'
+          } >> "$GITHUB_STEP_SUMMARY"
