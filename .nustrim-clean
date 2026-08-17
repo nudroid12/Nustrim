@@ -1,0 +1,4 @@
+generation=clean
+baseline=v0.16.0-rc27
+upstream=kurato-svg/Nustrim
+repository=nudroid12/Nustrim
