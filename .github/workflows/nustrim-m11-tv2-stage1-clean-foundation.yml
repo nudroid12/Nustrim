@@ -495,20 +495,40 @@ jobs:
                   1,
               )
 
-          start_marker = """    if (isTv) {
-              val navFocusRequesters = remember {
-          """
-          end_marker = """    } else {
-              Scaffold(
-          """
+          main_shell_start = text.find("private fun MainShell(")
+          if main_shell_start < 0:
+              raise SystemExit("Could not locate MainShell")
 
-          start = text.find(start_marker)
-          if start < 0:
+          main_shell_end = text.find(
+              "\nprivate fun dispatchTvTestKey",
+              main_shell_start,
+          )
+          if main_shell_end < 0:
+              raise SystemExit("Could not locate MainShell end")
+
+          main_shell = text[main_shell_start:main_shell_end]
+
+          start_match = re.search(
+              r"(?m)^    if \(isTv\) \{\s*\n"
+              r"\s*val navFocusRequesters = remember \{",
+              main_shell,
+          )
+          if not start_match:
               raise SystemExit("Could not locate legacy TV shell start")
 
-          end = text.find(end_marker, start)
-          if end < 0:
+          end_match = re.search(
+              r"(?m)^    \} else \{\s*\n\s*Scaffold\(",
+              main_shell[start_match.start():],
+          )
+          if not end_match:
               raise SystemExit("Could not locate legacy TV shell end")
+
+          start = main_shell_start + start_match.start()
+          end = (
+              main_shell_start
+              + start_match.start()
+              + end_match.start()
+          )
 
           replacement = """    if (isTv) {
               NustrimTv2Shell(
@@ -553,6 +573,12 @@ jobs:
                   }
               }
           """
+
+          legacy_slice = text[start:end]
+          if "TvNavItem(" not in legacy_slice:
+              raise SystemExit("Legacy TV shell slice is unexpectedly incomplete")
+          if "content(true, contentFocusRequestToken)" not in legacy_slice:
+              raise SystemExit("Legacy TV content call missing from replacement slice")
 
           text = text[:start] + replacement + text[end:]
 
