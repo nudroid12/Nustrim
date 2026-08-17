@@ -355,7 +355,169 @@ jobs:
 
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Publish updater release
+      - name: Create or update release record
+        if: >-
+          github.event_name == 'workflow_dispatch' &&
+          (inputs.publish_release || inputs.prepare_clean_bridge)
+        id: release_record
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.assets.outputs.tag }}
+          VERSION: ${{ steps.verify.outputs.version_name }}
+          CERT: ${{ steps.verify.outputs.cert_sha }}
+        run: |
+          set -euo pipefail
+
+          TARGET_SHA="$(git rev-parse HEAD)"
+          RELEASE_JSON="$RUNNER_TEMP/release-record.json"
+          RELEASE_ERR="$RUNNER_TEMP/release-record-error.log"
+          LOOKUP_JSON="$RUNNER_TEMP/existing-release.json"
+          LOOKUP_ERR="$RUNNER_TEMP/release-lookup-error.log"
+          PAYLOAD="$RUNNER_TEMP/release-payload.json"
+
+          export TARGET_SHA TAG VERSION CERT PAYLOAD
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          import os
+
+          body = (
+              f"Nustrim {os.environ['VERSION']}\n\n"
+              "Clean permanent-signed release from nudroid12/Nustrim.\n\n"
+              "Signing certificate SHA-256:\n"
+              f"{os.environ['CERT']}\n"
+          )
+
+          payload = {
+              "tag_name": os.environ["TAG"],
+              "target_commitish": os.environ["TARGET_SHA"],
+              "name": f"Nustrim {os.environ['VERSION']}",
+              "body": body,
+              "draft": False,
+              "prerelease": False,
+              "make_latest": "true",
+          }
+
+          Path(os.environ["PAYLOAD"]).write_text(
+              json.dumps(payload),
+              encoding="utf-8",
+          )
+          PY
+
+          : > "$RELEASE_ERR"
+          : > "$LOOKUP_ERR"
+
+          if gh api \
+            "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" \
+            > "$LOOKUP_JSON" \
+            2> "$LOOKUP_ERR"; then
+
+            RELEASE_ID="$(
+              python3 -c \
+                'import json,sys; print(json.load(open(sys.argv[1]))["id"])' \
+                "$LOOKUP_JSON"
+            )"
+
+            echo "Updating existing release id=$RELEASE_ID tag=$TAG"
+
+            if ! gh api \
+              --method PATCH \
+              "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
+              --input "$PAYLOAD" \
+              > "$RELEASE_JSON" \
+              2> "$RELEASE_ERR"; then
+              echo "::error::GitHub release update failed."
+              cat "$RELEASE_ERR"
+              exit 60
+            fi
+          else
+            echo "Creating release tag=$TAG target=$TARGET_SHA"
+
+            if ! gh api \
+              --method POST \
+              "repos/$GITHUB_REPOSITORY/releases" \
+              --input "$PAYLOAD" \
+              > "$RELEASE_JSON" \
+              2> "$RELEASE_ERR"; then
+              echo "::error::GitHub release creation failed."
+              cat "$LOOKUP_ERR" 2>/dev/null || true
+              cat "$RELEASE_ERR"
+              exit 61
+            fi
+          fi
+
+          cat "$RELEASE_JSON"
+
+          export RELEASE_JSON
+          python3 - <<'PY'
+          import json
+          import os
+
+          with open(os.environ["RELEASE_JSON"], encoding="utf-8") as fh:
+              release = json.load(fh)
+
+          if release.get("tag_name") != os.environ["TAG"]:
+              raise SystemExit("Release API returned the wrong tag")
+          if release.get("draft") is not False:
+              raise SystemExit("Release unexpectedly remained a draft")
+
+          release_id = release.get("id")
+          if not isinstance(release_id, int) or release_id <= 0:
+              raise SystemExit("Release API did not return a valid release id")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"release_id={release_id}\n")
+          PY
+
+      - name: Verify release record before asset upload
+        if: >-
+          github.event_name == 'workflow_dispatch' &&
+          (inputs.publish_release || inputs.prepare_clean_bridge)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.assets.outputs.tag }}
+          RELEASE_ID: ${{ steps.release_record.outputs.release_id }}
+        run: |
+          set -euo pipefail
+
+          VERIFY_JSON="$RUNNER_TEMP/release-record-verify.json"
+          VERIFY_ERR="$RUNNER_TEMP/release-record-verify-error.log"
+
+          if ! gh api \
+            "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
+            > "$VERIFY_JSON" \
+            2> "$VERIFY_ERR"; then
+            echo "::error::Could not read back the release record."
+            cat "$VERIFY_ERR"
+            exit 62
+          fi
+
+          export VERIFY_JSON TAG RELEASE_ID
+
+          python3 - <<'PY'
+          import json
+          import os
+
+          with open(os.environ["VERIFY_JSON"], encoding="utf-8") as fh:
+              release = json.load(fh)
+
+          if str(release.get("id")) != os.environ["RELEASE_ID"]:
+              raise SystemExit("Release id changed during verification")
+          if release.get("tag_name") != os.environ["TAG"]:
+              raise SystemExit("Release tag changed during verification")
+          if release.get("draft") is not False:
+              raise SystemExit("Release is still a draft")
+
+          print(
+              f"Release record verified: "
+              f"{release['tag_name']} id={release['id']}"
+          )
+          PY
+
+      - name: Upload updater release assets
         if: >-
           github.event_name == 'workflow_dispatch' &&
           (inputs.publish_release || inputs.prepare_clean_bridge)
@@ -364,36 +526,75 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.assets.outputs.tag }}
           APK: ${{ steps.assets.outputs.apk }}
-          VERSION: ${{ steps.verify.outputs.version_name }}
-          CERT: ${{ steps.verify.outputs.cert_sha }}
         run: |
           set -euo pipefail
 
-          TARGET_SHA="$(git rev-parse HEAD)"
+          test -s "$APK"
+          test -s update.json
 
-          cat > "$RUNNER_TEMP/release-notes.md" <<EOF
-          Nustrim $VERSION
+          RELEASE_UPLOAD_LOG="$RUNNER_TEMP/release-upload.log"
 
-          Clean permanent-signed release from nudroid12/Nustrim.
-
-          Signing certificate SHA-256:
-          $CERT
-          EOF
-
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "$APK" update.json --clobber
-            gh release edit "$TAG" \
-              --target "$TARGET_SHA" \
-              --title "Nustrim $VERSION" \
-              --notes-file "$RUNNER_TEMP/release-notes.md" \
-              --latest
-          else
-            gh release create "$TAG" "$APK" update.json \
-              --target "$TARGET_SHA" \
-              --title "Nustrim $VERSION" \
-              --notes-file "$RUNNER_TEMP/release-notes.md" \
-              --latest
+          if ! gh release upload "$TAG" "$APK" update.json \
+            --clobber \
+            > "$RELEASE_UPLOAD_LOG" \
+            2>&1; then
+            echo "::error::GitHub release asset upload failed."
+            cat "$RELEASE_UPLOAD_LOG"
+            exit 63
           fi
+
+          cat "$RELEASE_UPLOAD_LOG"
+
+      - name: Verify release assets exist
+        if: >-
+          github.event_name == 'workflow_dispatch' &&
+          (inputs.publish_release || inputs.prepare_clean_bridge)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.assets.outputs.tag }}
+          APK: ${{ steps.assets.outputs.apk }}
+        run: |
+          set -euo pipefail
+
+          ASSET_JSON="$RUNNER_TEMP/release-assets.json"
+          ASSET_ERR="$RUNNER_TEMP/release-assets-error.log"
+
+          if ! gh api \
+            "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" \
+            > "$ASSET_JSON" \
+            2> "$ASSET_ERR"; then
+            echo "::error::Could not verify release assets."
+            cat "$ASSET_ERR"
+            exit 64
+          fi
+
+          export ASSET_JSON APK
+
+          python3 - <<'PY'
+          import json
+          import os
+
+          with open(os.environ["ASSET_JSON"], encoding="utf-8") as fh:
+              release = json.load(fh)
+
+          assets = {
+              asset.get("name"): int(asset.get("size", 0))
+              for asset in release.get("assets", [])
+          }
+
+          required = [os.environ["APK"], "update.json"]
+
+          for name in required:
+              if name not in assets:
+                  raise SystemExit(f"Missing release asset: {name}")
+              if assets[name] <= 0:
+                  raise SystemExit(f"Release asset is empty: {name}")
+
+          print("Release assets verified:")
+          for name in required:
+              print(f"- {name}: {assets[name]} bytes")
+          PY
 
       - name: Verify live updater release
         if: >-
@@ -498,6 +699,17 @@ jobs:
           cp gradle.properties "$D/" 2>/dev/null
           cp .nustrim-clean "$D/" 2>/dev/null
           cp update.json "$D/" 2>/dev/null
+
+          cp "$RUNNER_TEMP/release-payload.json" "$D/" 2>/dev/null
+          cp "$RUNNER_TEMP/release-record.json" "$D/" 2>/dev/null
+          cp "$RUNNER_TEMP/release-record-error.log" "$D/" 2>/dev/null
+          cp "$RUNNER_TEMP/release-lookup-error.log" "$D/" 2>/dev/null
+          cp "$RUNNER_TEMP/existing-release.json" "$D/" 2>/dev/null
+          cp "$RUNNER_TEMP/release-record-verify.json" "$D/" 2>/dev/null
+          cp "$RUNNER_TEMP/release-record-verify-error.log" "$D/" 2>/dev/null
+          cp "$RUNNER_TEMP/release-upload.log" "$D/" 2>/dev/null
+          cp "$RUNNER_TEMP/release-assets.json" "$D/" 2>/dev/null
+          cp "$RUNNER_TEMP/release-assets-error.log" "$D/" 2>/dev/null
 
           git status --short > "$D/git-status.txt" 2>&1
           git diff > "$D/git-diff.txt" 2>&1
