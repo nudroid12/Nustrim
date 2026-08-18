@@ -1,0 +1,716 @@
+name: Nustrim TV3 Stage 0B Dead TV Cleanup R1
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: nustrim-tv3-stage0b-dead-tv-cleanup-r1
+  cancel-in-progress: false
+
+env:
+  RESET_VERSION: "0.18.0-tv3-reset0b1"
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Sync exact main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          git checkout -B main origin/main
+          git reset --hard origin/main
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "9.5.0"
+
+      - name: Verify Stage 0A and protect updater
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/nustrim-tv3-reset0b-r1"
+          mkdir -p "$DIR"
+
+          test -f .nustrim-tv-reset
+          grep -q '^stage=0A$' .nustrim-tv-reset
+          grep -q '^runtime=mobile-only$' .nustrim-tv-reset
+          test -d app/src/main/java/app/nudroidlabs/nustrim/tv2
+          test -f .github/workflows/build.yml
+          test -d app/src/main/java/app/nudroidlabs/nustrim/core/update
+
+          sha256sum .github/workflows/build.yml > "$DIR/build.before"
+          find app/src/main/java/app/nudroidlabs/nustrim/core/update -type f -print0 \
+            | sort -z | xargs -0 sha256sum > "$DIR/updater.before"
+
+          python3 - <<'PY' > "$DIR/build-gradle.normalized.before"
+          from pathlib import Path
+          import re
+          text = Path("app/build.gradle.kts").read_text()
+          text = re.sub(r'versionCode\s*=\s*\d+', 'versionCode = <VERSION_CODE>', text, count=1)
+          text = re.sub(r'versionName\s*=\s*"[^"]+"', 'versionName = "<VERSION_NAME>"', text, count=1)
+          print(text, end="")
+          PY
+
+          {
+            echo "NUSTRIM TV3 STAGE 0B R1"
+            echo "sha=$(git rev-parse HEAD)"
+            grep -m1 'versionName' app/build.gradle.kts || true
+            echo
+            echo "[external TV2 symbols before cleanup]"
+            grep -n -E '\b(Tv2|NustrimTv2)[A-Za-z0-9_]*\b' \
+              app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt \
+              | head -n 180 || true
+          } > "$DIR/preflight.txt"
+
+      - name: Remove external TV2 call sites structurally
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' 2>&1 | tee "$RUNNER_TEMP/nustrim-tv3-reset0b-r1/cleanup.log"
+          from pathlib import Path
+          import re
+          
+          APP = Path("app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt")
+          text = APP.read_text(encoding="utf-8")
+          
+          def matching(source: str, start: int, opener: str, closer: str) -> int:
+              depth = 0
+              i = start
+              in_string = False
+              triple = False
+              escape = False
+              line_comment = False
+              block_comment = 0
+              while i < len(source):
+                  if line_comment:
+                      if source[i] == "\n":
+                          line_comment = False
+                      i += 1
+                      continue
+                  if block_comment:
+                      if source.startswith("/*", i):
+                          block_comment += 1
+                          i += 2
+                          continue
+                      if source.startswith("*/", i):
+                          block_comment -= 1
+                          i += 2
+                          continue
+                      i += 1
+                      continue
+                  if triple:
+                      if source.startswith('"""', i):
+                          triple = False
+                          i += 3
+                      else:
+                          i += 1
+                      continue
+                  if in_string:
+                      ch = source[i]
+                      if escape:
+                          escape = False
+                      elif ch == "\\":
+                          escape = True
+                      elif ch == '"':
+                          in_string = False
+                      i += 1
+                      continue
+          
+                  if source.startswith("//", i):
+                      line_comment = True
+                      i += 2
+                      continue
+                  if source.startswith("/*", i):
+                      block_comment = 1
+                      i += 2
+                      continue
+                  if source.startswith('"""', i):
+                      triple = True
+                      i += 3
+                      continue
+                  if source[i] == '"':
+                      in_string = True
+                      i += 1
+                      continue
+          
+                  ch = source[i]
+                  if ch == opener:
+                      depth += 1
+                  elif ch == closer:
+                      depth -= 1
+                      if depth == 0:
+                          return i + 1
+                  i += 1
+              raise SystemExit(f"Unbalanced {opener}{closer} at {start}")
+          
+          def function_bounds_at(source: str, pos: int):
+              matches = list(re.finditer(
+                  r'(?m)^(?:@[^\n]+\n)*\s*(?:private\s+|internal\s+|public\s+)?fun\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(',
+                  source[:pos + 1]
+              ))
+              for m in reversed(matches):
+                  brace = source.find("{", m.end())
+                  if brace < 0 or brace > pos:
+                      continue
+                  try:
+                      end = matching(source, brace, "{", "}")
+                  except SystemExit:
+                      continue
+                  if pos < end:
+                      return m.group(1), m.start(), end
+              return None
+          
+          def line_span(source: str, pos: int):
+              start = source.rfind("\n", 0, pos) + 1
+              end = source.find("\n", pos)
+              if end < 0:
+                  end = len(source)
+              return start, end
+          
+          def find_if_header_for_brace(source: str, brace: int):
+              prefix_start = max(0, brace - 1200)
+              segment = source[prefix_start:brace]
+              candidates = list(re.finditer(r'\bif\s*\(', segment))
+              for m in reversed(candidates):
+                  open_paren = prefix_start + segment.find("(", m.start())
+                  try:
+                      close_paren = matching(source, open_paren, "(", ")")
+                  except SystemExit:
+                      continue
+                  between = source[close_paren:brace]
+                  cleaned = re.sub(r'//[^\n]*|/\*.*?\*/', '', between, flags=re.S)
+                  if cleaned.strip():
+                      continue
+                  condition = source[open_paren + 1:close_paren - 1]
+                  return prefix_start + m.start(), condition
+              return None
+          
+          def find_else_for_then(source: str, then_end: int):
+              cursor = then_end
+              while True:
+                  while cursor < len(source) and source[cursor].isspace():
+                      cursor += 1
+                  if source.startswith("//", cursor):
+                      nl = source.find("\n", cursor)
+                      cursor = len(source) if nl < 0 else nl + 1
+                      continue
+                  if source.startswith("/*", cursor):
+                      end = source.find("*/", cursor + 2)
+                      if end < 0:
+                          return None
+                      cursor = end + 2
+                      continue
+                  break
+              if not source.startswith("else", cursor):
+                  return None
+              after = cursor + 4
+              while after < len(source) and source[after].isspace():
+                  after += 1
+              if after < len(source) and source[after] == "{":
+                  else_end = matching(source, after, "{", "}")
+                  return cursor, after, else_end
+              return None
+          
+          def tv_only_condition(condition: str) -> bool:
+              identifiers = re.findall(r'\b[A-Za-z_][A-Za-z0-9_]*\b', condition)
+              lowered = [x.lower() for x in identifiers]
+              compact = re.sub(r'\s+', '', condition)
+              if "istv" in lowered or "physicaltv" in lowered:
+                  if compact.startswith("!isTv") or compact.startswith("isTv==false"):
+                      return False
+                  return True
+              return any("tv" in x for x in lowered)
+          
+          def mobile_only_condition(condition: str) -> bool:
+              compact = re.sub(r'\s+', '', condition)
+              return (
+                  compact.startswith("!isTv")
+                  or compact.startswith("isTv==false")
+                  or compact.startswith("false==isTv")
+              )
+          
+          def containing_braces(source: str, pos: int, floor: int):
+              stack = []
+              i = floor
+              in_string = False
+              triple = False
+              escape = False
+              line_comment = False
+              block_comment = 0
+          
+              while i < pos:
+                  if line_comment:
+                      if source[i] == "\n":
+                          line_comment = False
+                      i += 1
+                      continue
+                  if block_comment:
+                      if source.startswith("/*", i):
+                          block_comment += 1
+                          i += 2
+                          continue
+                      if source.startswith("*/", i):
+                          block_comment -= 1
+                          i += 2
+                          continue
+                      i += 1
+                      continue
+                  if triple:
+                      if source.startswith('"""', i):
+                          triple = False
+                          i += 3
+                      else:
+                          i += 1
+                      continue
+                  if in_string:
+                      ch = source[i]
+                      if escape:
+                          escape = False
+                      elif ch == "\\":
+                          escape = True
+                      elif ch == '"':
+                          in_string = False
+                      i += 1
+                      continue
+                  if source.startswith("//", i):
+                      line_comment = True
+                      i += 2
+                      continue
+                  if source.startswith("/*", i):
+                      block_comment = 1
+                      i += 2
+                      continue
+                  if source.startswith('"""', i):
+                      triple = True
+                      i += 3
+                      continue
+                  if source[i] == '"':
+                      in_string = True
+                      i += 1
+                      continue
+          
+                  if source[i] == "{":
+                      stack.append(i)
+                  elif source[i] == "}" and stack:
+                      stack.pop()
+                  i += 1
+          
+              return list(reversed(stack))
+          
+          def matching_open_brace(source: str, close_brace: int, floor: int):
+              stack = []
+              i = floor
+              in_string = False
+              escape = False
+              while i <= close_brace:
+                  ch = source[i]
+                  if in_string:
+                      if escape:
+                          escape = False
+                      elif ch == "\\":
+                          escape = True
+                      elif ch == '"':
+                          in_string = False
+                      i += 1
+                      continue
+                  if ch == '"':
+                      in_string = True
+                  elif ch == "{":
+                      stack.append(i)
+                  elif ch == "}":
+                      if not stack:
+                          return None
+                      opening = stack.pop()
+                      if i == close_brace:
+                          return opening
+                  i += 1
+              return None
+          
+          def remove_tv2_occurrence(source: str, pos: int, symbol: str):
+              owner = function_bounds_at(source, pos)
+              if owner is None:
+                  return None, f"{symbol}: no enclosing function"
+          
+              owner_name, owner_start, owner_end = owner
+          
+              if owner_name.startswith("Tv"):
+                  print(f"REMOVE dedicated TV helper: {owner_name} ({symbol})")
+                  end = owner_end
+                  while end < len(source) and source[end] == "\n":
+                      end += 1
+                  return source[:owner_start] + source[end:], None
+          
+              # The Tv2 call may sit several lambdas deep. Walk every containing block
+              # outward until a TV-only if-condition is found.
+              for brace in containing_braces(source, pos, owner_start):
+                  header = find_if_header_for_brace(source, brace)
+                  if not header:
+                      continue
+                  if_start, condition = header
+                  then_end = matching(source, brace, "{", "}")
+                  if not (brace < pos < then_end):
+                      continue
+          
+                  if tv_only_condition(condition):
+                      else_info = find_else_for_then(source, then_end)
+                      if else_info:
+                          _, else_brace, else_end = else_info
+                          mobile_body = source[else_brace + 1:else_end - 1]
+                          print(f"FOLD TV branch in {owner_name}: if ({condition.strip()}) -> mobile else")
+                          return source[:if_start] + mobile_body + source[else_end:], None
+          
+                      print(f"REMOVE TV branch in {owner_name}: if ({condition.strip()})")
+                      return source[:if_start] + source[then_end:], None
+          
+              # Handle Tv2 call in the else side of: if (!isTv) { mobile } else { TV }.
+              for else_brace in containing_braces(source, pos, owner_start):
+                  before = source[max(owner_start, else_brace - 60):else_brace]
+                  if "else" not in before:
+                      continue
+          
+                  else_word = source.rfind("else", owner_start, else_brace)
+                  if else_word < 0:
+                      continue
+          
+                  j = else_word - 1
+                  while j >= owner_start and source[j].isspace():
+                      j -= 1
+                  if j < owner_start or source[j] != "}":
+                      continue
+          
+                  then_open = matching_open_brace(source, j, owner_start)
+                  if then_open is None:
+                      continue
+          
+                  header = find_if_header_for_brace(source, then_open)
+                  if not header:
+                      continue
+                  if_start, condition = header
+                  if not mobile_only_condition(condition):
+                      continue
+          
+                  else_end = matching(source, else_brace, "{", "}")
+                  mobile_body = source[then_open + 1:j]
+                  print(f"FOLD mobile branch in {owner_name}: if ({condition.strip()})")
+                  return source[:if_start] + mobile_body + source[else_end:], None
+          
+              # Single-line fallback such as: if (physicalTv) Tv2Whatever(...)
+              ls, le = line_span(source, pos)
+              line = source[ls:le]
+              m = re.search(r'\bif\s*\((.*?)\)', line)
+              if m and tv_only_condition(m.group(1)):
+                  print(f"REMOVE single-line TV branch in {owner_name}: {line.strip()[:160]}")
+                  return source[:ls] + source[le + (1 if le < len(source) else 0):], None
+          
+              # Never guess on a shared function. Emit useful context and stop safely.
+              ctx_start = max(owner_start, source.rfind("\n", 0, pos) - 1000)
+              ctx_end = min(owner_end, source.find("\n", pos) + 1000)
+              context = source[ctx_start:ctx_end]
+              return None, (
+                  f"{symbol} remains in shared owner {owner_name} with no safely classified "
+                  f"TV-only branch.\n--- context ---\n{context}\n--- end context ---"
+              )
+          
+          for _ in range(100):
+              occurrences = []
+              for m in re.finditer(r'\b(?:Tv2[A-Za-z0-9_]*|NustrimTv2[A-Za-z0-9_]*)\b', text):
+                  ls, le = line_span(text, m.start())
+                  if text[ls:le].lstrip().startswith("import app.nudroidlabs.nustrim.tv2."):
+                      continue
+                  occurrences.append((m.start(), m.group(0)))
+          
+              if not occurrences:
+                  break
+          
+              pos, symbol = occurrences[0]
+              updated, error = remove_tv2_occurrence(text, pos, symbol)
+              if error:
+                  raise SystemExit(error)
+              text = updated
+          else:
+              raise SystemExit("Too many external TV2 cleanup passes")
+          
+          # Imports are removed last, after every real call/type reference is gone.
+          text = re.sub(
+              r'(?m)^import\s+app\.nudroidlabs\.nustrim\.tv2\.[^\n]+\n',
+              '',
+              text,
+          )
+          
+          leftovers = sorted(set(re.findall(
+              r'\b(?:Tv2[A-Za-z0-9_]*|NustrimTv2[A-Za-z0-9_]*)\b',
+              text
+          )))
+          if leftovers:
+              raise SystemExit("TV2 symbols remain after structural cleanup: " + ", ".join(leftovers))
+          
+          APP.write_text(text, encoding="utf-8")
+          print("PASS: zero external TV2 symbols in NustrimApp.kt")
+          PY
+          code=${PIPESTATUS[0]}
+          if [[ "$code" -ne 0 ]]; then
+            exit "$code"
+          fi
+
+      - name: Prove zero TV2 references then delete package
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/nustrim-tv3-reset0b-r1"
+
+          set +e
+          grep -R -n -E '\b(Tv2|NustrimTv2)[A-Za-z0-9_]*\b|app\.nudroidlabs\.nustrim\.tv2\.' \
+            app/src/main/java/app/nudroidlabs/nustrim \
+            --exclude-dir=tv2 \
+            > "$DIR/tv2-reference-blockers.txt" 2>&1
+          refs=$?
+          set -e
+
+          if [[ "$refs" -eq 0 ]]; then
+            cat "$DIR/tv2-reference-blockers.txt"
+            echo "::error::External TV2 references remain. Refusing deletion."
+            exit 1
+          elif [[ "$refs" -ne 1 ]]; then
+            cat "$DIR/tv2-reference-blockers.txt"
+            echo "::error::TV2 reference scan failed."
+            exit "$refs"
+          fi
+
+          rm -rf app/src/main/java/app/nudroidlabs/nustrim/tv2
+          rm -rf app/src/main/java/app/nudroidlabs/nustrim/tv
+          rm -rf app/src/main/java/app/nudroidlabs/nustrim/tv3
+
+          echo "PASS: zero refs proven before tv2 deletion" | tee "$DIR/tv2-delete.txt"
+
+      - name: Advance metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' 2>&1 | tee "$RUNNER_TEMP/nustrim-tv3-reset0b-r1/metadata.log"
+          from pathlib import Path
+          import os
+          import re
+          
+          target = os.environ["RESET_VERSION"]
+          path = Path("app/build.gradle.kts")
+          text = path.read_text(encoding="utf-8")
+          
+          cm = re.search(r'versionCode\s*=\s*(\d+)', text)
+          nm = re.search(r'versionName\s*=\s*"([^"]+)"', text)
+          if not cm or not nm:
+              raise SystemExit("Version metadata missing")
+          
+          old_code = int(cm.group(1))
+          old_name = nm.group(1)
+          new_code = old_code if old_name == target else old_code + 1
+          
+          text = re.sub(r'versionCode\s*=\s*\d+', f'versionCode = {new_code}', text, count=1)
+          text = re.sub(r'versionName\s*=\s*"[^"]+"', f'versionName = "{target}"', text, count=1)
+          path.write_text(text, encoding="utf-8")
+          Path(".nustrim-version").write_text(target + "\n", encoding="utf-8")
+          
+          Path(".nustrim-tv-reset").write_text(
+              "generation=3\n"
+              "stage=0B\n"
+              "revision=1\n"
+              "runtime=mobile-only\n"
+              "tv2-package=removed\n"
+              "external-tv2-references=removed\n"
+              "legacy-inline-tv=pending-0C\n"
+              "mobile=protected\n"
+              "updater=protected\n",
+              encoding="utf-8",
+          )
+          
+          print(f"versionName: {old_name} -> {target}")
+          print(f"versionCode: {old_code} -> {new_code}")
+          PY
+
+      - name: Verify updater protection
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/nustrim-tv3-reset0b-r1"
+
+          sha256sum .github/workflows/build.yml > "$DIR/build.after"
+          find app/src/main/java/app/nudroidlabs/nustrim/core/update -type f -print0 \
+            | sort -z | xargs -0 sha256sum > "$DIR/updater.after"
+
+          cmp "$DIR/build.before" "$DIR/build.after"
+          cmp "$DIR/updater.before" "$DIR/updater.after"
+
+          python3 - <<'PY' > "$DIR/build-gradle.normalized.after"
+          from pathlib import Path
+          import re
+          text = Path("app/build.gradle.kts").read_text()
+          text = re.sub(r'versionCode\s*=\s*\d+', 'versionCode = <VERSION_CODE>', text, count=1)
+          text = re.sub(r'versionName\s*=\s*"[^"]+"', 'versionName = "<VERSION_NAME>"', text, count=1)
+          print(text, end="")
+          PY
+
+          cmp "$DIR/build-gradle.normalized.before" "$DIR/build-gradle.normalized.after"
+          echo "PASS: updater/build configuration protected" | tee "$DIR/updater-protection.txt"
+
+      - name: Architecture audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/nustrim-tv3-reset0b-r1"
+          APP="app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt"
+
+          test ! -d app/src/main/java/app/nudroidlabs/nustrim/tv2
+          test ! -d app/src/main/java/app/nudroidlabs/nustrim/tv3
+
+          if grep -R -n -E '\b(Tv2|NustrimTv2)[A-Za-z0-9_]*\b|app\.nudroidlabs\.nustrim\.tv2\.' \
+            app/src/main/java/app/nudroidlabs/nustrim 2>/dev/null; then
+            echo "::error::External TV2 symbol/import remains."
+            exit 1
+          fi
+
+          grep -q 'MobileNavItem(' "$APP"
+          grep -q 'content(false, 0)' "$APP"
+          grep -q 'AppUpdater(context)' "$APP"
+          grep -q 'UpdateSettingsScreen' "$APP"
+          grep -q '^stage=0B$' .nustrim-tv-reset
+          grep -q '^revision=1$' .nustrim-tv-reset
+
+          git diff --check
+
+          {
+            echo "PASS: tv2 package removed"
+            echo "PASS: zero external TV2 references"
+            echo "PASS: Mobile runtime retained"
+            echo "PASS: updater retained"
+            echo
+            echo "[remaining internal legacy TV semantics for Stage 0C]"
+            grep -o -E '\b(Tv[A-Za-z0-9_]+|isTv|rememberIsTv)\b' "$APP" \
+              | sort | uniq -c | sort -nr | head -n 180 || true
+            echo
+            git status --short
+            git diff --stat
+          } > "$DIR/audit.txt"
+
+          cat "$DIR/audit.txt"
+          git diff > "$DIR/stage0b-r1.patch"
+
+      - name: Compile after TV2 deletion
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          gradle --no-daemon --build-cache \
+            :app:compileDebugKotlin \
+            --stacktrace \
+            --console=plain \
+            2>&1 | tee "$RUNNER_TEMP/nustrim-tv3-reset0b-r1/compile.log"
+          code=${PIPESTATUS[0]}
+          set -e
+          if [[ "$code" -ne 0 ]]; then exit "$code"; fi
+
+      - name: Assemble mobile debug APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          gradle --no-daemon --build-cache \
+            :app:assembleDebug \
+            --stacktrace \
+            --console=plain \
+            2>&1 | tee "$RUNNER_TEMP/nustrim-tv3-reset0b-r1/assemble.log"
+          code=${PIPESTATUS[0]}
+          set -e
+          if [[ "$code" -ne 0 ]]; then exit "$code"; fi
+
+      - name: Commit and push
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$RUNNER_TEMP/nustrim-tv3-reset0b-r1/push.log") 2>&1
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+          git diff --cached --check
+
+          if git diff --cached --quiet; then
+            echo "Stage 0B R1 already applied."
+          else
+            git commit -m "refactor(tv): remove external TV2 presentation layer"
+            git fetch --no-tags origin main
+            if ! git merge-base --is-ancestor origin/main HEAD; then
+              git rebase origin/main
+            fi
+            git push origin HEAD:main
+          fi
+
+      - name: Dispatch protected signed updater
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run build.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            -f publish_release=true \
+            2>&1 | tee "$RUNNER_TEMP/nustrim-tv3-reset0b-r1/dispatch.log"
+
+      - name: Compact failure summary
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          DIR="$RUNNER_TEMP/nustrim-tv3-reset0b-r1"
+
+          echo "========== Nustrim TV3 Stage 0B R1 Summary =========="
+          echo "Result: FAILED"
+          grep -m1 'versionName' app/build.gradle.kts 2>/dev/null || true
+
+          for file in preflight.txt cleanup.log tv2-reference-blockers.txt tv2-delete.txt \
+                      metadata.log updater-protection.txt audit.txt push.log dispatch.log; do
+            if [[ -f "$DIR/$file" ]]; then
+              echo
+              echo "[$file]"
+              tail -n 140 "$DIR/$file" || true
+            fi
+          done
+
+          for file in compile.log assemble.log; do
+            if [[ -f "$DIR/$file" ]]; then
+              echo
+              echo "[$file result]"
+              grep -E 'BUILD SUCCESSFUL|BUILD FAILED|(^|[[:space:]])(e:|error:|FAILURE:|Caused by:|Execution failed for task|What went wrong:)' \
+                "$DIR/$file" | tail -n 160 || true
+            fi
+          done
+
+      - name: Upload diagnose
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nustrim-tv3-stage0b-r1-diagnose
+          path: ${{ runner.temp }}/nustrim-tv3-reset0b-r1
+          if-no-files-found: ignore
+          retention-days: 7
