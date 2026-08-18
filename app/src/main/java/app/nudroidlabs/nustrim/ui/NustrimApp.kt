@@ -483,9 +483,6 @@ fun NustrimApp() {
     val sourceEngine = remember(context) { SourceEngine(context) }
     var interfaceMode by remember { mutableStateOf<InterfaceMode?>(InterfaceMode.MOBILE) }
     var developerMode by remember { mutableStateOf(preferences.developerMode) }
-    var remoteTestEnabled by remember {
-        mutableStateOf(preferences.developerMode && preferences.remoteTestEnabled)
-    }
     var screen: Screen by remember { mutableStateOf(Screen.Main(MainSection.HOME)) }
     val activity = context.findActivity()
 
@@ -495,11 +492,11 @@ fun NustrimApp() {
         screen = Screen.Main(MainSection.HOME)
     }
 
-    LaunchedEffect(interfaceMode, screen is Screen.Player) {
-        activity?.requestedOrientation = when {
-            interfaceMode == InterfaceMode.TV || screen is Screen.Player ->
-                ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-            else -> ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+    LaunchedEffect(screen is Screen.Player) {
+        activity?.requestedOrientation = if (screen is Screen.Player) {
+            ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+        } else {
+            ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         }
     }
 
@@ -509,10 +506,6 @@ fun NustrimApp() {
 
     LaunchedEffect(Unit) {
         if (developerMode) sourceStore.ensureDeveloperDefaults()
-        if (!developerMode && preferences.remoteTestEnabled) {
-            preferences.remoteTestEnabled = false
-            remoteTestEnabled = false
-        }
     }
 
     fun openCatalogItem(parent: Screen.Catalog, item: MediaItem) {
@@ -583,11 +576,6 @@ fun NustrimApp() {
                 when (val current = screen) {
                     is Screen.Main -> MainShell(
                         selected = current.section,
-                        remoteTestActive = developerMode && remoteTestEnabled,
-                        onRemoteTestClose = {
-                            preferences.remoteTestEnabled = false
-                            remoteTestEnabled = false
-                        },
                         onSection = { screen = Screen.Main(it) }
                     ) { isTv, contentFocusRequestToken ->
                         when (current.section) {
@@ -631,22 +619,11 @@ fun NustrimApp() {
                                 focusRequestToken = contentFocusRequestToken,
                                 interfaceMode = interfaceMode ?: if (isTv) InterfaceMode.TV else InterfaceMode.MOBILE,
                                 developerMode = developerMode,
-                                remoteTestEnabled = remoteTestEnabled,
                                 onInterfaceMode = { switchInterfaceMode(it) },
                                 onDeveloperMode = { enabled ->
                                     preferences.developerMode = enabled
                                     developerMode = enabled
-                                    if (!enabled) {
-                                        preferences.remoteTestEnabled = false
-                                        remoteTestEnabled = false
-                                    } else {
-                                        sourceStore.ensureDeveloperDefaults()
-                                    }
-                                },
-                                onRemoteTestEnabled = { enabled ->
-                                    val active = enabled && developerMode
-                                    preferences.remoteTestEnabled = active
-                                    remoteTestEnabled = active
+                                    if (enabled) sourceStore.ensureDeveloperDefaults()
                                 },
                                 onAddons = { screen = Screen.Addons(current) },
                                 onDiagnostics = { screen = Screen.DiagnosticsLog(current) }
@@ -655,7 +632,7 @@ fun NustrimApp() {
                     }
 
                     is Screen.Addons -> AddonsScreen(
-                        isTv = rememberIsTv(),
+                        isTv = false,
                         onBack = { screen = current.parent },
                         onDiagnostic = { session, catalog ->
                             screen = Screen.Catalog(session, catalog, current)
@@ -663,13 +640,13 @@ fun NustrimApp() {
                     )
 
                     is Screen.DiagnosticsLog -> DiagnosticsLogScreen(
-                    isTv = rememberIsTv(),
+                    isTv = false,
                     onBack = { screen = current.parent }
                 )
 
 
                 is Screen.Catalog -> DiagnosticCatalogScreen(
-                        isTv = rememberIsTv(),
+                        isTv = false,
                         session = current.session,
                         catalog = current.catalog,
                         onItem = { openCatalogItem(current, it) },
@@ -678,7 +655,7 @@ fun NustrimApp() {
                     )
 
                     is Screen.Detail -> DetailScreen(
-                        isTv = rememberIsTv(),
+                        isTv = false,
                         sourceUrl = current.sourceUrl,
                         session = current.session,
                         item = current.item,
@@ -710,7 +687,7 @@ fun NustrimApp() {
                     )
 
                     is Screen.Player -> PlayerScreen(
-                        isTv = rememberIsTv(),
+                        isTv = false,
                         request = current.request,
                         onBack = { screen = current.parent }
                     )
@@ -730,16 +707,8 @@ fun NustrimApp() {
                     )
                 }
             }
-            val physicalTvDevice = rememberIsPhysicalTv()
             Surface(modifier = Modifier.fillMaxSize(), color = AppBackground) {
-                if (interfaceMode == InterfaceMode.TV && !physicalTvDevice) {
-                    TvReferenceCanvas { screenContent() }
-                } else {
-                    screenContent()
-                }
-            }
-            if (interfaceMode == null) {
-                InterfaceModePicker(onSelect = { switchInterfaceMode(it) })
+                screenContent()
             }
         }
     }
@@ -752,24 +721,6 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
 }
 
 @Composable
-private fun TvReferenceCanvas(content: @Composable () -> Unit) {
-    val outerDensity = LocalDensity.current
-    BoxWithConstraints(
-        modifier = Modifier.fillMaxSize().background(Color.Black),
-        contentAlignment = Alignment.Center
-    ) {
-        val widthPx = with(outerDensity) { maxWidth.toPx() }
-        val heightPx = with(outerDensity) { maxHeight.toPx() }
-        val referenceDensity = minOf(widthPx / 1280f, heightPx / 720f).coerceAtLeast(0.1f)
-        CompositionLocalProvider(LocalDensity provides Density(referenceDensity, fontScale = 1f)) {
-            Box(Modifier.requiredSize(1280.dp, 720.dp)) {
-                content()
-            }
-        }
-    }
-}
-
-@Composable
 private fun rememberIsTv(): Boolean {
     LocalInterfaceMode.current?.let { return it == InterfaceMode.TV }
     val configuration = LocalConfiguration.current
@@ -778,42 +729,8 @@ private fun rememberIsTv(): Boolean {
 }
 
 @Composable
-private fun InterfaceModePicker(onSelect: (InterfaceMode) -> Unit) {
-    AlertDialog(
-        onDismissRequest = {},
-        title = { Text("Choose interface") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Choose the interface for this device.")
-                Text(
-                    "TV mode can be used on a phone and touch remains enabled for testing. Remote focus and D-pad controls stay active in TV mode.",
-                    color = AppTextMuted
-                )
-            }
-        },
-        confirmButton = {
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Button(
-                    onClick = { onSelect(InterfaceMode.MOBILE) },
-                    modifier = Modifier.fillMaxWidth()
-                ) { Text("Mobile") }
-                OutlinedButton(
-                    onClick = { onSelect(InterfaceMode.TV) },
-                    modifier = Modifier.fillMaxWidth()
-                ) { Text("TV") }
-            }
-        }
-    )
-}
-
-@Composable
 private fun MainShell(
     selected: MainSection,
-    remoteTestActive: Boolean,
-    onRemoteTestClose: () -> Unit,
     onSection: (MainSection) -> Unit,
     content: @Composable (Boolean, Int) -> Unit
 ) {
@@ -858,97 +775,6 @@ private fun MainShell(
                 Box(Modifier.fillMaxSize().padding(padding)) { content(false, 0) }
             }
 }
-
-private fun dispatchTvTestKey(activity: Activity?, keyCode: Int) {
-    if (activity == null) return
-    activity.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, keyCode))
-    activity.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_UP, keyCode))
-}
-
-@Composable
-private fun TvTestRemote(
-    activity: Activity?,
-    modifier: Modifier = Modifier,
-    onClose: () -> Unit
-) {
-    Surface(
-        modifier = modifier
-            .width(196.dp)
-            .focusProperties { canFocus = false },
-        shape = RoundedCornerShape(20.dp),
-        color = Color(0xF01A1B20),
-        border = BorderStroke(1.dp, AppAccent.copy(alpha = 0.7f)),
-        tonalElevation = 14.dp
-    ) {
-        Column(Modifier.padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text("Remote test", modifier = Modifier.weight(1f), fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                Text(
-                    "Close",
-                    color = AppTextMuted,
-                    fontSize = 10.sp,
-                    modifier = Modifier
-                        .focusProperties { canFocus = false }
-                        .clip(RoundedCornerShape(8.dp))
-                        .clickable(onClick = onClose)
-                        .padding(horizontal = 8.dp, vertical = 5.dp)
-                )
-            }
-            Spacer(Modifier.height(8.dp))
-            TvTestRemoteKey("↑") { dispatchTvTestKey(activity, KeyEvent.KEYCODE_DPAD_UP) }
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                TvTestRemoteKey("←") { dispatchTvTestKey(activity, KeyEvent.KEYCODE_DPAD_LEFT) }
-                TvTestRemoteKey("OK") { dispatchTvTestKey(activity, KeyEvent.KEYCODE_DPAD_CENTER) }
-                TvTestRemoteKey("→") { dispatchTvTestKey(activity, KeyEvent.KEYCODE_DPAD_RIGHT) }
-            }
-            TvTestRemoteKey("↓") { dispatchTvTestKey(activity, KeyEvent.KEYCODE_DPAD_DOWN) }
-            Spacer(Modifier.height(6.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                TvTestRemoteKey(
-                    label = "Vol−",
-                    modifier = Modifier.weight(1f)
-                ) { dispatchTvTestKey(activity, KeyEvent.KEYCODE_VOLUME_DOWN) }
-                TvTestRemoteKey(
-                    label = "Vol+",
-                    modifier = Modifier.weight(1f)
-                ) { dispatchTvTestKey(activity, KeyEvent.KEYCODE_VOLUME_UP) }
-            }
-            Spacer(Modifier.height(6.dp))
-            TvTestRemoteKey(
-                label = "Back",
-                modifier = Modifier.fillMaxWidth()
-            ) { dispatchTvTestKey(activity, KeyEvent.KEYCODE_BACK) }
-        }
-    }
-}
-
-@Composable
-private fun TvTestRemoteKey(
-    label: String,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit
-) {
-    Box(
-        modifier = modifier
-            .focusProperties { canFocus = false }
-            .widthIn(min = 48.dp)
-            .heightIn(min = 40.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .background(Color(0xFF2A2C32))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Text(label, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-    }
-}
-
 @Composable
 private fun MobileNavItem(
     destination: MainSection,
@@ -986,79 +812,6 @@ private fun MobileNavItem(
     }
 }
 
-@Composable
-private fun TvNavItem(
-    destination: MainSection,
-    selected: Boolean,
-    expanded: Boolean,
-    requester: FocusRequester,
-    onFocusChanged: (Boolean) -> Unit,
-    onMoveRight: () -> Unit,
-    onClick: () -> Unit
-) {
-    var focused by remember { mutableStateOf(false) }
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .focusRequester(requester)
-            .onFocusChanged {
-                focused = it.isFocused
-                onFocusChanged(it.isFocused)
-            }
-            .onPreviewKeyEvent { event ->
-                when {
-                    event.type == KeyEventType.KeyDown && event.key == Key.DirectionRight -> {
-                        onMoveRight()
-                        true
-                    }
-                    else -> consumeTvActivateKey(event, onClick)
-                }
-            }
-            .clickable(onClick = onClick)
-            .focusable(),
-        shape = RoundedCornerShape(28.dp),
-        color = when {
-            focused -> Color(0xFFE9EDF3)
-            selected -> Color(0xFF34373E)
-            else -> Color.Transparent
-        },
-        border = if (focused) BorderStroke(2.dp, Color.White) else null
-    ) {
-        Row(
-            modifier = Modifier.padding(
-                horizontal = if (expanded) 14.dp else 0.dp,
-                vertical = 12.dp
-            ),
-            horizontalArrangement = if (expanded) Arrangement.Start else Arrangement.Center,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(
-                destination.icon,
-                destination.label,
-                modifier = Modifier.size(24.dp),
-                tint = when {
-                    focused -> Color(0xFF181A1F)
-                    selected -> Color.White
-                    else -> Color(0xFFB7BAC2)
-                }
-            )
-            if (expanded) {
-                Spacer(Modifier.width(13.dp))
-                Text(
-                    destination.label,
-                    modifier = Modifier.weight(1f),
-                    fontSize = 16.sp,
-                    fontWeight = if (focused || selected) FontWeight.Bold else FontWeight.Medium,
-                    color = when {
-                        focused -> Color(0xFF181A1F)
-                        selected -> Color.White
-                        else -> Color(0xFFB7BAC2)
-                    }
-                )
-            }
-        }
-    }
-}
 @Composable
 private fun NustrimMark(size: Int) {
     Box(
@@ -1728,109 +1481,6 @@ private fun HomeHeader(
         }
         IconButton(onClick = onAddons) {
             Icon(Icons.Outlined.Source, "Addons")
-        }
-    }
-}
-
-@Composable
-private fun TvFocusDetailsHeader(
-    entry: UiMediaEntry,
-    onOpen: (UiMediaEntry) -> Unit,
-    height: Dp,
-    modifier: Modifier = Modifier
-) {
-    val item = entry.item
-    val artwork = item.backgroundUrl.ifBlank { item.posterUrl }
-    Box(
-        modifier = modifier
-            .fillMaxWidth()
-            .height(height)
-    ) {
-        Artwork(artwork, item.title, Modifier.fillMaxSize(), ContentScale.Crop)
-
-        // TV-first horizontal fade keeps metadata readable without flattening the artwork.
-        Box(
-            Modifier
-                .fillMaxSize()
-                .background(
-                    Brush.horizontalGradient(
-                        colorStops = arrayOf(
-                            0.00f to AppBackground.copy(alpha = 0.98f),
-                            0.20f to AppBackground.copy(alpha = 0.90f),
-                            0.43f to AppBackground.copy(alpha = 0.62f),
-                            0.68f to AppBackground.copy(alpha = 0.16f),
-                            1.00f to Color.Transparent
-                        )
-                    )
-                )
-        )
-
-        // Fade the lower half into the page background so catalog rows can visually
-        // overlap the backdrop without appearing buried behind the hero.
-        Box(
-            Modifier
-                .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        colorStops = arrayOf(
-                            0.00f to Color.Transparent,
-                            0.42f to Color.Transparent,
-                            0.58f to AppBackground.copy(alpha = 0.50f),
-                            0.74f to AppBackground.copy(alpha = 0.92f),
-                            1.00f to AppBackground
-                        )
-                    )
-                )
-        )
-
-        Column(
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .fillMaxWidth(0.43f)
-                .padding(start = 34.dp, end = 18.dp, top = 48.dp)
-        ) {
-            Text(
-                item.title,
-                fontSize = 32.sp,
-                lineHeight = 35.sp,
-                fontWeight = FontWeight.Black,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis
-            )
-            Spacer(Modifier.height(8.dp))
-            Text(
-                listOf(
-                    item.type.name.lowercase().replaceFirstChar { it.uppercase() },
-                    item.releaseInfo
-                ).filter { it.isNotBlank() }.joinToString("  •  "),
-                color = Color(0xFFE3E5EA),
-                fontSize = 13.sp,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            if (item.description.isNotBlank()) {
-                Spacer(Modifier.height(9.dp))
-                Text(
-                    item.description,
-                    color = Color(0xFFC9CBD1),
-                    fontSize = 13.sp,
-                    lineHeight = 18.sp,
-                    maxLines = 3,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-            Spacer(Modifier.height(12.dp))
-            Button(
-                onClick = { onOpen(entry) },
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = Color.White.copy(alpha = 0.96f),
-                    contentColor = Color(0xFF17181C)
-                ),
-                contentPadding = PaddingValues(horizontal = 18.dp, vertical = 7.dp)
-            ) {
-                Text("View Details", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-            }
         }
     }
 }
@@ -2782,82 +2432,6 @@ private fun SearchScreen(
 }
 
 @Composable
-private fun TvSearchFilterPill(
-    label: String,
-    onClick: () -> Unit
-) {
-    var focused by remember { mutableStateOf(false) }
-    Surface(
-        modifier = Modifier
-            .onFocusChanged { focused = it.isFocused }
-            .onPreviewKeyEvent { event ->
-                if (consumeTvActivateKey(event, onClick)) true else false
-            }
-            .clickable(onClick = onClick)
-            .focusable(),
-        shape = RoundedCornerShape(99.dp),
-        color = if (focused) Color.White else AppSurface2,
-        border = BorderStroke(1.dp, if (focused) Color.White else Color.White.copy(alpha = 0.12f))
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 9.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                label,
-                color = if (focused) AppBackground else Color.White,
-                fontWeight = if (focused) FontWeight.Bold else FontWeight.Medium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Spacer(Modifier.width(7.dp))
-            Text("⌄", color = if (focused) AppBackground else AppTextMuted)
-        }
-    }
-}
-
-@Composable
-private fun TvSearchState(title: String, subtitle: String) {
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Icon(Icons.Outlined.Search, null, modifier = Modifier.size(44.dp), tint = AppTextMuted)
-            Spacer(Modifier.height(12.dp))
-            Text(title, fontSize = 21.sp, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(4.dp))
-            Text(subtitle, color = AppTextMuted, fontSize = 13.sp)
-        }
-    }
-}
-
-@Composable
-private fun TvSearchMediaGrid(
-    entries: List<UiMediaEntry>,
-    firstFocusRequester: FocusRequester,
-    onOpen: (UiMediaEntry) -> Unit
-) {
-    LazyVerticalGrid(
-        columns = GridCells.Adaptive(132.dp),
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 32.dp, end = 32.dp, top = 8.dp, bottom = 28.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalArrangement = Arrangement.spacedBy(18.dp)
-    ) {
-        items(
-            entries,
-            key = { "tv-search:${it.sourceUrl}:${it.item.ref?.mediaType}:${it.item.id}" }
-        ) { entry ->
-            val isFirst = entry === entries.firstOrNull()
-            HomePosterCard(
-                item = entry.item,
-                isTv = true,
-                requester = if (isFirst) firstFocusRequester else null,
-                onClick = { onOpen(entry) }
-            )
-        }
-    }
-}
-
-@Composable
 private fun DiscoverFilterButton(
     label: String,
     onClick: () -> Unit
@@ -3141,50 +2715,6 @@ private fun LibraryScreen(
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun TvLibraryControl(
-    label: String,
-    selected: Boolean,
-    enabled: Boolean = true,
-    requester: FocusRequester? = null,
-    onMoveLeft: (() -> Boolean)? = null,
-    onClick: () -> Unit
-) {
-    var focused by remember { mutableStateOf(false) }
-    Surface(
-        modifier = Modifier
-            .then(requester?.let { Modifier.focusRequester(it) } ?: Modifier)
-            .graphicsLayer(alpha = if (enabled) 1f else 0.45f)
-            .onFocusChanged { focused = it.isFocused }
-            .onPreviewKeyEvent { event ->
-                when {
-                    enabled && consumeTvActivateKey(event, onClick) -> true
-                    event.type == KeyEventType.KeyDown && event.key == Key.DirectionLeft -> onMoveLeft?.invoke() ?: false
-                    else -> false
-                }
-            }
-            .then(if (enabled) Modifier.clickable(onClick = onClick).focusable() else Modifier),
-        shape = RoundedCornerShape(99.dp),
-        color = when {
-            focused -> Color.White
-            selected -> AppAccentSoft
-            else -> AppSurface2
-        },
-        border = when {
-            focused -> BorderStroke(2.dp, Color.White)
-            selected -> BorderStroke(1.dp, AppAccent)
-            else -> BorderStroke(1.dp, Color.White.copy(alpha = 0.10f))
-        }
-    ) {
-        Text(
-            label,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 9.dp),
-            color = if (focused) AppBackground else Color.White,
-            fontWeight = if (focused || selected) FontWeight.Bold else FontWeight.Medium
-        )
     }
 }
 
@@ -4040,10 +3570,8 @@ private fun SettingsScreen(
     focusRequestToken: Int = 0,
     interfaceMode: InterfaceMode,
     developerMode: Boolean,
-    remoteTestEnabled: Boolean,
     onInterfaceMode: (InterfaceMode) -> Unit,
     onDeveloperMode: (Boolean) -> Unit,
-    onRemoteTestEnabled: (Boolean) -> Unit,
     onAddons: () -> Unit,
     onDiagnostics: () -> Unit
 ) {
@@ -4151,10 +3679,8 @@ private fun SettingsScreen(
         SettingsPage.DEVELOPER -> DeveloperSettingsScreen(
             isTv = isTv,
             developerMode = developerMode,
-            remoteTestEnabled = remoteTestEnabled,
             diagnostics = diagnostics,
             onDeveloperMode = onDeveloperMode,
-            onRemoteTestEnabled = onRemoteTestEnabled,
             onDiagnostics = { diagnostics = it },
             onOpenDiagnostics = onDiagnostics,
             onBack = { page = SettingsPage.ROOT }
@@ -4249,50 +3775,6 @@ private fun SettingsRootScreen(
         }
     }
 }
-@Composable
-private fun TvSettingsOpenButton(
-    requester: FocusRequester,
-    onMoveLeft: () -> Boolean,
-    onClick: () -> Unit
-) {
-    var focused by remember { mutableStateOf(false) }
-    Surface(
-        modifier = Modifier
-            .width(210.dp)
-            .focusRequester(requester)
-            .onFocusChanged { focused = it.isFocused }
-            .onPreviewKeyEvent { event ->
-                when {
-                    consumeTvActivateKey(event, onClick) -> true
-                    event.type == KeyEventType.KeyDown && event.key == Key.DirectionLeft -> onMoveLeft()
-                    else -> false
-                }
-            }
-            .clickable(onClick = onClick)
-            .focusable(),
-        shape = RoundedCornerShape(14.dp),
-        color = if (focused) Color.White else AppSurface2,
-        border = BorderStroke(1.dp, if (focused) Color.White else Color.White.copy(alpha = 0.12f))
-    ) {
-        Row(
-            Modifier.padding(horizontal = 18.dp, vertical = 13.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                "Open settings",
-                modifier = Modifier.weight(1f),
-                color = if (focused) AppBackground else Color.White,
-                fontWeight = FontWeight.Bold
-            )
-            Icon(
-                Icons.Outlined.KeyboardArrowRight,
-                null,
-                tint = if (focused) AppBackground else AppTextMuted
-            )
-        }
-    }
-}
-
 @Composable
 private fun TrackingSettingsScreen(
     isTv: Boolean,
@@ -5466,10 +4948,8 @@ private fun LocalDataSettingsScreen(
 private fun DeveloperSettingsScreen(
     isTv: Boolean,
     developerMode: Boolean,
-    remoteTestEnabled: Boolean,
     diagnostics: Boolean,
     onDeveloperMode: (Boolean) -> Unit,
-    onRemoteTestEnabled: (Boolean) -> Unit,
     onDiagnostics: (Boolean) -> Unit,
     onOpenDiagnostics: () -> Unit,
     onBack: () -> Unit
@@ -5495,12 +4975,7 @@ private fun DeveloperSettingsScreen(
                     onChecked = { enabled ->
                         preferences.developerMode = enabled
                         onDeveloperMode(enabled)
-                        if (enabled) {
-                            store.ensureDeveloperDefaults()
-                        } else {
-                            preferences.remoteTestEnabled = false
-                            onRemoteTestEnabled(false)
-                        }
+                        if (enabled) store.ensureDeveloperDefaults()
                     }
                 )
                 SettingsGroupDivider()
@@ -5515,17 +4990,6 @@ private fun DeveloperSettingsScreen(
                     }
                 )
                 if (developerMode) {
-                    SettingsGroupDivider()
-                    SettingsSwitchRow(
-                        icon = Icons.Outlined.Tv,
-                        title = "Remote Test",
-                        subtitle = "Show the floating TV test remote. Touch input is blocked while active.",
-                        checked = remoteTestEnabled,
-                        onChecked = { enabled ->
-                            preferences.remoteTestEnabled = enabled
-                            onRemoteTestEnabled(enabled)
-                        }
-                    )
                     SettingsGroupDivider()
                     SettingsNavigationRow(
                         icon = Icons.Outlined.Info,
@@ -6950,609 +6414,6 @@ private fun streamSourceStableKey(source: StreamSource): String =
     "${source.providerId}|${source.url}|${source.name}|${source.headers.hashCode()}"
 
 @Composable
-private fun TvStreamSourcePickerDialog(
-    title: String,
-    item: MediaItem,
-    episode: MediaEpisode?,
-    resumePositionMs: Long,
-    streams: List<StreamSource>,
-    providerProgress: List<StreamProviderProgress>,
-    loading: Boolean,
-    progress: String,
-    error: String,
-    onDismiss: () -> Unit,
-    onRefresh: () -> Unit,
-    onSelect: (StreamSource) -> Unit
-) {
-    BackHandler(onBack = onDismiss)
-    val sortedStreams = remember(streams) {
-        streams.sortedWith(
-            compareBy<StreamSource> { it.providerName.lowercase() }
-                .thenBy { it.name.lowercase() }
-        )
-    }
-    val activeProviderStates = remember(providerProgress) {
-        providerProgress
-            .filter { it.loading || it.hasSources || it.failed }
-            .groupBy { it.name.ifBlank { "Other" } }
-            .mapValues { (_, states) ->
-                states.reduce { a, b ->
-                    a.copy(
-                        loading = a.loading || b.loading,
-                        hasSources = a.hasSources || b.hasSources,
-                        failed = a.failed && b.failed
-                    )
-                }
-            }
-    }
-    val providers = remember(sortedStreams, activeProviderStates) {
-        listOf("All") + (
-            sortedStreams.map { it.providerName.ifBlank { "Other" } } + activeProviderStates.keys
-        ).distinct().sorted()
-    }
-    var selectedProvider by remember { mutableStateOf("All") }
-    LaunchedEffect(providers) {
-        if (selectedProvider !in providers) selectedProvider = "All"
-    }
-    val visibleStreams = remember(sortedStreams, selectedProvider) {
-        if (selectedProvider == "All") sortedStreams
-        else sortedStreams.filter { it.providerName.ifBlank { "Other" } == selectedProvider }
-    }
-
-    val cancelRequester = remember { FocusRequester() }
-    val refreshRequester = remember { FocusRequester() }
-    val retryRequester = remember { FocusRequester() }
-    val providerRequesters = remember(providers) { List(providers.size) { FocusRequester() } }
-    val sourceKeys = remember(visibleStreams) { visibleStreams.map(::streamSourceStableKey) }
-    val sourceRequesters = remember(sourceKeys) { List(sourceKeys.size) { FocusRequester() } }
-    var wasLoading by remember { mutableStateOf(loading) }
-    var completedLoadFocusHandled by remember { mutableStateOf(false) }
-
-    val selectedProviderIndex = providers.indexOf(selectedProvider).coerceAtLeast(0)
-    fun controlDownTarget(): FocusRequester? = when {
-        providers.size > 1 -> providerRequesters.getOrNull(selectedProviderIndex)
-        sourceRequesters.isNotEmpty() -> sourceRequesters.firstOrNull()
-        error.isNotBlank() && !loading -> retryRequester
-        else -> cancelRequester
-    }
-    fun listUpTarget(): FocusRequester? =
-        if (providers.size > 1) providerRequesters.getOrNull(selectedProviderIndex) else cancelRequester
-
-    val episodeCode = episode?.let { ep ->
-        when {
-            ep.season != null && ep.episode != null -> "S${ep.season} E${ep.episode}"
-            else -> ""
-        }
-    }.orEmpty()
-    val heroTitle = episode?.title?.ifBlank { item.title } ?: item.title
-    val artwork = item.backgroundUrl.ifBlank { item.posterUrl }
-
-    LaunchedEffect(Unit) {
-        delay(120)
-        when {
-            visibleStreams.isNotEmpty() -> requestTvFocus(sourceRequesters.firstOrNull())
-            error.isNotBlank() && !loading -> requestTvFocus(retryRequester)
-            else -> requestTvFocus(cancelRequester)
-        }
-    }
-    LaunchedEffect(loading, visibleStreams.size, selectedProvider) {
-        if (wasLoading && !loading && visibleStreams.isNotEmpty() && !completedLoadFocusHandled) {
-            completedLoadFocusHandled = true
-            delay(80)
-            requestTvFocus(sourceRequesters.firstOrNull())
-        }
-        if (loading) completedLoadFocusHandled = false
-        wasLoading = loading
-    }
-
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.64f)),
-            contentAlignment = Alignment.Center
-        ) {
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth(0.88f)
-                    .fillMaxHeight(0.86f)
-                    .widthIn(max = 1040.dp),
-                shape = RoundedCornerShape(24.dp),
-                color = Color(0xFA14161A),
-                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.20f)),
-                tonalElevation = 24.dp
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .focusGroup()
-                ) {
-                    // M10 Stage 4: compact media context on the left, source surface on the right.
-                    Box(
-                        modifier = Modifier
-                            .fillMaxHeight()
-                            .weight(0.34f)
-                            .clip(RoundedCornerShape(topStart = 24.dp, bottomStart = 24.dp))
-                    ) {
-                        Artwork(artwork, heroTitle, Modifier.fillMaxSize(), ContentScale.Crop)
-                        Box(
-                            Modifier
-                                .fillMaxSize()
-                                .background(
-                                    Brush.verticalGradient(
-                                        listOf(
-                                            Color.Black.copy(alpha = 0.18f),
-                                            Color.Black.copy(alpha = 0.52f),
-                                            Color(0xFF14161A)
-                                        )
-                                    )
-                                )
-                        )
-                        Column(
-                            modifier = Modifier
-                                .align(Alignment.BottomStart)
-                                .padding(24.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            if (episodeCode.isNotBlank()) {
-                                Text(episodeCode, color = Color.White.copy(alpha = 0.86f), fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                            }
-                            Text(heroTitle, color = Color.White, fontSize = 25.sp, fontWeight = FontWeight.Black, maxLines = 3, overflow = TextOverflow.Ellipsis)
-                            if (episode != null) {
-                                Text(item.title, color = Color.White.copy(alpha = 0.68f), fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                            }
-                            if (resumePositionMs > 8_000L) {
-                                Text(
-                                    "Resume from ${formatPlaybackTime(resumePositionMs)}",
-                                    color = Color.White.copy(alpha = 0.82f),
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                            }
-                        }
-                    }
-
-                    Column(
-                        modifier = Modifier
-                            .fillMaxHeight()
-                            .weight(0.66f)
-                            .padding(start = 24.dp, end = 24.dp, top = 22.dp, bottom = 20.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(Modifier.weight(1f)) {
-                                Text("Choose source", fontSize = 24.sp, fontWeight = FontWeight.Black)
-                                Text(
-                                    if (loading) progress.ifBlank { "Finding playable sources..." }
-                                    else "${visibleStreams.size} playable source${if (visibleStreams.size == 1) "" else "s"}",
-                                    color = AppTextMuted,
-                                    fontSize = 12.sp
-                                )
-                            }
-                            TvSourcePickerControl(
-                                label = "Refresh",
-                                icon = Icons.Outlined.Refresh,
-                                requester = refreshRequester,
-                                enabled = !loading,
-                                onClick = onRefresh,
-                                onLeft = { requestTvFocus(cancelRequester) },
-                                onRight = { requestTvFocus(cancelRequester) },
-                                onDown = { requestTvFocus(controlDownTarget()) }
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            TvSourcePickerControl(
-                                label = "Close",
-                                icon = Icons.AutoMirrored.Outlined.ArrowBack,
-                                requester = cancelRequester,
-                                onClick = onDismiss,
-                                onLeft = { requestTvFocus(refreshRequester) },
-                                onRight = { requestTvFocus(refreshRequester) },
-                                onDown = { requestTvFocus(controlDownTarget()) }
-                            )
-                        }
-
-                        if (providers.size > 1) {
-                            LazyRow(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                contentPadding = PaddingValues(horizontal = 2.dp, vertical = 2.dp)
-                            ) {
-                                items(providers.indices.toList(), key = { providers[it] }) { index ->
-                                    val provider = providers[index]
-                                    val state = activeProviderStates[provider]
-                                    TvSourceFilterChip(
-                                        label = provider,
-                                        selected = selectedProvider == provider,
-                                        loading = state?.loading == true,
-                                        failed = state?.let { it.failed && !it.hasSources } == true,
-                                        requester = providerRequesters[index],
-                                        onClick = { selectedProvider = provider },
-                                        onLeft = {
-                                            requestTvFocus(providerRequesters.getOrNull((index - 1).coerceAtLeast(0)))
-                                        },
-                                        onRight = {
-                                            requestTvFocus(providerRequesters.getOrNull((index + 1).coerceAtMost(providerRequesters.lastIndex)))
-                                        },
-                                        onUp = { requestTvFocus(cancelRequester) },
-                                        onDown = {
-                                            if (visibleStreams.isNotEmpty()) requestTvFocus(sourceRequesters.firstOrNull())
-                                            else if (error.isNotBlank() && !loading) requestTvFocus(retryRequester)
-                                        }
-                                    )
-                                }
-                            }
-                        }
-
-                        if (loading) {
-                            Surface(
-                                modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(14.dp),
-                                color = Color.White.copy(alpha = 0.055f)
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 11.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                                    Spacer(Modifier.width(10.dp))
-                                    Text(progress.ifBlank { "Finding playable sources..." }, color = Color(0xFFD5D7DD), fontSize = 12.sp)
-                                }
-                            }
-                        }
-
-                        if (error.isNotBlank() && visibleStreams.isNotEmpty()) {
-                            Surface(
-                                modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(14.dp),
-                                color = Color(0xFF321F24),
-                                border = BorderStroke(1.dp, Color(0xFFFF9EA8).copy(alpha = 0.35f))
-                            ) {
-                                Text(
-                                    error,
-                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                                    color = Color(0xFFFFC0C6),
-                                    fontSize = 12.sp,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                        }
-
-                        Surface(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .weight(1f),
-                            shape = RoundedCornerShape(18.dp),
-                            color = Color.White.copy(alpha = 0.045f),
-                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.07f))
-                        ) {
-                            when {
-                                !loading && visibleStreams.isEmpty() && error.isNotBlank() -> {
-                                    TvSourcePickerState(
-                                        title = "Could not load sources",
-                                        message = error,
-                                        actionLabel = "Retry",
-                                        requester = retryRequester,
-                                        onAction = onRefresh,
-                                        onUp = { requestTvFocus(listUpTarget()) }
-                                    )
-                                }
-                                !loading && visibleStreams.isEmpty() -> {
-                                    TvSourcePickerState(
-                                        title = "No playable sources",
-                                        message = "The enabled addons did not return a playable source.",
-                                        actionLabel = "Try again",
-                                        requester = retryRequester,
-                                        onAction = onRefresh,
-                                        onUp = { requestTvFocus(listUpTarget()) }
-                                    )
-                                }
-                                visibleStreams.isEmpty() -> {
-                                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                            CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 2.dp)
-                                            Spacer(Modifier.height(12.dp))
-                                            Text("Waiting for sources...", color = AppTextMuted, fontSize = 13.sp)
-                                        }
-                                    }
-                                }
-                                else -> {
-                                    LazyColumn(
-                                        modifier = Modifier.fillMaxSize(),
-                                        contentPadding = PaddingValues(12.dp),
-                                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                                    ) {
-                                        items(visibleStreams.indices.toList(), key = { sourceKeys[it] }) { index ->
-                                            TvStreamSourcePickerRow(
-                                                source = visibleStreams[index],
-                                                requester = sourceRequesters[index],
-                                                onSelect = onSelect,
-                                                onUp = {
-                                                    if (index > 0) requestTvFocus(sourceRequesters[index - 1])
-                                                    else requestTvFocus(listUpTarget())
-                                                },
-                                                onDown = {
-                                                    requestTvFocus(sourceRequesters.getOrNull((index + 1).coerceAtMost(sourceRequesters.lastIndex)))
-                                                }
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun TvSourcePickerControl(
-    label: String,
-    icon: ImageVector,
-    requester: FocusRequester,
-    enabled: Boolean = true,
-    onClick: () -> Unit,
-    onLeft: () -> Unit,
-    onRight: () -> Unit,
-    onDown: () -> Unit
-) {
-    var focused by remember { mutableStateOf(false) }
-    Surface(
-        modifier = Modifier
-            .focusRequester(requester)
-            .onFocusChanged { focused = it.isFocused }
-            .onPreviewKeyEvent { event ->
-                when {
-                    event.type == KeyEventType.KeyDown && event.key == Key.DirectionLeft -> { onLeft(); true }
-                    event.type == KeyEventType.KeyDown && event.key == Key.DirectionRight -> { onRight(); true }
-                    event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown -> { onDown(); true }
-                    enabled && isTvActivateKey(event) && event.type == KeyEventType.KeyDown -> true
-                    enabled && isTvActivateKey(event) && event.type == KeyEventType.KeyUp -> { onClick(); true }
-                    else -> false
-                }
-            }
-            .clickable(enabled = enabled, onClick = onClick)
-            .focusable(enabled),
-        shape = RoundedCornerShape(14.dp),
-        color = when {
-            !enabled -> Color.White.copy(alpha = 0.04f)
-            focused -> Color.White
-            else -> Color.White.copy(alpha = 0.08f)
-        },
-        border = if (focused) BorderStroke(2.dp, Color.White) else BorderStroke(1.dp, Color.White.copy(alpha = 0.08f))
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(icon, null, Modifier.size(18.dp), tint = if (focused) Color(0xFF17191E) else if (enabled) Color.White else AppTextMuted)
-            Spacer(Modifier.width(7.dp))
-            Text(label, color = if (focused) Color(0xFF17191E) else if (enabled) Color.White else AppTextMuted, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-        }
-    }
-}
-
-@Composable
-private fun TvSourceFilterChip(
-    label: String,
-    selected: Boolean,
-    loading: Boolean,
-    failed: Boolean,
-    requester: FocusRequester,
-    onClick: () -> Unit,
-    onLeft: () -> Unit,
-    onRight: () -> Unit,
-    onUp: () -> Unit,
-    onDown: () -> Unit
-) {
-    var focused by remember(label) { mutableStateOf(false) }
-    Surface(
-        modifier = Modifier
-            .focusRequester(requester)
-            .onFocusChanged { focused = it.isFocused }
-            .onPreviewKeyEvent { event ->
-                when {
-                    event.type == KeyEventType.KeyDown && event.key == Key.DirectionLeft -> { onLeft(); true }
-                    event.type == KeyEventType.KeyDown && event.key == Key.DirectionRight -> { onRight(); true }
-                    event.type == KeyEventType.KeyDown && event.key == Key.DirectionUp -> { onUp(); true }
-                    event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown -> { onDown(); true }
-                    isTvActivateKey(event) && event.type == KeyEventType.KeyDown -> true
-                    isTvActivateKey(event) && event.type == KeyEventType.KeyUp -> { onClick(); true }
-                    else -> false
-                }
-            }
-            .clickable(onClick = onClick)
-            .focusable(),
-        shape = RoundedCornerShape(18.dp),
-        color = when {
-            focused -> Color.White
-            selected -> AppAccentSoft
-            else -> Color.White.copy(alpha = 0.07f)
-        },
-        border = when {
-            focused -> BorderStroke(2.dp, Color.White)
-            selected -> BorderStroke(1.dp, Color.White.copy(alpha = 0.28f))
-            else -> BorderStroke(1.dp, Color.White.copy(alpha = 0.06f))
-        }
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 13.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                label,
-                color = if (focused) Color(0xFF17191E) else if (failed) Color(0xFFFFB7BC) else Color.White,
-                fontSize = 12.sp,
-                fontWeight = if (selected || focused) FontWeight.Bold else FontWeight.Medium
-            )
-            if (loading) {
-                Spacer(Modifier.width(7.dp))
-                CircularProgressIndicator(
-                    Modifier.size(12.dp),
-                    strokeWidth = 1.5.dp,
-                    color = if (focused) Color(0xFF17191E) else Color.White
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun TvSourcePickerState(
-    title: String,
-    message: String,
-    actionLabel: String,
-    requester: FocusRequester,
-    onAction: () -> Unit,
-    onUp: () -> Unit
-) {
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Column(
-            modifier = Modifier.fillMaxWidth(0.76f),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            Icon(Icons.Outlined.Source, null, Modifier.size(34.dp), tint = AppTextMuted)
-            Text(title, fontSize = 18.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
-            Text(message, color = AppTextMuted, fontSize = 12.sp, textAlign = TextAlign.Center, maxLines = 4, overflow = TextOverflow.Ellipsis)
-            Spacer(Modifier.height(4.dp))
-            var focused by remember { mutableStateOf(false) }
-            Surface(
-                modifier = Modifier
-                    .focusRequester(requester)
-                    .onFocusChanged { focused = it.isFocused }
-                    .onPreviewKeyEvent { event ->
-                        when {
-                            event.type == KeyEventType.KeyDown && event.key == Key.DirectionUp -> { onUp(); true }
-                            event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown -> true
-                            event.type == KeyEventType.KeyDown && (event.key == Key.DirectionLeft || event.key == Key.DirectionRight) -> true
-                            isTvActivateKey(event) && event.type == KeyEventType.KeyDown -> true
-                            isTvActivateKey(event) && event.type == KeyEventType.KeyUp -> { onAction(); true }
-                            else -> false
-                        }
-                    }
-                    .clickable(onClick = onAction)
-                    .focusable(),
-                shape = RoundedCornerShape(14.dp),
-                color = if (focused) Color.White else AppAccentSoft,
-                border = if (focused) BorderStroke(2.dp, Color.White) else BorderStroke(1.dp, Color.White.copy(alpha = 0.18f))
-            ) {
-                Text(
-                    actionLabel,
-                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 11.dp),
-                    color = if (focused) Color(0xFF17191E) else Color.White,
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun TvStreamSourcePickerRow(
-    source: StreamSource,
-    requester: FocusRequester,
-    onSelect: (StreamSource) -> Unit,
-    onUp: () -> Unit,
-    onDown: () -> Unit
-) {
-    var focused by remember(streamSourceStableKey(source)) { mutableStateOf(false) }
-    val scale by animateFloatAsState(
-        targetValue = if (focused) 1.012f else 1f,
-        animationSpec = tween(110),
-        label = "tv_source_row_scale"
-    )
-    val selectSource = { onSelect(source) }
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .graphicsLayer { scaleX = scale; scaleY = scale }
-            .focusRequester(requester)
-            .onFocusChanged { focused = it.isFocused }
-            .onPreviewKeyEvent { event ->
-                when {
-                    event.type == KeyEventType.KeyDown && event.key == Key.DirectionUp -> { onUp(); true }
-                    event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown -> { onDown(); true }
-                    event.type == KeyEventType.KeyDown && (event.key == Key.DirectionLeft || event.key == Key.DirectionRight) -> true
-                    isTvActivateKey(event) && event.type == KeyEventType.KeyDown -> true
-                    isTvActivateKey(event) && event.type == KeyEventType.KeyUp -> { selectSource(); true }
-                    else -> false
-                }
-            }
-            .clickable(onClick = selectSource)
-            .focusable(),
-        shape = RoundedCornerShape(14.dp),
-        color = if (focused) Color.White else Color(0xFF22252B),
-        border = if (focused) BorderStroke(2.dp, Color.White) else BorderStroke(1.dp, Color.White.copy(alpha = 0.06f))
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(40.dp)
-                    .background(if (focused) Color(0xFF1B1D22) else AppAccentSoft, RoundedCornerShape(10.dp)),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(Icons.Outlined.PlayArrow, null, tint = Color.White)
-            }
-            Spacer(Modifier.width(12.dp))
-            Column(Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        source.providerName.ifBlank { "Stream" },
-                        color = if (focused) Color(0xFF17191E) else Color.White,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 15.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f)
-                    )
-                    Text(
-                        source.type.uppercase(),
-                        color = if (focused) Color(0xFF555A63) else AppTextMuted,
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-                if (source.name.isNotBlank() && source.name != source.providerName) {
-                    Text(
-                        source.name,
-                        color = if (focused) Color(0xFF343840) else Color(0xFFD8D9DE),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        fontSize = 13.sp
-                    )
-                }
-                val meta = buildList {
-                    if (source.subtitles.isNotEmpty()) add("${source.subtitles.size} subtitles")
-                    if (source.note.isNotBlank()) add(source.note)
-                }.joinToString(" · ")
-                if (meta.isNotBlank()) {
-                    Text(
-                        meta,
-                        color = if (focused) Color(0xFF656A73) else AppTextMuted,
-                        fontSize = 11.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
 private fun MobileStreamSourcePicker(
     title: String,
     item: MediaItem,
@@ -8180,142 +7041,6 @@ private fun TvDetailIconAction(
                 tint = if (focused) Color(0xFF16171A) else if (selected) Color.White else Color(0xFFE7E8EC),
                 modifier = Modifier.size(21.dp)
             )
-        }
-    }
-}
-
-@Composable
-private fun TvSeasonPill(
-    label: String,
-    selected: Boolean,
-    focusRequester: FocusRequester,
-    onFocused: () -> Unit,
-    onClick: () -> Unit
-) {
-    var focused by remember { mutableStateOf(false) }
-    Surface(
-        modifier = Modifier
-            .focusRequester(focusRequester)
-            .onFocusChanged {
-                focused = it.isFocused
-                if (it.isFocused) onFocused()
-            }
-            .onPreviewKeyEvent { event -> consumeTvActivateKey(event, onClick) }
-            .clickable(onClick = onClick)
-            .focusable(),
-        shape = RoundedCornerShape(22.dp),
-        color = when {
-            focused -> Color(0xFFE8EAF0)
-            selected -> Color(0xFF353840)
-            else -> AppSurface
-        },
-        border = if (focused) BorderStroke(2.dp, Color.White) else if (selected) BorderStroke(1.dp, Color.White.copy(alpha = 0.24f)) else null
-    ) {
-        Text(
-            label,
-            modifier = Modifier.padding(horizontal = 18.dp, vertical = 9.dp),
-            color = if (focused) Color(0xFF17181B) else Color.White,
-            fontWeight = if (selected || focused) FontWeight.Bold else FontWeight.Medium,
-            fontSize = 14.sp
-        )
-    }
-}
-
-@Composable
-private fun TvEpisodeCard(
-    episode: MediaEpisode,
-    selected: Boolean,
-    progressFraction: Float,
-    resumePositionMs: Long,
-    focusRequester: FocusRequester,
-    upFocusRequester: FocusRequester?,
-    onFocused: () -> Unit,
-    onClick: () -> Unit
-) {
-    var focused by remember { mutableStateOf(false) }
-    val scale by animateFloatAsState(
-        targetValue = if (focused) 1.035f else 1f,
-        animationSpec = tween(150),
-        label = "detailEpisodeFocus"
-    )
-    Surface(
-        modifier = Modifier
-            .width(258.dp)
-            .graphicsLayer { scaleX = scale; scaleY = scale }
-            .zIndex(if (focused) 1f else 0f)
-            .focusRequester(focusRequester)
-            .then(
-                if (upFocusRequester != null) Modifier.focusProperties { up = upFocusRequester }
-                else Modifier
-            )
-            .onFocusChanged {
-                focused = it.isFocused
-                if (it.isFocused) onFocused()
-            }
-            .onPreviewKeyEvent { event -> consumeTvActivateKey(event, onClick) }
-            .clickable(onClick = onClick)
-            .focusable(),
-        shape = RoundedCornerShape(14.dp),
-        color = if (selected) Color(0xFF252831) else AppSurface,
-        border = when {
-            focused -> BorderStroke(2.dp, Color.White)
-            selected -> BorderStroke(1.dp, AppAccent)
-            else -> BorderStroke(1.dp, Color.White.copy(alpha = 0.08f))
-        }
-    ) {
-        Column {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(16f / 9f)
-                    .background(AppSurface2)
-            ) {
-                Artwork(episode.thumbnailUrl, episode.displayTitle, Modifier.fillMaxSize(), ContentScale.Crop)
-                if (progressFraction > 0f) {
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.BottomStart)
-                            .fillMaxWidth()
-                            .height(4.dp)
-                            .background(Color.Black.copy(alpha = 0.42f))
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth(progressFraction.coerceIn(0f, 1f))
-                                .fillMaxHeight()
-                                .background(Color.White)
-                        )
-                    }
-                }
-            }
-            Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
-                Text(
-                    episode.displayTitle,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 14.sp,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                if (resumePositionMs > 0L) {
-                    Spacer(Modifier.height(3.dp))
-                    Text(
-                        "Resume ${formatPlaybackTime(resumePositionMs)}",
-                        color = Color(0xFFD9D0FF),
-                        fontSize = 11.sp,
-                        maxLines = 1
-                    )
-                } else if (episode.overview.isNotBlank()) {
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        episode.overview,
-                        color = AppTextMuted,
-                        fontSize = 11.sp,
-                        lineHeight = 15.sp,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            }
         }
     }
 }
