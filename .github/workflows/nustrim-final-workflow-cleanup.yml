@@ -1,0 +1,246 @@
+name: Nustrim Final Workflow Cleanup
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nustrim-final-workflow-cleanup
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Sync exact main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          git checkout -B main origin/main
+          git reset --hard origin/main
+
+      - name: Protect permanent workflows and app tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/nustrim-final-workflow-cleanup"
+          mkdir -p "$DIR"
+
+          test -f .github/workflows/build.yml
+          test -f .github/workflows/nustrim-clean-bootstrap-rc27.yml
+          test -d app
+
+          sha256sum .github/workflows/build.yml > "$DIR/build.before"
+          sha256sum .github/workflows/nustrim-clean-bootstrap-rc27.yml > "$DIR/bootstrap.before"
+
+          find app -type f -print0 | sort -z | xargs -0 sha256sum > "$DIR/app.before"
+
+          echo "PASS: protected baseline captured"
+
+      - name: Delete exact obsolete workflow allowlist
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/nustrim-final-workflow-cleanup"
+
+          files=(
+            ".github/workflows/nustrim-m11-tv2-stage1-clean-foundation.yml"
+            ".github/workflows/nustrim-m11-tv2-stage2-home-r2.yml"
+            ".github/workflows/nustrim-m11-tv2-stage2-home-r3.yml"
+            ".github/workflows/nustrim-m11-tv2-stage2-home-r4.yml"
+            ".github/workflows/nustrim-m11-tv2-stage2-home-r5.yml"
+            ".github/workflows/nustrim-m11-tv2-stage2-home-r6.yml"
+            ".github/workflows/nustrim-m11-tv2-stage2-home-r7.yml"
+            ".github/workflows/nustrim-m11-tv2-stage2-home-r8.yml"
+            ".github/workflows/nustrim-m11-tv2-stage2-home.yml"
+            ".github/workflows/nustrim-m11-tv2-stage3-details-r1.yml"
+            ".github/workflows/nustrim-m11-tv2-stage3-details.yml"
+            ".github/workflows/nustrim-m11-tv2-stage4-sources-r1.yml"
+            ".github/workflows/nustrim-m11-tv2-stage4-sources-r2.yml"
+            ".github/workflows/nustrim-m11-tv2-stage4-sources.yml"
+            ".github/workflows/nustrim-m11-tv2-stage5-player.yml"
+            ".github/workflows/nustrim-m11-tv2-stage6-workspaces.yml"
+            ".github/workflows/nustrim-m11-tv2-stage7-regression-rc.yml"
+            ".github/workflows/nustrim-tv2-navigation-home-fix-2.yml"
+            ".github/workflows/nustrim-tv2-sidebar-fix-1-r1.yml"
+            ".github/workflows/nustrim-tv2-sidebar-fix-1-r2.yml"
+            ".github/workflows/nustrim-tv2-sidebar-fix-1-r3.yml"
+            ".github/workflows/nustrim-tv2-sidebar-fix-1-r4.yml"
+            ".github/workflows/nustrim-tv2-sidebar-fix-1-r5.yml"
+            ".github/workflows/nustrim-tv2-sidebar-fix-1.yml"
+            ".github/workflows/nustrim-tv2-stage1-r1-workflow.zip"
+            ".github/workflows/nustrim-tv3-final-cleanup-audit.yml"
+            ".github/workflows/nustrim-tv3-purge-source-snapshot.yml"
+            ".github/workflows/nustrim-tv3-stage0-purge.yml"
+            ".github/workflows/nustrim-tv3-stage0a-mobile-quarantine-r1.yml"
+            ".github/workflows/nustrim-tv3-stage0a-mobile-quarantine-r2.yml"
+            ".github/workflows/nustrim-tv3-stage0a-mobile-quarantine.yml"
+            ".github/workflows/nustrim-tv3-stage0b-dead-tv-cleanup-r1.yml"
+            ".github/workflows/nustrim-tv3-stage0b-dead-tv-cleanup.yml"
+            ".github/workflows/nustrim-tv3-stage0b-exact-tv2-purge-r1.yml"
+            ".github/workflows/nustrim-tv3-stage0b-exact-tv2-purge-r2.yml"
+            ".github/workflows/nustrim-tv3-stage0b-exact-tv2-purge-r3.yml"
+            ".github/workflows/nustrim-tv3-stage0b-exact-tv2-purge.yml"
+          )
+
+          if [[ "${#files[@]}" -ne 37 ]]; then
+            echo "::error::Expected 37 cleanup targets, got ${#files[@]}."
+            exit 1
+          fi
+
+          printf '%s\n' "${files[@]}" > "$DIR/delete-allowlist.txt"
+
+          for file in "${files[@]}"; do
+            case "$file" in
+              .github/workflows/build.yml|.github/workflows/nustrim-clean-bootstrap-rc27.yml)
+                echo "::error::Protected workflow appeared in delete allowlist: $file"
+                exit 1
+                ;;
+              .github/workflows/*.yml|.github/workflows/*.yaml)
+                ;;
+              *)
+                echo "::error::Unsafe cleanup path rejected: $file"
+                exit 1
+                ;;
+            esac
+
+            if [[ -f "$file" ]]; then
+              rm -- "$file"
+              echo "REMOVED: $file"
+            else
+              echo "ALREADY ABSENT: $file"
+            fi
+          done
+
+      - name: Verify protected content unchanged
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/nustrim-final-workflow-cleanup"
+
+          sha256sum .github/workflows/build.yml > "$DIR/build.after"
+          sha256sum .github/workflows/nustrim-clean-bootstrap-rc27.yml > "$DIR/bootstrap.after"
+
+          find app -type f -print0 | sort -z | xargs -0 sha256sum > "$DIR/app.after"
+
+          cmp "$DIR/build.before" "$DIR/build.after"
+          cmp "$DIR/bootstrap.before" "$DIR/bootstrap.after"
+          cmp "$DIR/app.before" "$DIR/app.after"
+
+          echo "PASS: build.yml unchanged"
+          echo "PASS: clean bootstrap unchanged"
+          echo "PASS: entire app tree unchanged"
+
+      - name: Verify only allowed workflow files changed
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/nustrim-final-workflow-cleanup"
+
+          git status --short | tee "$DIR/status.txt"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+
+          allow = set(
+              Path("$RUNNER_TEMP/nustrim-final-workflow-cleanup/delete-allowlist.txt")
+              .read_text()
+              .splitlines()
+          )
+
+          output = subprocess.check_output(
+              ["git", "status", "--porcelain=v1"],
+              text=True
+          )
+
+          unexpected = []
+          for line in output.splitlines():
+              if not line:
+                  continue
+              path = line[3:]
+              if " -> " in path:
+                  path = path.split(" -> ", 1)[1]
+              if path not in allow:
+                  unexpected.append(path)
+
+          if unexpected:
+              raise SystemExit(
+                  "Unexpected modified paths:\n" + "\n".join(unexpected)
+              )
+
+          print("PASS: only allowlisted obsolete workflows changed")
+          PY
+
+          git diff --check
+
+          remaining="$(find .github/workflows -maxdepth 1 -type f | sort)"
+          printf '%s\n' "$remaining" > "$DIR/workflows-after.txt"
+
+          test -f .github/workflows/build.yml
+          test -f .github/workflows/nustrim-clean-bootstrap-rc27.yml
+
+      - name: Commit and push cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$RUNNER_TEMP/nustrim-final-workflow-cleanup/push.log") 2>&1
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+          git diff --cached --check
+
+          if git diff --cached --quiet; then
+            echo "Nothing to clean. Obsolete workflows are already absent."
+          else
+            git commit -m "chore(repo): remove obsolete TV patch workflows"
+
+            git fetch --no-tags origin main
+            if ! git merge-base --is-ancestor origin/main HEAD; then
+              git rebase origin/main
+            fi
+
+            git push origin HEAD:main
+          fi
+
+      - name: Compact summary
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          DIR="$RUNNER_TEMP/nustrim-final-workflow-cleanup"
+
+          echo "========== Nustrim Final Workflow Cleanup =========="
+          echo "Protected:"
+          echo "  .github/workflows/build.yml"
+          echo "  .github/workflows/nustrim-clean-bootstrap-rc27.yml"
+          echo "  entire app/ tree"
+          echo
+          echo "[Remaining workflows]"
+          cat "$DIR/workflows-after.txt" 2>/dev/null || true
+          echo
+          echo "[Git status]"
+          cat "$DIR/status.txt" 2>/dev/null || true
+          echo "===================================================="
+
+      - name: Upload cleanup audit
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nustrim-final-workflow-cleanup-audit
+          path: ${{ runner.temp }}/nustrim-final-workflow-cleanup
+          if-no-files-found: ignore
+          retention-days: 7
