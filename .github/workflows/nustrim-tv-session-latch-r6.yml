@@ -1,0 +1,352 @@
+name: Nustrim TV Session Latch R6
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: nustrim-tv-session-latch-r6
+  cancel-in-progress: false
+
+env:
+  TARGET_VERSION: "0.21.4-tv-latch-r6"
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout exact main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Sync origin main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          git checkout -B main origin/main
+          git reset --hard origin/main
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "9.5.0"
+
+      - name: Preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/tv-r6"
+          mkdir -p "$DIR"
+
+          APP="app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt"
+          test -f "$APP"
+          test -f app/src/main/java/app/nudroidlabs/nustrim/tv/TvApp.kt
+          test -f .github/workflows/build.yml
+          test -d app/src/main/java/app/nudroidlabs/nustrim/core/update
+
+          sha256sum .github/workflows/build.yml > "$DIR/build.before"
+          find app/src/main/java/app/nudroidlabs/nustrim/core/update -type f -print0 | sort -z | xargs -0 sha256sum > "$DIR/updater.before"
+
+          {
+            echo "TV SESSION LATCH R6"
+            echo "sha=$(git rev-parse HEAD)"
+            grep -m1 'versionCode' app/build.gradle.kts || true
+            grep -m1 'versionName' app/build.gradle.kts || true
+            grep -n -E 'switchInterfaceMode|interfaceMode == InterfaceMode.TV|TvApp\(|requestedOrientation' "$APP" | head -n 120 || true
+          } | tee "$DIR/preflight.txt"
+
+      - name: Install TV latch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          
+          APP = Path("app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt")
+          text = APP.read_text(encoding="utf-8")
+          
+          required = [
+              "fun NustrimApp()",
+              "fun switchInterfaceMode(selected: InterfaceMode)",
+              "if (interfaceMode == InterfaceMode.TV)",
+              "TvApp(",
+          ]
+          missing = [x for x in required if x not in text]
+          if missing:
+              raise SystemExit("Missing R6 anchors: " + ", ".join(missing))
+          
+          saveable_import = "import androidx.compose.runtime.saveable.rememberSaveable\n"
+          if saveable_import not in text:
+              runtime_imports = list(re.finditer(r'(?m)^import androidx\.compose\.runtime\.[^\n]+\n', text))
+              if runtime_imports:
+                  pos = runtime_imports[-1].end()
+                  text = text[:pos] + saveable_import + text[pos:]
+              else:
+                  raise SystemExit("Compose runtime import anchor missing")
+          
+          app_start = text.find("fun NustrimApp()")
+          app_end = text.find("private tailrec fun Context.findActivity", app_start)
+          if app_end < 0:
+              raise SystemExit("NustrimApp end anchor missing")
+          
+          chunk = text[app_start:app_end]
+          switch_sig = "fun switchInterfaceMode(selected: InterfaceMode) {"
+          switch_pos = chunk.find(switch_sig)
+          if switch_pos < 0:
+              raise SystemExit("switchInterfaceMode not found")
+          
+          if "var tvModeSessionActive by rememberSaveable" not in chunk:
+              line_start = chunk.rfind("\n", 0, switch_pos) + 1
+              indent = re.match(r'[ \t]*', chunk[line_start:switch_pos]).group(0)
+              declaration = (
+                  indent + "var tvModeSessionActive by rememberSaveable {\n"
+                  + indent + "    mutableStateOf(preferences.interfaceMode == InterfaceMode.TV)\n"
+                  + indent + "}\n\n"
+              )
+              chunk = chunk[:line_start] + declaration + chunk[line_start:]
+              print("ADDED latch state")
+          
+          switch_pos = chunk.find(switch_sig)
+          brace_end = switch_pos + len(switch_sig)
+          assignment = "tvModeSessionActive = selected == InterfaceMode.TV"
+          if assignment not in chunk[brace_end:brace_end+500]:
+              line_start = chunk.rfind("\n", 0, switch_pos) + 1
+              indent = re.match(r'[ \t]*', chunk[line_start:switch_pos]).group(0)
+              chunk = chunk[:brace_end] + "\n" + indent + "    " + assignment + chunk[brace_end:]
+              print("ADDED latch assignment")
+          
+          pattern = re.compile(
+              r'if\s*\(\s*interfaceMode\s*==\s*InterfaceMode\.TV\s*\)\s*\{\s*TvApp\(',
+              re.S,
+          )
+          m = pattern.search(chunk)
+          if m:
+              original = m.group(0)
+              replacement = re.sub(
+                  r'if\s*\(\s*interfaceMode\s*==\s*InterfaceMode\.TV\s*\)',
+                  'if (tvModeSessionActive || interfaceMode == InterfaceMode.TV)',
+                  original,
+                  count=1,
+              )
+              chunk = chunk[:m.start()] + replacement + chunk[m.end():]
+              print("PATCHED root route")
+          elif "if (tvModeSessionActive || interfaceMode == InterfaceMode.TV)" in chunk:
+              print("PRESERVE existing R6 route")
+          else:
+              raise SystemExit("Direct TvApp route pattern not found")
+          
+          text = text[:app_start] + chunk + text[app_end:]
+          
+          checks = [
+              "import androidx.compose.runtime.saveable.rememberSaveable",
+              "var tvModeSessionActive by rememberSaveable",
+              "mutableStateOf(preferences.interfaceMode == InterfaceMode.TV)",
+              "tvModeSessionActive = selected == InterfaceMode.TV",
+              "if (tvModeSessionActive || interfaceMode == InterfaceMode.TV)",
+              "TvApp(",
+          ]
+          missing = [x for x in checks if x not in text]
+          if missing:
+              raise SystemExit("R6 post-check failed: " + ", ".join(missing))
+          
+          text = re.sub(r'(?m)^[ \t]+$', '', text)
+          APP.write_text(text, encoding="utf-8")
+          
+          print("PASS: R6 latch installed")
+          PY
+
+      - name: Bump R6 version
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import os, re
+          
+          p = Path("app/build.gradle.kts")
+          text = p.read_text(encoding="utf-8")
+          target = os.environ["TARGET_VERSION"]
+          
+          cm = re.search(r'versionCode\s*=\s*(\d+)', text)
+          nm = re.search(r'versionName\s*=\s*"([^"]+)"', text)
+          if not cm or not nm:
+              raise SystemExit("version metadata missing")
+          
+          old_code = int(cm.group(1))
+          old_name = nm.group(1)
+          new_code = old_code if old_name == target else old_code + 1
+          
+          text = re.sub(r'versionCode\s*=\s*\d+', f'versionCode = {new_code}', text, count=1)
+          text = re.sub(r'versionName\s*=\s*"[^"]+"', f'versionName = "{target}"', text, count=1)
+          p.write_text(text, encoding="utf-8")
+          
+          print(f"versionName: {old_name} -> {target}")
+          print(f"versionCode: {old_code} -> {new_code}")
+          PY
+
+      - name: Audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/tv-r6"
+          APP="app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt"
+
+          grep -q 'var tvModeSessionActive by rememberSaveable' "$APP"
+          grep -q 'tvModeSessionActive = selected == InterfaceMode.TV' "$APP"
+          grep -q 'if (tvModeSessionActive || interfaceMode == InterfaceMode.TV)' "$APP"
+          grep -q 'versionName = "0.21.4-tv-latch-r6"' app/build.gradle.kts
+
+          sha256sum .github/workflows/build.yml > "$DIR/build.after"
+          find app/src/main/java/app/nudroidlabs/nustrim/core/update -type f -print0 | sort -z | xargs -0 sha256sum > "$DIR/updater.after"
+          cmp "$DIR/build.before" "$DIR/build.after"
+          cmp "$DIR/updater.before" "$DIR/updater.after"
+
+          git diff --check
+          git diff > "$DIR/r6.patch"
+
+      - name: Compile
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle --no-daemon --build-cache :app:compileDebugKotlin --stacktrace --console=plain 2>&1 | tee "$RUNNER_TEMP/tv-r6/compile.log"
+
+      - name: Assemble
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle --no-daemon --build-cache :app:assembleDebug --stacktrace --console=plain 2>&1 | tee "$RUNNER_TEMP/tv-r6/assemble.log"
+
+      - name: Commit and push
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$RUNNER_TEMP/tv-r6/push.log") 2>&1
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt app/build.gradle.kts
+          git diff --cached --check
+
+          if ! git diff --cached --quiet; then
+            git commit -m "fix(tv): latch TV mode across recreation"
+            git fetch --no-tags origin main
+            git rebase origin/main
+            git push origin HEAD:main
+          fi
+
+      - name: Verify origin main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          python3 - <<'PY'
+          import subprocess
+          
+          app = subprocess.check_output(
+              ["git", "show", "origin/main:app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt"],
+              text=True,
+          )
+          gradle = subprocess.check_output(
+              ["git", "show", "origin/main:app/build.gradle.kts"],
+              text=True,
+          )
+          
+          required = [
+              "var tvModeSessionActive by rememberSaveable",
+              "tvModeSessionActive = selected == InterfaceMode.TV",
+              "if (tvModeSessionActive || interfaceMode == InterfaceMode.TV)",
+              "TvApp(",
+          ]
+          missing = [x for x in required if x not in app]
+          if missing:
+              raise SystemExit("remote main missing: " + ", ".join(missing))
+          
+          if 'versionName = "0.21.4-tv-latch-r6"' not in gradle:
+              raise SystemExit("remote R6 version missing")
+          
+          print("PASS: origin/main contains R6 latch")
+          PY
+
+      - name: Dispatch signed build
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          HEAD_SHA="$(git rev-parse origin/main)"
+          echo "HEAD_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
+
+          gh workflow run build.yml --repo "$GITHUB_REPOSITORY" --ref main -f publish_release=true
+          sleep 8
+
+          RUN_ID=""
+          for attempt in $(seq 1 24); do
+            RUN_ID="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow build.yml --branch main --event workflow_dispatch --limit 20 --json databaseId,headSha --jq ".[] | select(.headSha == \"$HEAD_SHA\") | .databaseId" | head -n1)"
+            if [[ -n "$RUN_ID" ]]; then break; fi
+            sleep 5
+          done
+
+          test -n "$RUN_ID"
+          echo "SIGNED_RUN_ID=$RUN_ID" >> "$GITHUB_ENV"
+
+      - name: Wait signed build
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run watch "$SIGNED_RUN_ID" --repo "$GITHUB_REPOSITORY" --exit-status 2>&1 | tee "$RUNNER_TEMP/tv-r6/signed-build-watch.log"
+
+      - name: Verify published R6
+        shell: bash
+        run: |
+          set -euo pipefail
+          MANIFEST="$RUNNER_TEMP/tv-r6/update.json"
+
+          for attempt in $(seq 1 24); do
+            curl --fail --location --silent --show-error --header 'Cache-Control: no-cache'               "https://github.com/$GITHUB_REPOSITORY/releases/latest/download/update.json?ts=$(date +%s)"               --output "$MANIFEST" || true
+
+            if grep -q '0.21.4-tv-latch-r6' "$MANIFEST" 2>/dev/null; then break; fi
+            sleep 5
+          done
+
+          test -s "$MANIFEST"
+          grep -q '0.21.4-tv-latch-r6' "$MANIFEST"
+          cat "$MANIFEST" | tee "$RUNNER_TEMP/tv-r6/published-update.json"
+
+      - name: Failure summary
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          DIR="$RUNNER_TEMP/tv-r6"
+          for f in preflight.txt compile.log assemble.log push.log signed-build-watch.log published-update.json; do
+            if [[ -f "$DIR/$f" ]]; then
+              echo "===== $f ====="
+              tail -n 180 "$DIR/$f"
+            fi
+          done
+
+      - name: Upload diagnose
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nustrim-tv-session-latch-r6-diagnose
+          path: ${{ runner.temp }}/tv-r6
+          if-no-files-found: ignore
+          retention-days: 7
