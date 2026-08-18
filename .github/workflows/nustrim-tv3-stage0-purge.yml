@@ -1,0 +1,778 @@
+name: Nustrim TV3 Stage 0 Purge
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: nustrim-tv3-stage0-purge
+  cancel-in-progress: false
+
+env:
+  RESET_VERSION: "0.18.0-tv3-reset0"
+
+jobs:
+  purge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Sync exact main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          git checkout -B main origin/main
+          git reset --hard origin/main
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "9.5.0"
+
+      - name: Snapshot protected Mobile and updater baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/nustrim-tv3-reset0"
+          mkdir -p "$DIR"
+
+          test -f .github/workflows/build.yml
+          test -f app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt
+          test -d app/src/main/java/app/nudroidlabs/nustrim/core/update
+
+          sha256sum .github/workflows/build.yml > "$DIR/build-workflow.sha256.before"
+          find app/src/main/java/app/nudroidlabs/nustrim/core/update -type f -print0 \
+            | sort -z \
+            | xargs -0 sha256sum > "$DIR/updater.sha256.before"
+
+          python3 - <<'PY' > "$DIR/build-gradle.normalized.before"
+          from pathlib import Path
+          import re
+          text = Path("app/build.gradle.kts").read_text()
+          text = re.sub(r'versionCode\s*=\s*\d+', 'versionCode = <VERSION_CODE>', text, count=1)
+          text = re.sub(r'versionName\s*=\s*"[^"]+"', 'versionName = "<VERSION_NAME>"', text, count=1)
+          print(text, end="")
+          PY
+
+          {
+            echo "NUSTRIM TV3 STAGE 0 PURGE"
+            echo "========================="
+            echo "sha=$(git rev-parse HEAD)"
+            echo
+            echo "[version]"
+            grep -m1 'versionName' app/build.gradle.kts || true
+            echo
+            echo "[legacy TV packages]"
+            find app/src/main/java/app/nudroidlabs/nustrim -maxdepth 2 -type d \
+              \( -name 'tv' -o -name 'tv2' -o -name 'tv3' \) -print || true
+            echo
+            echo "[old TV references]"
+            grep -n -E 'NustrimTv2|Tv2|InterfaceMode\.TV|TvReferenceCanvas|TvTestRemote|TvSearchScreenContent|TvLibraryScreenContent|TvSettingsWorkspace' \
+              app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt | head -n 120 || true
+          } > "$DIR/preflight.txt"
+
+      - name: Hard purge old TV presentation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' 2>&1 | tee "$RUNNER_TEMP/nustrim-tv3-reset0/purge.log"
+          from pathlib import Path
+          import re
+          
+          APP = Path("app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt")
+          PREFS = Path("app/src/main/java/app/nudroidlabs/nustrim/ui/UiPreferences.kt")
+          text = APP.read_text(encoding="utf-8")
+          prefs = PREFS.read_text(encoding="utf-8")
+          
+          def matching(source: str, start: int, opener="{", closer="}") -> int:
+              if start < 0 or start >= len(source) or source[start] != opener:
+                  raise SystemExit(f"Expected {opener} at {start}")
+              depth = 0
+              in_string = False
+              triple = False
+              escape = False
+              i = start
+              while i < len(source):
+                  if source.startswith('"""', i):
+                      triple = not triple
+                      i += 3
+                      continue
+                  ch = source[i]
+                  if triple:
+                      i += 1
+                      continue
+                  if in_string:
+                      if escape:
+                          escape = False
+                      elif ch == "\\":
+                          escape = True
+                      elif ch == '"':
+                          in_string = False
+                      i += 1
+                      continue
+                  if ch == '"':
+                      in_string = True
+                      i += 1
+                      continue
+                  if ch == opener:
+                      depth += 1
+                  elif ch == closer:
+                      depth -= 1
+                      if depth == 0:
+                          return i + 1
+                  i += 1
+              raise SystemExit(f"Unbalanced {opener}{closer}")
+          
+          def function_bounds(source: str, name: str):
+              m = re.search(rf'(?m)^(?:@[^\n]+\n)*\s*(?:private\s+)?fun\s+{re.escape(name)}\s*\(', source)
+              if not m:
+                  return None
+              brace = source.find("{", m.end())
+              if brace < 0:
+                  raise SystemExit(f"Body for {name} not found")
+              return m.start(), matching(source, brace)
+          
+          def replace_function(source: str, name: str, replacement: str):
+              b = function_bounds(source, name)
+              if not b:
+                  raise SystemExit(f"Function {name} not found")
+              return source[:b[0]] + replacement.rstrip() + "\n" + source[b[1]:]
+          
+          def remove_function(source: str, name: str):
+              b = function_bounds(source, name)
+              if not b:
+                  return source
+              start, end = b
+              while end < len(source) and source[end] == "\n":
+                  end += 1
+              return source[:start] + source[end:]
+          
+          def remove_object(source: str, name: str):
+              m = re.search(rf'(?m)^\s*private\s+object\s+{re.escape(name)}\s*\{{', source)
+              if not m:
+                  return source
+              brace = source.find("{", m.start())
+              end = matching(source, brace)
+              while end < len(source) and source[end] == "\n":
+                  end += 1
+              return source[:m.start()] + source[end:]
+          
+          def remove_data_class(source: str, name: str):
+              m = re.search(rf'(?m)^\s*private\s+data\s+class\s+{re.escape(name)}\s*\(', source)
+              if not m:
+                  return source
+              paren = source.find("(", m.start())
+              end = matching(source, paren, "(", ")")
+              while end < len(source) and source[end] in " \t":
+                  end += 1
+              if end < len(source) and source[end] == "\n":
+                  end += 1
+              return source[:m.start()] + source[end:]
+          
+          def call_end(source: str, start: int):
+              paren = source.find("(", start)
+              if paren < 0:
+                  raise SystemExit("Call opening parenthesis not found")
+              end = matching(source, paren, "(", ")")
+              i = end
+              while i < len(source) and source[i].isspace():
+                  i += 1
+              if i < len(source) and source[i] == "{":
+                  end = matching(source, i)
+              return end
+          
+          def remove_call_containing(source: str, call_name: str, marker: str):
+              pos = 0
+              changed = False
+              needle = call_name + "("
+              while True:
+                  start = source.find(needle, pos)
+                  if start < 0:
+                      break
+                  end = call_end(source, start)
+                  block = source[start:end]
+                  if marker in block:
+                      line_start = source.rfind("\n", 0, start) + 1
+                      source = source[:line_start] + source[end:]
+                      changed = True
+                      pos = line_start
+                  else:
+                      pos = end
+              return source, changed
+          
+          def strip_if_is_tv_containing(source: str, marker: str):
+              # Remove a dedicated TV block that contains marker. If it has an else,
+              # preserve the else/mobile body exactly.
+              marker_pos = source.find(marker)
+              if marker_pos < 0:
+                  return source, False
+              candidates = list(re.finditer(r'if\s*\(\s*isTv\s*\)\s*\{', source[:marker_pos]))
+              for m in reversed(candidates):
+                  brace = source.find("{", m.start())
+                  then_end = matching(source, brace)
+                  if not (brace < marker_pos < then_end):
+                      continue
+                  i = then_end
+                  while i < len(source) and source[i].isspace():
+                      i += 1
+                  replacement = ""
+                  total_end = then_end
+                  if source.startswith("else", i):
+                      else_brace = source.find("{", i + 4)
+                      if else_brace < 0:
+                          raise SystemExit(f"Else body missing for TV marker {marker}")
+                      else_end = matching(source, else_brace)
+                      replacement = source[else_brace + 1:else_end - 1]
+                      total_end = else_end
+                  return source[:m.start()] + replacement + source[total_end:], True
+              return source, False
+          
+          def extract_scaffold_from_main(source: str):
+              b = function_bounds(source, "MainShell")
+              if not b:
+                  raise SystemExit("MainShell missing")
+              segment = source[b[0]:b[1]]
+              start = segment.find("Scaffold(")
+              if start < 0:
+                  raise SystemExit("Mobile Scaffold not found in MainShell")
+              end = call_end(segment, start)
+              return segment[start:end]
+          
+          # Protected runtime is mobile-only now.
+          text = re.sub(
+              r'(?m)^import\s+app\.nudroidlabs\.nustrim\.tv2\.[^\n]+\n',
+              '',
+              text,
+          )
+          
+          # Capture the exact existing mobile Scaffold before replacing MainShell.
+          mobile_scaffold = extract_scaffold_from_main(text)
+          
+          mobile_main_shell = """@Composable
+          private fun MainShell(
+              selected: MainSection,
+              remoteTestActive: Boolean,
+              onRemoteTestClose: () -> Unit,
+              onSection: (MainSection) -> Unit,
+              content: @Composable (Boolean, Int) -> Unit
+          ) {
+          %s
+          }
+          """ % ("\n".join("    " + line if line else line for line in mobile_scaffold.splitlines()))
+          
+          text = replace_function(text, "MainShell", mobile_main_shell)
+          
+          # All non-main shared screens now enter their existing mobile path.
+          text = text.replace("rememberIsTv()", "false")
+          
+          # Force the app shell to MOBILE while TV3 is absent.
+          text = re.sub(
+              r'var\s+interfaceMode\s+by\s+remember\s*\{\s*mutableStateOf\(preferences\.interfaceMode\)\s*\}',
+              'val interfaceMode = InterfaceMode.MOBILE',
+              text,
+              count=1,
+          )
+          
+          # A stale stored TV preference must not recreate the old mode.
+          nustrim_bounds = function_bounds(text, "NustrimApp")
+          if not nustrim_bounds:
+              raise SystemExit("NustrimApp missing")
+          ns, ne = nustrim_bounds
+          app_fn = text[ns:ne]
+          
+          switch_match = re.search(r'fun\s+switchInterfaceMode\s*\(\s*selected:\s*InterfaceMode\s*\)\s*\{', app_fn)
+          if switch_match:
+              brace = app_fn.find("{", switch_match.start())
+              end = matching(app_fn, brace)
+              replacement = (
+                  "fun switchInterfaceMode(selected: InterfaceMode) {\n"
+                  "        preferences.interfaceMode = InterfaceMode.MOBILE\n"
+                  "        screen = Screen.Main(MainSection.HOME)\n"
+                  "    }"
+              )
+              app_fn = app_fn[:switch_match.start()] + replacement + app_fn[end:]
+          
+          app_fn = app_fn.replace(
+              "interfaceMode == InterfaceMode.TV || screen is Screen.Player ->",
+              "screen is Screen.Player ->",
+          )
+          
+          app_fn = re.sub(
+              r'interfaceMode\s*=\s*interfaceMode\s*\?:\s*if\s*\(\s*isTv\s*\)\s*InterfaceMode\.TV\s*else\s*InterfaceMode\.MOBILE\s*,',
+              'interfaceMode = InterfaceMode.MOBILE,',
+              app_fn,
+          )
+          
+          # Replace the old TV reference-canvas wrapper and initial mode picker with the
+          # exact current screen content.
+          wrapper = re.compile(
+              r'(?ms)\s*val\s+physicalTvDevice\s*=\s*rememberIsPhysicalTv\(\)\s*'
+              r'Surface\(modifier\s*=\s*Modifier\.fillMaxSize\(\),\s*color\s*=\s*AppBackground\)\s*\{\s*'
+              r'if\s*\(\s*interfaceMode\s*==\s*InterfaceMode\.TV\s*&&\s*!physicalTvDevice\s*\)\s*\{\s*'
+              r'TvReferenceCanvas\s*\{\s*screenContent\(\)\s*\}\s*'
+              r'\}\s*else\s*\{\s*screenContent\(\)\s*\}\s*'
+              r'\}\s*'
+              r'if\s*\(\s*interfaceMode\s*==\s*null\s*\)\s*\{\s*'
+              r'InterfaceModePicker\(onSelect\s*=\s*\{\s*switchInterfaceMode\(it\)\s*\}\)\s*'
+              r'\}'
+          )
+          app_fn, wrapper_count = wrapper.subn(
+              "\n            Surface(modifier = Modifier.fillMaxSize(), color = AppBackground) {\n"
+              "                screenContent()\n"
+              "            }",
+              app_fn,
+              count=1,
+          )
+          if wrapper_count != 1:
+              # Rerun-safe fallback. At minimum no old TV canvas may remain.
+              if "TvReferenceCanvas" in app_fn or "InterfaceModePicker(" in app_fn:
+                  raise SystemExit("Old TV canvas/mode picker wrapper not matched")
+          
+          # Reset TV-only developer remote state without changing other developer tools.
+          app_fn = app_fn.replace(
+              "mutableStateOf(preferences.developerMode && preferences.remoteTestEnabled)",
+              "mutableStateOf(false)",
+              1,
+          )
+          app_fn = app_fn.replace(
+              "preferences.remoteTestEnabled = active\n                                    remoteTestEnabled = active",
+              "preferences.remoteTestEnabled = false\n                                    remoteTestEnabled = false",
+          )
+          text = text[:ns] + app_fn + text[ne:]
+          
+          # Strip dedicated TV presentation branches that are embedded in shared screens.
+          for marker in (
+              "TvSearchScreenContent(",
+              "TvLibraryScreenContent(",
+              "TvSettingsWorkspace(",
+          ):
+              while marker in text:
+                  text2, changed = strip_if_is_tv_containing(text, marker)
+                  if not changed:
+                      break
+                  text = text2
+          
+          # Strip any current-generation external TV2 calls that were introduced in later
+          # stages. They must be inside isTv-only branches; otherwise fail instead of guessing.
+          external_pattern = re.compile(r'\b[A-Za-z_][A-Za-z0-9_]*Tv2[A-Za-z0-9_]*\b|\bTv2[A-Za-z0-9_]*\b')
+          for _ in range(40):
+              match = external_pattern.search(text)
+              if not match:
+                  break
+              symbol = match.group(0)
+              text2, changed = strip_if_is_tv_containing(text, symbol)
+              if not changed:
+                  # imports were already removed; MainShell was replaced. Any remaining
+                  # external symbol outside a TV branch is unsafe to auto-delete.
+                  raise SystemExit(f"TV2 symbol remains outside removable isTv branch: {symbol}")
+              text = text2
+          else:
+              raise SystemExit("Too many TV2 branch-removal passes")
+          
+          # Remove dedicated old TV-only top-level components after their branches are gone.
+          for name in (
+              "TvReferenceCanvas",
+              "rememberIsPhysicalTv",
+              "rememberIsTv",
+              "InterfaceModePicker",
+              "dispatchTvTestKey",
+              "TvTestRemote",
+              "TvTestRemoteKey",
+              "TvSearchScreenContent",
+              "TvLibraryScreenContent",
+              "TvSettingsWorkspace",
+          ):
+              text = remove_function(text, name)
+          
+          text = remove_data_class(text, "TvSettingsRootItem")
+          
+          # Remove TV mode option from Layout settings. Mobile layout/subtitle settings stay.
+          layout_bounds = function_bounds(text, "LayoutSettingsScreen")
+          if layout_bounds:
+              ls, le = layout_bounds
+              layout = text[ls:le]
+              layout, _ = remove_call_containing(layout, "InterfaceModeOption", 'title = "TV"')
+              layout = layout.replace(
+                  '"TV mode can be forced on a phone for remote testing."',
+                  '"Nustrim is currently using the mobile interface while TV3 is rebuilt."',
+              )
+              layout = layout.replace(
+                  '"Mobile or remote-first TV layout"',
+                  '"Mobile interface"',
+              )
+              text = text[:ls] + layout + text[le:]
+          
+          # Remove only the TV floating-remote switch from Developer settings.
+          dev_bounds = function_bounds(text, "DeveloperSettingsScreen")
+          if dev_bounds:
+              ds, de = dev_bounds
+              dev = text[ds:de]
+              dev, removed_remote = remove_call_containing(dev, "SettingsSwitchRow", 'title = "Remote Test"')
+              dev = re.sub(
+                  r'(?m)^\s*SettingsGroupDivider\(\)\s*\n(?=\s*SettingsGroupDivider\(\))',
+                  '',
+                  dev,
+              )
+              text = text[:ds] + dev + text[de:]
+          
+          # Update mobile-facing copy so no old TV UI is advertised.
+          text = text.replace('"Mobile and TV interface"', '"Mobile interface"')
+          text = text.replace('"TV and mobile interface preferences"', '"Mobile interface preferences"')
+          text = text.replace('"Remote-first landscape layout with D-pad focus"', '"TV3 rebuild pending"')
+          text = text.replace('"Choose how Nustrim is presented"', '"Mobile interface and appearance"')
+          
+          # No route in the old app may select the legacy TV enum.
+          text = text.replace("InterfaceMode.TV", "InterfaceMode.MOBILE")
+          
+          # Remove direct legacy TV2 composition local only if now unused.
+          if "LocalTvSidebarFocusRequester.current" not in text:
+              text = re.sub(
+                  r'(?m)^private\s+val\s+LocalTvSidebarFocusRequester\s*=.*\n',
+                  '',
+                  text,
+                  count=1,
+              )
+          
+          # Keep the enum's TV value as a storage compatibility token only. It has no UI
+          # route and can later be repurposed by TV3 without migrating old preferences.
+          APP.write_text(text, encoding="utf-8")
+          PREFS.write_text(prefs, encoding="utf-8")
+          
+          checks = {
+              "no tv2 imports": "app.nudroidlabs.nustrim.tv2." not in text,
+              "no old TV shell": "NustrimTv2Shell" not in text,
+              "no old TV destination": "NustrimTv2Destination" not in text,
+              "no TV canvas": "TvReferenceCanvas" not in text,
+              "no interface picker": "InterfaceModePicker" not in text,
+              "no TV enum route": "InterfaceMode.TV" not in text,
+              "no floating TV remote": "TvTestRemote" not in text and '"Remote Test"' not in text,
+              "no dedicated TV search": "TvSearchScreenContent" not in text,
+              "no dedicated TV library": "TvLibraryScreenContent" not in text,
+              "no dedicated TV settings": "TvSettingsWorkspace" not in text,
+              "mobile shell retained": "MobileNavItem(" in text and "Scaffold(" in text,
+              "updater screen retained": "AppUpdater(context)" in text and "UpdateSettingsScreen" in text,
+          }
+          failed = [name for name, ok in checks.items() if not ok]
+          if failed:
+              raise SystemExit("Purge contract failed: " + ", ".join(failed))
+          
+          for name in checks:
+              print("PASS:", name)
+          PY
+          code=${PIPESTATUS[0]}
+          if [[ "$code" -ne 0 ]]; then exit "$code"; fi
+
+          # All generation-1/2 TV presentation packages are disposable.
+          rm -rf app/src/main/java/app/nudroidlabs/nustrim/tv
+          rm -rf app/src/main/java/app/nudroidlabs/nustrim/tv2
+
+          # TV3 must start genuinely empty. Stage 1 will create it.
+          rm -rf app/src/main/java/app/nudroidlabs/nustrim/tv3
+
+      - name: Safe repo cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/nustrim-tv3-reset0"
+          echo "SAFE REPO CLEANUP" > "$DIR/cleanup.log"
+
+          # Delete only tracked temp/diagnostic leftovers. Do not touch updater
+          # workflow YAML because it is protected and used for signed updates.
+          while IFS= read -r file; do
+            case "$file" in
+              app/src/*|.github/workflows/*)
+                ;;
+              *.tmp|*.bak|*.orig|*.rej|*.patch|*.log|*-diagnose.zip)
+                rm -f -- "$file"
+                echo "REMOVED: $file" >> "$DIR/cleanup.log"
+                ;;
+            esac
+          done < <(git ls-files)
+
+          echo "PRESERVED: .github/workflows/build.yml" >> "$DIR/cleanup.log"
+          echo "PRESERVED: app core/update" >> "$DIR/cleanup.log"
+          echo "NOTE: old workflow YAML is not modified by GITHUB_TOKEN purge." >> "$DIR/cleanup.log"
+          cat "$DIR/cleanup.log"
+
+      - name: Advance reset metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' 2>&1 | tee "$RUNNER_TEMP/nustrim-tv3-reset0/metadata.log"
+          from pathlib import Path
+          import os
+          import re
+          
+          target = os.environ["RESET_VERSION"]
+          gradle_path = Path("app/build.gradle.kts")
+          gradle = gradle_path.read_text(encoding="utf-8")
+          
+          code_match = re.search(r'versionCode\s*=\s*(\d+)', gradle)
+          name_match = re.search(r'versionName\s*=\s*"([^"]+)"', gradle)
+          if not code_match or not name_match:
+              raise SystemExit("Version metadata missing")
+          
+          old_code = int(code_match.group(1))
+          old_name = name_match.group(1)
+          new_code = old_code if old_name == target else old_code + 1
+          
+          gradle = re.sub(r'versionCode\s*=\s*\d+', f'versionCode = {new_code}', gradle, count=1)
+          gradle = re.sub(r'versionName\s*=\s*"[^"]+"', f'versionName = "{target}"', gradle, count=1)
+          gradle_path.write_text(gradle, encoding="utf-8")
+          Path(".nustrim-version").write_text(target + "\n", encoding="utf-8")
+          
+          Path(".nustrim-tv-reset").write_text(
+              "generation=3\n"
+              "stage=0\n"
+              "state=mobile-only\n"
+              "legacy-tv-runtime=removed\n"
+              "tv2-package=removed\n"
+              "tv3-package=absent\n"
+              "mobile=protected\n"
+              "updater=protected\n"
+              "tv3-import-boundary=core-features-only\n",
+              encoding="utf-8",
+          )
+          
+          old_marker = Path(".nustrim-tv2")
+          if old_marker.exists():
+              old_marker.unlink()
+          
+          print(f"versionName: {old_name} -> {target}")
+          print(f"versionCode: {old_code} -> {new_code}")
+          print("TV reset marker: generation=3 stage=0")
+          PY
+
+      - name: Verify updater protection
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/nustrim-tv3-reset0"
+
+          sha256sum .github/workflows/build.yml > "$DIR/build-workflow.sha256.after"
+          find app/src/main/java/app/nudroidlabs/nustrim/core/update -type f -print0 \
+            | sort -z \
+            | xargs -0 sha256sum > "$DIR/updater.sha256.after"
+
+          cmp "$DIR/build-workflow.sha256.before" "$DIR/build-workflow.sha256.after"
+          cmp "$DIR/updater.sha256.before" "$DIR/updater.sha256.after"
+
+          python3 - <<'PY' > "$DIR/build-gradle.normalized.after"
+          from pathlib import Path
+          import re
+          text = Path("app/build.gradle.kts").read_text()
+          text = re.sub(r'versionCode\s*=\s*\d+', 'versionCode = <VERSION_CODE>', text, count=1)
+          text = re.sub(r'versionName\s*=\s*"[^"]+"', 'versionName = "<VERSION_NAME>"', text, count=1)
+          print(text, end="")
+          PY
+
+          cmp "$DIR/build-gradle.normalized.before" "$DIR/build-gradle.normalized.after"
+          echo "PASS: updater/build/signing configuration protected" | tee "$DIR/updater-protection.txt"
+
+      - name: TV purge architecture audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/nustrim-tv3-reset0"
+          APP="app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt"
+
+          fail() {
+            echo "::error::$1"
+            echo "FAIL: $1" >> "$DIR/audit.txt"
+            exit 1
+          }
+
+          [[ ! -d app/src/main/java/app/nudroidlabs/nustrim/tv ]] || fail "Old tv/ package still exists."
+          [[ ! -d app/src/main/java/app/nudroidlabs/nustrim/tv2 ]] || fail "Old tv2/ package still exists."
+          [[ ! -d app/src/main/java/app/nudroidlabs/nustrim/tv3 ]] || fail "TV3 must be empty before Stage 1."
+
+          ! grep -q 'app\.nudroidlabs\.nustrim\.tv2\.' "$APP" || fail "tv2 import remains."
+          ! grep -q 'NustrimTv2Shell' "$APP" || fail "Old TV shell remains."
+          ! grep -q 'NustrimTv2Destination' "$APP" || fail "Old TV destination remains."
+          ! grep -q 'TvReferenceCanvas' "$APP" || fail "Old TV reference canvas remains."
+          ! grep -q 'InterfaceMode\.TV' "$APP" || fail "Old TV mode route remains."
+          ! grep -q 'TvTestRemote' "$APP" || fail "Old floating remote remains."
+          ! grep -q 'TvSearchScreenContent' "$APP" || fail "Old dedicated TV Search remains."
+          ! grep -q 'TvLibraryScreenContent' "$APP" || fail "Old dedicated TV Library remains."
+          ! grep -q 'TvSettingsWorkspace' "$APP" || fail "Old dedicated TV Settings remains."
+
+          grep -q 'MobileNavItem(' "$APP" || fail "Mobile navigation missing."
+          grep -q 'AppUpdater(context)' "$APP" || fail "Updater Settings UI missing."
+          grep -q 'UpdateSettingsScreen' "$APP" || fail "Updater screen missing."
+          grep -q '^state=mobile-only$' .nustrim-tv-reset || fail "Reset marker missing mobile-only state."
+          grep -q '^tv3-import-boundary=core-features-only$' .nustrim-tv-reset || fail "TV3 import boundary marker missing."
+
+          # New TV3 is forbidden from importing UI presentation when created later.
+          cat > "$DIR/tv3-boundary-rule.txt" <<'EOF'
+          TV3 ARCHITECTURE RULE
+          =====================
+          - TV3 starts empty after this purge.
+          - TV3 may consume neutral core/features data and services.
+          - TV3 must not import app.nudroidlabs.nustrim.ui presentation helpers.
+          - TV3 must not import any tv2 package or reuse old TV composables.
+          - Mobile remains the only runtime UI until TV3 Stage 1 is introduced.
+          EOF
+
+          if grep -R -n -E 'NuBrowse|NuBrowseApp|app\.nubrowse' app/src/main app/build.gradle.kts 2>/dev/null; then
+            fail "NuBrowse contamination detected."
+          fi
+
+          git diff --check || fail "git diff --check failed."
+
+          {
+            echo "PASS: old TV runtime route removed"
+            echo "PASS: tv/ and tv2/ packages removed"
+            echo "PASS: TV3 package absent/empty"
+            echo "PASS: mobile navigation retained"
+            echo "PASS: updater UI retained"
+            echo "PASS: updater/build configuration unchanged except version metadata"
+            echo "PASS: TV3 core/features-only boundary recorded"
+            echo
+            git status --short
+            echo
+            git diff --stat
+          } > "$DIR/audit.txt"
+
+          cat "$DIR/audit.txt"
+          git diff > "$DIR/tv3-stage0-purge.patch"
+
+      - name: Compile mobile-only app
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          gradle --no-daemon --build-cache \
+            :app:compileDebugKotlin \
+            --stacktrace \
+            --console=plain \
+            2>&1 | tee "$RUNNER_TEMP/nustrim-tv3-reset0/compile.log"
+          code=${PIPESTATUS[0]}
+          set -e
+          if [[ "$code" -ne 0 ]]; then exit "$code"; fi
+
+      - name: Assemble mobile-only debug APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          gradle --no-daemon --build-cache \
+            :app:assembleDebug \
+            --stacktrace \
+            --console=plain \
+            2>&1 | tee "$RUNNER_TEMP/nustrim-tv3-reset0/assemble.log"
+          code=${PIPESTATUS[0]}
+          set -e
+          if [[ "$code" -ne 0 ]]; then exit "$code"; fi
+
+      - name: Commit and push reset
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$RUNNER_TEMP/nustrim-tv3-reset0/push.log") 2>&1
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+          git diff --cached --check
+
+          if git diff --cached --quiet; then
+            echo "TV reset already applied."
+          else
+            git commit -m "refactor(tv): purge legacy TV UI for clean TV3 rebuild"
+
+            git fetch --no-tags origin main
+            if ! git merge-base --is-ancestor origin/main HEAD; then
+              git rebase origin/main
+            fi
+
+            git push origin HEAD:main
+          fi
+
+      - name: Dispatch protected signed updater
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run build.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            -f publish_release=true \
+            2>&1 | tee "$RUNNER_TEMP/nustrim-tv3-reset0/dispatch.log"
+
+      - name: Compact failure summary
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          DIR="$RUNNER_TEMP/nustrim-tv3-reset0"
+
+          echo "========== Nustrim TV3 Stage 0 Purge Summary =========="
+          echo "Result: FAILED"
+          echo "SHA: $(git rev-parse HEAD 2>/dev/null || echo unknown)"
+          grep -m1 'versionName' app/build.gradle.kts 2>/dev/null || true
+
+          for file in preflight.txt purge.log cleanup.log metadata.log updater-protection.txt audit.txt push.log dispatch.log; do
+            if [[ -f "$DIR/$file" ]]; then
+              echo
+              echo "[$file]"
+              tail -n 90 "$DIR/$file" || true
+            fi
+          done
+
+          for file in compile.log assemble.log; do
+            if [[ -f "$DIR/$file" ]]; then
+              echo
+              echo "[$file result]"
+              grep -E 'BUILD SUCCESSFUL|BUILD FAILED|(^|[[:space:]])(e:|error:|FAILURE:|Caused by:|Execution failed for task|What went wrong:)' \
+                "$DIR/$file" | tail -n 100 || true
+            fi
+          done
+
+          echo "========================================================"
+
+      - name: Upload purge diagnose
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nustrim-tv3-stage0-purge-diagnose
+          path: ${{ runner.temp }}/nustrim-tv3-reset0
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Success summary
+        if: success()
+        shell: bash
+        run: |
+          {
+            echo "## Nustrim TV3 Stage 0 Purge"
+            echo
+            echo "- Legacy TV runtime route removed."
+            echo "- tv/ and tv2/ source packages removed."
+            echo "- TV3 intentionally absent so Stage 1 starts from zero."
+            echo "- Mobile navigation and mobile screen path retained."
+            echo "- Old interface picker and floating TV test remote removed."
+            echo "- Dedicated legacy TV Search, Library and Settings workspaces removed."
+            echo "- Updater source and build.yml verified byte-for-byte unchanged."
+            echo "- app/build.gradle.kts unchanged except version metadata."
+            echo "- Full Kotlin compile and debug assemble passed."
+            echo "- Version advanced to ${RESET_VERSION}."
+            echo "- Protected signed updater build dispatched."
+          } >> "$GITHUB_STEP_SUMMARY"
