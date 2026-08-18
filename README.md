@@ -15,4 +15,4 @@ Current capabilities include:
 
 Android package: `app.nudroidlabs.nustrim`
 
-Current development baseline: `0.16.0-rc22.2`
+Current development baseline: `0.17.0-tv2-rc2`

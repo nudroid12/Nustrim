@@ -205,6 +205,8 @@ import kotlin.math.abs
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import app.nudroidlabs.nustrim.tv2.home.Tv2FocusedBackdrop
+import app.nudroidlabs.nustrim.tv2.home.Tv2PosterCard
 
 private val AppBackground = Color(0xFF090A0C)
 private val AppSurface = Color(0xFF15171B)
@@ -1340,10 +1342,18 @@ private fun HomeScreen(
 
     Box(Modifier.fillMaxSize()) {
         if (pinnedTvHeader) {
-            TvFocusDetailsHeader(
-                entry = displayedTvEntry ?: heroEntries.first(),
-                onOpen = onOpen,
+            val headerEntry = displayedTvEntry ?: heroEntries.first()
+            val headerItem = headerEntry.item
+            Tv2FocusedBackdrop(
+                artworkUrl = headerItem.backgroundUrl.ifBlank { headerItem.posterUrl },
+                title = headerItem.title,
+                metadata = listOf(
+                    headerItem.type.name.lowercase().replaceFirstChar { it.uppercase() },
+                    headerItem.releaseInfo
+                ).filter { it.isNotBlank() }.joinToString("  •  "),
+                description = headerItem.description,
                 height = tvHeaderHeight,
+                onOpen = { onOpen(headerEntry) },
                 modifier = Modifier.align(Alignment.TopCenter)
             )
         }
@@ -2373,6 +2383,25 @@ private fun HomePosterCard(
     onLongPress: () -> Unit = {},
     onClick: () -> Unit
 ) {
+    if (isTv) {
+        Tv2PosterCard(
+            itemKey = item.id,
+            posterUrl = item.posterUrl,
+            landscapeUrl = item.backgroundUrl.ifBlank { item.posterUrl },
+            title = item.title,
+            releaseInfo = item.releaseInfo,
+            reduceMotion = reduceMotion,
+            requester = requester,
+            previousRequester = previousRequester,
+            nextRequester = nextRequester,
+            sidebarRequester = LocalTvSidebarFocusRequester.current,
+            onFocused = onFocused,
+            onLongPress = onLongPress,
+            onClick = onClick
+        )
+        return
+    }
+
     val sidebarRequester = LocalTvSidebarFocusRequester.current
     var focused by remember { mutableStateOf(false) }
     var landscapePreview by remember(item.id) { mutableStateOf(false) }
