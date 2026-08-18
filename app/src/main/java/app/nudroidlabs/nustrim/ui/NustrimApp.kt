@@ -207,6 +207,8 @@ import java.util.Date
 import java.util.Locale
 import app.nudroidlabs.nustrim.tv2.home.Tv2FocusedBackdrop
 import app.nudroidlabs.nustrim.tv2.home.Tv2PosterCard
+import app.nudroidlabs.nustrim.tv2.details.Tv2DetailsEpisodes
+import app.nudroidlabs.nustrim.tv2.details.Tv2DetailsHero
 
 private val AppBackground = Color(0xFF090A0C)
 private val AppSurface = Color(0xFF15171B)
@@ -8443,6 +8445,29 @@ private fun DetailsHero(
     onTrailer: (() -> Unit)? = null,
     onToggleSaved: () -> Unit
 ) {
+    if (isTv) {
+        Tv2DetailsHero(
+            item = item,
+            logoUrl = logoUrl,
+            primaryLabel = primaryLabel,
+            playbackHint = playbackHint,
+            loading = loading,
+            saved = saved,
+            canSave = canSave,
+            primaryFocusRequester = primaryFocusRequester,
+            saveFocusRequester = saveFocusRequester,
+            trailerFocusRequester = trailerFocusRequester,
+            onPrimaryFocused = onPrimaryFocused,
+            onSaveFocused = onSaveFocused,
+            onTrailerFocused = onTrailerFocused,
+            onPrimary = onPrimary,
+            onTrailer = onTrailer,
+            onToggleSaved = onToggleSaved
+        )
+        return
+    }
+
+
     val backdrop = item.backgroundUrl.ifBlank { item.posterUrl }
     Box(
         modifier = Modifier
@@ -8754,6 +8779,24 @@ private fun TvEpisodesSection(
     onSeasonSelected: (Int) -> Unit,
     onEpisodeClick: (MediaEpisode) -> Unit
 ) {
+    Tv2DetailsEpisodes(
+        seasons = seasons,
+        selectedSeason = selectedSeason,
+        episodes = episodes,
+        selectedEpisodeId = selectedEpisodeId,
+        resumeEpisodeId = resumeEpisodeId,
+        resumeProgressFraction = resumeProgressFraction,
+        resumePositionMs = resumePositionMs,
+        seasonFocusRequesters = seasonFocusRequesters,
+        episodeFocusRequesters = episodeFocusRequesters,
+        onSeasonFocused = onSeasonFocused,
+        onEpisodeFocused = onEpisodeFocused,
+        onSeasonSelected = onSeasonSelected,
+        onEpisodeClick = onEpisodeClick
+    )
+    return
+
+
     Column(Modifier.fillMaxWidth()) {
         Text(
             "Episodes",
