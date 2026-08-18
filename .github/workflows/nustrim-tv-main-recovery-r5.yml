@@ -1,0 +1,386 @@
+name: Nustrim TV Main Recovery R5
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: nustrim-tv-main-recovery-r5
+  cancel-in-progress: false
+
+env:
+  TARGET_VERSION: "0.21.3-tv-main-r5"
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout exact main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Sync origin main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          git checkout -B main origin/main
+          git reset --hard origin/main
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "9.5.0"
+
+      - name: Capture current main truth
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/tv-r5"
+          mkdir -p "$DIR"
+          APP="app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt"
+
+          test -f "$APP"
+          test -f app/src/main/java/app/nudroidlabs/nustrim/ui/UiPreferences.kt
+          test -f .github/workflows/build.yml
+          test -d app/src/main/java/app/nudroidlabs/nustrim/core/update
+
+          sha256sum .github/workflows/build.yml > "$DIR/build.before"
+          find app/src/main/java/app/nudroidlabs/nustrim/core/update -type f -print0 | sort -z | xargs -0 sha256sum > "$DIR/updater.before"
+
+          {
+            echo "TV MAIN RECOVERY R5 - BEFORE"
+            echo "sha=$(git rev-parse HEAD)"
+            grep -m1 'versionCode' app/build.gradle.kts || true
+            grep -m1 'versionName' app/build.gradle.kts || true
+            echo
+            grep -n -E 'TvApp|TvReferenceCanvas|interfaceMode == InterfaceMode.TV|NustrimTv2Shell|tv2' "$APP" | head -n 140 || true
+            echo
+            find app/src/main/java/app/nudroidlabs/nustrim/tv -type f -print 2>/dev/null | sort || true
+          } | tee "$DIR/source-before.txt"
+
+      - name: Recover direct TV entry
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'\n          from pathlib import Path
+          import re, base64
+          
+          APP = Path("app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt")
+          PREFS = Path("app/src/main/java/app/nudroidlabs/nustrim/ui/UiPreferences.kt")
+          TV_APP = Path("app/src/main/java/app/nudroidlabs/nustrim/tv/TvApp.kt")
+          
+          text = APP.read_text(encoding="utf-8")
+          
+          required = [
+              "fun NustrimApp()",
+              "fun switchInterfaceMode(selected: InterfaceMode)",
+              "preferences.interfaceMode = selected",
+              "interfaceMode = selected",
+              "val activity = context.findActivity()",
+          ]
+          missing = [token for token in required if token not in text]
+          if missing:
+              raise SystemExit("Missing root anchors: " + ", ".join(missing))
+          
+          if not TV_APP.exists():
+              TV_APP.parent.mkdir(parents=True, exist_ok=True)
+              TV_APP.write_bytes(base64.b64decode("cGFja2FnZSBhcHAubnVkcm9pZGxhYnMubnVzdHJpbS50dgoKaW1wb3J0IGFuZHJvaWR4LmFjdGl2aXR5LmNvbXBvc2UuQmFja0hhbmRsZXIKaW1wb3J0IGFuZHJvaWR4LmNvbXBvc2UuZm91bmRhdGlvbi5iYWNrZ3JvdW5kCmltcG9ydCBhbmRyb2lkeC5jb21wb3NlLmZvdW5kYXRpb24uZm9jdXNhYmxlCmltcG9ydCBhbmRyb2lkeC5jb21wb3NlLmZvdW5kYXRpb24ubGF5b3V0LkFycmFuZ2VtZW50CmltcG9ydCBhbmRyb2lkeC5jb21wb3NlLmZvdW5kYXRpb24ubGF5b3V0LkNvbHVtbgppbXBvcnQgYW5kcm9pZHguY29tcG9zZS5mb3VuZGF0aW9uLmxheW91dC5Sb3cKaW1wb3J0IGFuZHJvaWR4LmNvbXBvc2UuZm91bmRhdGlvbi5sYXlvdXQuZmlsbE1heEhlaWdodAppbXBvcnQgYW5kcm9pZHguY29tcG9zZS5mb3VuZGF0aW9uLmxheW91dC5maWxsTWF4U2l6ZQppbXBvcnQgYW5kcm9pZHguY29tcG9zZS5mb3VuZGF0aW9uLmxheW91dC5wYWRkaW5nCmltcG9ydCBhbmRyb2lkeC5jb21wb3NlLmZvdW5kYXRpb24ubGF5b3V0LndpZHRoCmltcG9ydCBhbmRyb2lkeC5jb21wb3NlLm1hdGVyaWFsLmljb25zLkljb25zCmltcG9ydCBhbmRyb2lkeC5jb21wb3NlLm1hdGVyaWFsLmljb25zLm91dGxpbmVkLkhvbWUKaW1wb3J0IGFuZHJvaWR4LmNvbXBvc2UubWF0ZXJpYWwuaWNvbnMub3V0bGluZWQuTGlicmFyeUFkZAppbXBvcnQgYW5kcm9pZHguY29tcG9zZS5tYXRlcmlhbC5pY29ucy5vdXRsaW5lZC5TZWFyY2gKaW1wb3J0IGFuZHJvaWR4LmNvbXBvc2UubWF0ZXJpYWwuaWNvbnMub3V0bGluZWQuU2V0dGluZ3MKaW1wb3J0IGFuZHJvaWR4LmNvbXBvc2UubWF0ZXJpYWwzLkljb24KaW1wb3J0IGFuZHJvaWR4LmNvbXBvc2UubWF0ZXJpYWwzLlRleHQKaW1wb3J0IGFuZHJvaWR4LmNvbXBvc2UucnVudGltZS5Db21wb3NhYmxlCmltcG9ydCBhbmRyb2lkeC5jb21wb3NlLnJ1bnRpbWUuTGF1bmNoZWRFZmZlY3QKaW1wb3J0IGFuZHJvaWR4LmNvbXBvc2UucnVudGltZS5nZXRWYWx1ZQppbXBvcnQgYW5kcm9pZHguY29tcG9zZS5ydW50aW1lLm11dGFibGVTdGF0ZU9mCmltcG9ydCBhbmRyb2lkeC5jb21wb3NlLnJ1bnRpbWUucmVtZW1iZXIKaW1wb3J0IGFuZHJvaWR4LmNvbXBvc2UucnVudGltZS5zZXRWYWx1ZQppbXBvcnQgYW5kcm9pZHguY29tcG9zZS51aS5BbGlnbm1lbnQKaW1wb3J0IGFuZHJvaWR4LmNvbXBvc2UudWkuTW9kaWZpZXIKaW1wb3J0IGFuZHJvaWR4LmNvbXBvc2UudWkuZm9jdXMuRm9jdXNSZXF1ZXN0ZXIKaW1wb3J0IGFuZHJvaWR4LmNvbXBvc2UudWkuZm9jdXMuZm9jdXNSZXF1ZXN0ZXIKaW1wb3J0IGFuZHJvaWR4LmNvbXBvc2UudWkuZm9jdXMub25Gb2N1c0NoYW5nZWQKaW1wb3J0IGFuZHJvaWR4LmNvbXBvc2UudWkuZ3JhcGhpY3MuQ29sb3IKaW1wb3J0IGFuZHJvaWR4LmNvbXBvc2UudWkuZ3JhcGhpY3MudmVjdG9yLkltYWdlVmVjdG9yCmltcG9ydCBhbmRyb2lkeC5jb21wb3NlLnVpLmlucHV0LmtleS5LZXkKaW1wb3J0IGFuZHJvaWR4LmNvbXBvc2UudWkuaW5wdXQua2V5LktleUV2ZW50VHlwZQppbXBvcnQgYW5kcm9pZHguY29tcG9zZS51aS5pbnB1dC5rZXkua2V5CmltcG9ydCBhbmRyb2lkeC5jb21wb3NlLnVpLmlucHV0LmtleS5vblByZXZpZXdLZXlFdmVudAppbXBvcnQgYW5kcm9pZHguY29tcG9zZS51aS5pbnB1dC5rZXkudHlwZQppbXBvcnQgYW5kcm9pZHguY29tcG9zZS51aS50ZXh0LmZvbnQuRm9udFdlaWdodAppbXBvcnQgYW5kcm9pZHguY29tcG9zZS51aS51bml0LmRwCmltcG9ydCBhbmRyb2lkeC5jb21wb3NlLnVpLnVuaXQuc3AKCnByaXZhdGUgZW51bSBjbGFzcyBSNURlc3RpbmF0aW9uKHZhbCBsYWJlbDogU3RyaW5nLCB2YWwgaWNvbjogSW1hZ2VWZWN0b3IpIHsKICAgIEhPTUUoIkhvbWUiLCBJY29ucy5PdXRsaW5lZC5Ib21lKSwKICAgIFNFQVJDSCgiU2VhcmNoIiwgSWNvbnMuT3V0bGluZWQuU2VhcmNoKSwKICAgIExJQlJBUlkoIkxpYnJhcnkiLCBJY29ucy5PdXRsaW5lZC5MaWJyYXJ5QWRkKSwKICAgIFNFVFRJTkdTKCJTZXR0aW5ncyIsIEljb25zLk91dGxpbmVkLlNldHRpbmdzKQp9CgpAQ29tcG9zYWJsZQpmdW4gVHZBcHAob25FeGl0OiAoKSAtPiBVbml0KSB7CiAgICB2YXIgc2VsZWN0ZWQgYnkgcmVtZW1iZXIgeyBtdXRhYmxlU3RhdGVPZihSNURlc3RpbmF0aW9uLkhPTUUpIH0KICAgIHZhbCByZXF1ZXN0ZXJzID0gcmVtZW1iZXIgewogICAgICAgIFI1RGVzdGluYXRpb24uZW50cmllcy5hc3NvY2lhdGVXaXRoIHsgRm9jdXNSZXF1ZXN0ZXIoKSB9CiAgICB9CgogICAgQmFja0hhbmRsZXIob25CYWNrID0gb25FeGl0KQoKICAgIFJvdygKICAgICAgICBtb2RpZmllciA9IE1vZGlmaWVyCiAgICAgICAgICAgIC5maWxsTWF4U2l6ZSgpCiAgICAgICAgICAgIC5iYWNrZ3JvdW5kKENvbG9yKDB4RkYwOTBBMEMpKQogICAgKSB7CiAgICAgICAgQ29sdW1uKAogICAgICAgICAgICBtb2RpZmllciA9IE1vZGlmaWVyCiAgICAgICAgICAgICAgICAud2lkdGgoMjIwLmRwKQogICAgICAgICAgICAgICAgLmZpbGxNYXhIZWlnaHQoKQogICAgICAgICAgICAgICAgLmJhY2tncm91bmQoQ29sb3IoMHhGRjExMTMxNykpCiAgICAgICAgICAgICAgICAucGFkZGluZygxOC5kcCksCiAgICAgICAgICAgIHZlcnRpY2FsQXJyYW5nZW1lbnQgPSBBcnJhbmdlbWVudC5zcGFjZWRCeSgxOC5kcCkKICAgICAgICApIHsKICAgICAgICAgICAgVGV4dCgKICAgICAgICAgICAgICAgICJOVVNUUklNIiwKICAgICAgICAgICAgICAgIGNvbG9yID0gQ29sb3IuV2hpdGUsCiAgICAgICAgICAgICAgICBmb250U2l6ZSA9IDIyLnNwLAogICAgICAgICAgICAgICAgZm9udFdlaWdodCA9IEZvbnRXZWlnaHQuQm9sZAogICAgICAgICAgICApCiAgICAgICAgICAgIFI1RGVzdGluYXRpb24uZW50cmllcy5mb3JFYWNoIHsgZGVzdGluYXRpb24gLT4KICAgICAgICAgICAgICAgIHZhciBmb2N1c2VkIGJ5IHJlbWVtYmVyIHsgbXV0YWJsZVN0YXRlT2YoZmFsc2UpIH0KICAgICAgICAgICAgICAgIFJvdygKICAgICAgICAgICAgICAgICAgICBtb2RpZmllciA9IE1vZGlmaWVyCiAgICAgICAgICAgICAgICAgICAgICAgIC5mb2N1c1JlcXVlc3RlcihyZXF1ZXN0ZXJzLmdldFZhbHVlKGRlc3RpbmF0aW9uKSkKICAgICAgICAgICAgICAgICAgICAgICAgLm9uRm9jdXNDaGFuZ2VkIHsgZm9jdXNlZCA9IGl0Lmhhc0ZvY3VzIH0KICAgICAgICAgICAgICAgICAgICAgICAgLm9uUHJldmlld0tleUV2ZW50IHsgZXZlbnQgLT4KICAgICAgICAgICAgICAgICAgICAgICAgICAgIGlmICgKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBldmVudC50eXBlID09IEtleUV2ZW50VHlwZS5LZXlEb3duICYmCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgKGV2ZW50LmtleSA9PSBLZXkuRGlyZWN0aW9uQ2VudGVyIHx8IGV2ZW50LmtleSA9PSBLZXkuRW50ZXIpCiAgICAgICAgICAgICAgICAgICAgICAgICAgICApIHsKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBzZWxlY3RlZCA9IGRlc3RpbmF0aW9uCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgdHJ1ZQogICAgICAgICAgICAgICAgICAgICAgICAgICAgfSBlbHNlIGZhbHNlCiAgICAgICAgICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgICAgICAgICAgICAgLmZvY3VzYWJsZSgpCiAgICAgICAgICAgICAgICAgICAgICAgIC5wYWRkaW5nKHZlcnRpY2FsID0gMTAuZHApLAogICAgICAgICAgICAgICAgICAgIGhvcml6b250YWxBcnJhbmdlbWVudCA9IEFycmFuZ2VtZW50LnNwYWNlZEJ5KDEyLmRwKSwKICAgICAgICAgICAgICAgICAgICB2ZXJ0aWNhbEFsaWdubWVudCA9IEFsaWdubWVudC5DZW50ZXJWZXJ0aWNhbGx5CiAgICAgICAgICAgICAgICApIHsKICAgICAgICAgICAgICAgICAgICBJY29uKAogICAgICAgICAgICAgICAgICAgICAgICBkZXN0aW5hdGlvbi5pY29uLAogICAgICAgICAgICAgICAgICAgICAgICBjb250ZW50RGVzY3JpcHRpb24gPSBkZXN0aW5hdGlvbi5sYWJlbCwKICAgICAgICAgICAgICAgICAgICAgICAgdGludCA9IGlmIChmb2N1c2VkKSBDb2xvci5XaGl0ZSBlbHNlIENvbG9yKDB4RkZBMkE1QUUpCiAgICAgICAgICAgICAgICAgICAgKQogICAgICAgICAgICAgICAgICAgIFRleHQoCiAgICAgICAgICAgICAgICAgICAgICAgIGRlc3RpbmF0aW9uLmxhYmVsLAogICAgICAgICAgICAgICAgICAgICAgICBjb2xvciA9IGlmIChmb2N1c2VkKSBDb2xvci5XaGl0ZSBlbHNlIENvbG9yKDB4RkZBMkE1QUUpLAogICAgICAgICAgICAgICAgICAgICAgICBmb250V2VpZ2h0ID0gaWYgKGZvY3VzZWQgfHwgc2VsZWN0ZWQgPT0gZGVzdGluYXRpb24pIHsKICAgICAgICAgICAgICAgICAgICAgICAgICAgIEZvbnRXZWlnaHQuU2VtaUJvbGQKICAgICAgICAgICAgICAgICAgICAgICAgfSBlbHNlIHsKICAgICAgICAgICAgICAgICAgICAgICAgICAgIEZvbnRXZWlnaHQuTm9ybWFsCiAgICAgICAgICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgICAgICAgICApCiAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgIH0KICAgICAgICB9CgogICAgICAgIENvbHVtbigKICAgICAgICAgICAgbW9kaWZpZXIgPSBNb2RpZmllci5wYWRkaW5nKDQ4LmRwKSwKICAgICAgICAgICAgdmVydGljYWxBcnJhbmdlbWVudCA9IEFycmFuZ2VtZW50LnNwYWNlZEJ5KDE0LmRwKQogICAgICAgICkgewogICAgICAgICAgICBUZXh0KAogICAgICAgICAgICAgICAgIlRWIE1PREUgQUNUSVZFIFI1IiwKICAgICAgICAgICAgICAgIGNvbG9yID0gQ29sb3IuV2hpdGUsCiAgICAgICAgICAgICAgICBmb250U2l6ZSA9IDM0LnNwLAogICAgICAgICAgICAgICAgZm9udFdlaWdodCA9IEZvbnRXZWlnaHQuQm9sZAogICAgICAgICAgICApCiAgICAgICAgICAgIFRleHQoCiAgICAgICAgICAgICAgICBzZWxlY3RlZC5sYWJlbCwKICAgICAgICAgICAgICAgIGNvbG9yID0gQ29sb3IuV2hpdGUsCiAgICAgICAgICAgICAgICBmb250U2l6ZSA9IDI0LnNwLAogICAgICAgICAgICAgICAgZm9udFdlaWdodCA9IEZvbnRXZWlnaHQuU2VtaUJvbGQKICAgICAgICAgICAgKQogICAgICAgICAgICBUZXh0KAogICAgICAgICAgICAgICAgIlRoaXMgcmVjb3Zlcnkgc2hlbGwgcHJvdmVzIHRoZSBuZXcgVFYgZW50cnkgcG9pbnQgaXMgYWN0aXZlLiIsCiAgICAgICAgICAgICAgICBjb2xvciA9IENvbG9yKDB4RkZBMkE1QUUpLAogICAgICAgICAgICAgICAgZm9udFNpemUgPSAxNS5zcAogICAgICAgICAgICApCiAgICAgICAgfQogICAgfQoKICAgIExhdW5jaGVkRWZmZWN0KFVuaXQpIHsKICAgICAgICByZXF1ZXN0ZXJzLmdldFZhbHVlKFI1RGVzdGluYXRpb24uSE9NRSkucmVxdWVzdEZvY3VzKCkKICAgIH0KfQo="))
+              print("CREATED fallback tv/TvApp.kt")
+          else:
+              print("PRESERVE existing tv/TvApp.kt")
+          
+          tv_import = "import app.nudroidlabs.nustrim.tv.TvApp\n"
+          if tv_import not in text:
+              package_end = text.find("\n", text.find("package "))
+              if package_end < 0:
+                  raise SystemExit("Package declaration missing")
+              text = text[:package_end + 1] + "\n" + tv_import + text[package_end + 1:]
+          
+          app_start = text.find("fun NustrimApp()")
+          app_end = text.find("private tailrec fun Context.findActivity", app_start)
+          if app_end < 0:
+              raise SystemExit("NustrimApp end anchor missing")
+          chunk = text[app_start:app_end]
+          
+          if not ("if (interfaceMode == InterfaceMode.TV)" in chunk and "TvApp(" in chunk):
+              old = '''            val physicalTvDevice = rememberIsPhysicalTv()
+                      Surface(modifier = Modifier.fillMaxSize(), color = AppBackground) {
+                          if (interfaceMode == InterfaceMode.TV && !physicalTvDevice) {
+                              TvReferenceCanvas { screenContent() }
+                          } else {
+                              screenContent()
+                          }
+                      }'''
+          
+              new = '''            val physicalTvDevice = rememberIsPhysicalTv()
+                      Surface(modifier = Modifier.fillMaxSize(), color = AppBackground) {
+                          if (interfaceMode == InterfaceMode.TV) {
+                              TvApp(
+                                  onExit = {
+                                      if (physicalTvDevice) {
+                                          activity?.finish()
+                                      } else {
+                                          switchInterfaceMode(InterfaceMode.MOBILE)
+                                      }
+                                  }
+                              )
+                          } else {
+                              screenContent()
+                          }
+                      }'''
+          
+              if old not in chunk:
+                  raise SystemExit("Exact legacy TV root block not found; refusing blind patch")
+              chunk = chunk.replace(old, new, 1)
+              print("PATCHED legacy TV root -> TvApp")
+          else:
+              print("PRESERVE direct TvApp route")
+          
+          text = text[:app_start] + chunk + text[app_end:]
+          
+          prefs = PREFS.read_text(encoding="utf-8")
+          prefs = re.sub(
+              r'putString\(KEY_INTERFACE_MODE,\s*value\.name\)\.apply\(\)',
+              'putString(KEY_INTERFACE_MODE, value.name).commit()',
+              prefs,
+              count=1
+          )
+          prefs = re.sub(
+              r'remove\(KEY_INTERFACE_MODE\)\.apply\(\)',
+              'remove(KEY_INTERFACE_MODE).commit()',
+              prefs,
+              count=1
+          )
+          
+          app_chunk = text[app_start:text.find("private tailrec fun Context.findActivity", app_start)]
+          checks = {
+              "TvApp import": "import app.nudroidlabs.nustrim.tv.TvApp" in text,
+              "direct TV route": "if (interfaceMode == InterfaceMode.TV)" in app_chunk and "TvApp(" in app_chunk,
+              "legacy conditional absent": "interfaceMode == InterfaceMode.TV && !physicalTvDevice" not in app_chunk,
+              "Mobile fallback retained": "screenContent()" in app_chunk,
+              "TvApp file exists": TV_APP.exists(),
+          }
+          failed = [name for name, ok in checks.items() if not ok]
+          if failed:
+              raise SystemExit("Recovery contract failed: " + ", ".join(failed))
+          
+          APP.write_text(re.sub(r'(?m)^[ \t]+$', '', text), encoding="utf-8")
+          PREFS.write_text(re.sub(r'(?m)^[ \t]+$', '', prefs), encoding="utf-8")
+          
+          for name in checks:
+              print("PASS:", name)\n          PY
+
+      - name: Bump R5 version
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'\n          from pathlib import Path
+          import os, re
+          
+          path = Path("app/build.gradle.kts")
+          text = path.read_text(encoding="utf-8")
+          target = os.environ["TARGET_VERSION"]
+          
+          code = re.search(r'versionCode\s*=\s*(\d+)', text)
+          name = re.search(r'versionName\s*=\s*"([^"]+)"', text)
+          if not code or not name:
+              raise SystemExit("Version metadata missing")
+          
+          old_code = int(code.group(1))
+          old_name = name.group(1)
+          new_code = old_code if old_name == target else old_code + 1
+          
+          text = re.sub(r'versionCode\s*=\s*\d+', f'versionCode = {new_code}', text, count=1)
+          text = re.sub(r'versionName\s*=\s*"[^"]+"', f'versionName = "{target}"', text, count=1)
+          path.write_text(text, encoding="utf-8")
+          
+          print(f"versionName: {old_name} -> {target}")
+          print(f"versionCode: {old_code} -> {new_code}")\n          PY
+
+      - name: Local audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/tv-r5"
+          APP="app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt"
+
+          echo "AUDIT VERSION: TV-MAIN-RECOVERY-R5"
+
+          test -f app/src/main/java/app/nudroidlabs/nustrim/tv/TvApp.kt
+          grep -q 'import app.nudroidlabs.nustrim.tv.TvApp' "$APP"
+          grep -q 'if (interfaceMode == InterfaceMode.TV)' "$APP"
+          grep -q 'TvApp(' "$APP"
+
+          if grep -q 'interfaceMode == InterfaceMode.TV && !physicalTvDevice' "$APP"; then
+            echo "::error::Legacy root TV route still active."
+            exit 1
+          fi
+
+          grep -q 'versionName = "0.21.3-tv-main-r5"' app/build.gradle.kts
+
+          sha256sum .github/workflows/build.yml > "$DIR/build.after"
+          find app/src/main/java/app/nudroidlabs/nustrim/core/update -type f -print0 | sort -z | xargs -0 sha256sum > "$DIR/updater.after"
+          cmp "$DIR/build.before" "$DIR/build.after"
+          cmp "$DIR/updater.before" "$DIR/updater.after"
+
+          git diff --check
+          git diff > "$DIR/recovery.patch"
+          git status --short | tee "$DIR/status.txt"
+
+      - name: Compile
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          gradle --no-daemon --build-cache :app:compileDebugKotlin --stacktrace --console=plain 2>&1 | tee "$RUNNER_TEMP/tv-r5/compile.log"
+          code=${PIPESTATUS[0]}
+          set -e
+          if [[ "$code" -ne 0 ]]; then exit "$code"; fi
+
+      - name: Assemble
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle --no-daemon --build-cache :app:assembleDebug --stacktrace --console=plain 2>&1 | tee "$RUNNER_TEMP/tv-r5/assemble.log"
+
+      - name: Commit and push
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$RUNNER_TEMP/tv-r5/push.log") 2>&1
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt                   app/src/main/java/app/nudroidlabs/nustrim/ui/UiPreferences.kt                   app/src/main/java/app/nudroidlabs/nustrim/tv                   app/build.gradle.kts
+
+          git diff --cached --check
+
+          if ! git diff --cached --quiet; then
+            git commit -m "fix(tv): recover direct TV entry on main"
+            git fetch --no-tags origin main
+            git rebase origin/main
+            git push origin HEAD:main
+          fi
+
+      - name: Verify origin main really changed
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          echo "origin_main_sha=$(git rev-parse origin/main)" | tee "$RUNNER_TEMP/tv-r5/remote-main.txt"
+
+          python3 - <<'PY'\n          import subprocess
+          
+          def show(path):
+              return subprocess.check_output(["git", "show", f"origin/main:{path}"], text=True)
+          
+          app = show("app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt")
+          tv = show("app/src/main/java/app/nudroidlabs/nustrim/tv/TvApp.kt")
+          gradle = show("app/build.gradle.kts")
+          
+          checks = {
+              "origin/main imports TvApp": "import app.nudroidlabs.nustrim.tv.TvApp" in app,
+              "origin/main routes TV to TvApp": "if (interfaceMode == InterfaceMode.TV)" in app and "TvApp(" in app,
+              "origin/main legacy conditional gone": "interfaceMode == InterfaceMode.TV && !physicalTvDevice" not in app,
+              "origin/main has TvApp source": "fun TvApp(" in tv,
+              "origin/main has R5 version": 'versionName = "0.21.3-tv-main-r5"' in gradle,
+          }
+          failed = [name for name, ok in checks.items() if not ok]
+          if failed:
+              raise SystemExit("REMOTE MAIN VERIFICATION FAILED: " + ", ".join(failed))
+          for name in checks:
+              print("PASS:", name)\n          PY
+
+      - name: Dispatch signed updater build
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          HEAD_SHA="$(git rev-parse origin/main)"
+          echo "HEAD_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
+
+          gh workflow run build.yml --repo "$GITHUB_REPOSITORY" --ref main -f publish_release=true
+          sleep 8
+
+          RUN_ID=""
+          for attempt in $(seq 1 24); do
+            RUN_ID="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow build.yml --branch main --event workflow_dispatch --limit 20 --json databaseId,headSha --jq ".[] | select(.headSha == \"$HEAD_SHA\") | .databaseId" | head -n1)"
+            if [[ -n "$RUN_ID" ]]; then break; fi
+            sleep 5
+          done
+
+          test -n "$RUN_ID"
+          echo "SIGNED_RUN_ID=$RUN_ID" >> "$GITHUB_ENV"
+          echo "signed_run_id=$RUN_ID" | tee "$RUNNER_TEMP/tv-r5/dispatch.txt"
+
+      - name: Wait signed updater build
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run watch "$SIGNED_RUN_ID" --repo "$GITHUB_REPOSITORY" --exit-status 2>&1 | tee "$RUNNER_TEMP/tv-r5/signed-build-watch.log"
+
+      - name: Verify published R5
+        shell: bash
+        run: |
+          set -euo pipefail
+          MANIFEST="$RUNNER_TEMP/tv-r5/update.json"
+
+          for attempt in $(seq 1 24); do
+            curl --fail --location --silent --show-error --header 'Cache-Control: no-cache'               "https://github.com/$GITHUB_REPOSITORY/releases/latest/download/update.json?ts=$(date +%s)"               --output "$MANIFEST" || true
+            if grep -q '0.21.3-tv-main-r5' "$MANIFEST" 2>/dev/null; then break; fi
+            sleep 5
+          done
+
+          test -s "$MANIFEST"
+          grep -q '0.21.3-tv-main-r5' "$MANIFEST"
+          cat "$MANIFEST" | tee "$RUNNER_TEMP/tv-r5/published-update.json"
+
+      - name: Compact failure summary
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          DIR="$RUNNER_TEMP/tv-r5"
+          echo "========== TV Main Recovery R5 =========="
+          echo "Result: FAILED"
+          for file in source-before.txt status.txt push.log remote-main.txt dispatch.txt signed-build-watch.log published-update.json; do
+            if [[ -f "$DIR/$file" ]]; then
+              echo
+              echo "[$file]"
+              tail -n 180 "$DIR/$file" || true
+            fi
+          done
+          for file in compile.log assemble.log; do
+            if [[ -f "$DIR/$file" ]]; then
+              echo
+              echo "[$file]"
+              grep -E 'BUILD SUCCESSFUL|BUILD FAILED|(^|[[:space:]])(e:|error:|FAILURE:|Caused by:|Execution failed for task|What went wrong:)' "$DIR/$file" | tail -n 220 || true
+            fi
+          done
+
+      - name: Upload diagnose
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nustrim-tv-main-recovery-r5-diagnose
+          path: ${{ runner.temp }}/tv-r5
+          if-no-files-found: ignore
+          retention-days: 7
