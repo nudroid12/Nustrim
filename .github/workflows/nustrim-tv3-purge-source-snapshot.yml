@@ -1,0 +1,129 @@
+name: Nustrim TV3 Purge Source Snapshot
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout exact main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 1
+
+      - name: Capture exact purge source
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/nustrim-tv3-purge-source"
+          mkdir -p "$OUT"
+
+          APP="app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt"
+          PREFS="app/src/main/java/app/nudroidlabs/nustrim/ui/UiPreferences.kt"
+
+          test -f "$APP"
+          test -f .nustrim-tv-reset
+
+          cp "$APP" "$OUT/NustrimApp.kt"
+          [[ -f "$PREFS" ]] && cp "$PREFS" "$OUT/UiPreferences.kt" || true
+          cp .nustrim-tv-reset "$OUT/nustrim-tv-reset.txt"
+          cp app/build.gradle.kts "$OUT/app-build.gradle.kts"
+
+          git rev-parse HEAD > "$OUT/sha.txt"
+          git status --short > "$OUT/git-status.txt"
+
+          {
+            echo "TV2 FILES"
+            echo "========="
+            find app/src/main/java/app/nudroidlabs/nustrim/tv2 -type f -print 2>/dev/null | sort || true
+          } > "$OUT/tv2-files.txt"
+
+          {
+            echo "TV2 REFERENCES OUTSIDE tv2/"
+            echo "==========================="
+            grep -R -n -E '\b(Tv2|NustrimTv2)[A-Za-z0-9_]*\b|app\.nudroidlabs\.nustrim\.tv2\.' \
+              app/src/main/java/app/nudroidlabs/nustrim \
+              --exclude-dir=tv2 2>/dev/null || true
+          } > "$OUT/tv2-references.txt"
+
+          {
+            echo "LEGACY TV SYMBOL INVENTORY"
+            echo "=========================="
+            grep -o -E '\b(Tv[A-Za-z0-9_]+|isTv|rememberIsTv|physicalTv[A-Za-z0-9_]*)\b' "$APP" \
+              | sort | uniq -c | sort -nr || true
+          } > "$OUT/legacy-tv-symbols.txt"
+
+          {
+            echo "FUNCTIONS CONTAINING TV2 REFERENCES"
+            echo "==================================="
+            python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          text = Path("app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt").read_text()
+          lines = text.splitlines()
+
+          refs = []
+          for i, line in enumerate(lines, start=1):
+              if re.search(r'\b(Tv2|NustrimTv2)[A-Za-z0-9_]*\b', line) and not line.lstrip().startswith("import "):
+                  refs.append(i)
+
+          func_starts = []
+          for i, line in enumerate(lines, start=1):
+              m = re.search(r'\bfun\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(', line)
+              if m:
+                  func_starts.append((i, m.group(1)))
+
+          for ref in refs:
+              owners = [(ln, name) for ln, name in func_starts if ln <= ref]
+              owner = owners[-1] if owners else (0, "<top-level>")
+              print(f"line {ref}: nearest function {owner[1]} @ {owner[0]}")
+              start = max(1, ref - 18)
+              end = min(len(lines), ref + 18)
+              for n in range(start, end + 1):
+                  mark = ">>" if n == ref else "  "
+                  print(f"{mark} {n:05d}: {lines[n-1]}")
+              print()
+          PY
+          } > "$OUT/tv2-reference-context.txt"
+
+          {
+            echo "MOBILE/UPDATER PROTECTION"
+            echo "========================="
+            grep -n 'MobileNavItem(' "$APP" | head -n 20 || true
+            grep -n 'content(false, 0)' "$APP" | head -n 20 || true
+            grep -n 'AppUpdater(context)' "$APP" | head -n 20 || true
+            grep -n 'UpdateSettingsScreen' "$APP" | head -n 20 || true
+            sha256sum .github/workflows/build.yml || true
+            find app/src/main/java/app/nudroidlabs/nustrim/core/update -type f -print0 \
+              | sort -z | xargs -0 sha256sum || true
+          } > "$OUT/protected-baseline.txt"
+
+          echo "Snapshot SHA: $(cat "$OUT/sha.txt")"
+          echo "No repository files were modified."
+
+      - name: Verify snapshot is read only
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "$(git status --porcelain)" ]]; then
+            echo "::error::Snapshot workflow modified the checkout."
+            git status --short
+            exit 1
+          fi
+          echo "PASS: read-only snapshot"
+
+      - name: Upload exact purge source
+        uses: actions/upload-artifact@v7
+        with:
+          name: nustrim-tv3-purge-source-snapshot
+          path: ${{ runner.temp }}/nustrim-tv3-purge-source
+          if-no-files-found: error
+          retention-days: 7
