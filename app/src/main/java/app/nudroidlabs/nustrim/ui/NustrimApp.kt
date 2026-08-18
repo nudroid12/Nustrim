@@ -211,6 +211,11 @@ import app.nudroidlabs.nustrim.tv2.details.Tv2DetailsEpisodes
 import app.nudroidlabs.nustrim.tv2.details.Tv2DetailsHero
 import app.nudroidlabs.nustrim.tv2.sources.Tv2StreamSourcePicker
 import app.nudroidlabs.nustrim.tv2.player.Tv2PlayerControls
+import app.nudroidlabs.nustrim.tv2.workspace.Tv2LibraryWorkspace
+import app.nudroidlabs.nustrim.tv2.workspace.Tv2MediaTile
+import app.nudroidlabs.nustrim.tv2.workspace.Tv2SearchWorkspace
+import app.nudroidlabs.nustrim.tv2.workspace.Tv2SettingsEntry
+import app.nudroidlabs.nustrim.tv2.workspace.Tv2SettingsWorkspace
 
 private val AppBackground = Color(0xFF090A0C)
 private val AppSurface = Color(0xFF15171B)
@@ -2966,6 +2971,62 @@ private fun TvSearchScreenContent(
     onOpen: (UiMediaEntry) -> Unit,
     diagnostics: String?
 ) {
+    val tv2Results = results.map { entry ->
+        Tv2MediaTile(
+            key = discoverEntryKey(entry),
+            title = entry.item.title,
+            posterUrl = entry.item.posterUrl,
+            backgroundUrl = entry.item.backgroundUrl,
+            releaseInfo = entry.item.releaseInfo
+        )
+    }
+    val tv2Discover = discover.map { entry ->
+        Tv2MediaTile(
+            key = discoverEntryKey(entry),
+            title = entry.item.title,
+            posterUrl = entry.item.posterUrl,
+            backgroundUrl = entry.item.backgroundUrl,
+            releaseInfo = entry.item.releaseInfo
+        )
+    }
+    val tv2FilteredDiscover = filteredDiscover.map { entry ->
+        Tv2MediaTile(
+            key = discoverEntryKey(entry),
+            title = entry.item.title,
+            posterUrl = entry.item.posterUrl,
+            backgroundUrl = entry.item.backgroundUrl,
+            releaseInfo = entry.item.releaseInfo
+        )
+    }
+    Tv2SearchWorkspace(
+        query = query,
+        onQueryChanged = onQueryChanged,
+        onSearch = onSearch,
+        searchFocusRequester = searchFocusRequester,
+        contentFocusRequester = contentFocusRequester,
+        sidebarRequester = sidebarRequester,
+        searched = searched,
+        loading = loading,
+        discoverLoading = discoverLoading,
+        results = tv2Results,
+        discover = tv2Discover,
+        filteredDiscover = tv2FilteredDiscover,
+        typeFilter = typeFilter,
+        catalogFilter = catalogFilter,
+        genreFilter = genreFilter,
+        onTypeFilter = onTypeFilter,
+        onCatalogFilter = onCatalogFilter,
+        onGenreFilter = onGenreFilter,
+        onOpen = { key ->
+            (results + filteredDiscover)
+                .firstOrNull { discoverEntryKey(it) == key }
+                ?.let(onOpen)
+        },
+        diagnostics = diagnostics
+    )
+    return
+
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -3450,6 +3511,17 @@ private fun TvLibraryScreenContent(
     sidebarRequester: FocusRequester?,
     onOpen: (LocalMediaEntry) -> Unit
 ) {
+    Tv2LibraryWorkspace(
+        saved = saved,
+        gridMode = gridMode,
+        onGridMode = onGridMode,
+        primaryFocusRequester = primaryFocusRequester,
+        sidebarRequester = sidebarRequester,
+        onOpen = onOpen
+    )
+    return
+
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -4663,6 +4735,27 @@ private fun TvSettingsWorkspace(
     firstFocusRequester: FocusRequester,
     sidebarRequester: FocusRequester?
 ) {
+    val tv2Items = items.mapIndexed { index, item ->
+        Tv2SettingsEntry(
+            id = index.toString(),
+            title = item.title,
+            subtitle = item.subtitle
+        )
+    }
+    Tv2SettingsWorkspace(
+        settingsItems = tv2Items,
+        firstFocusRequester = firstFocusRequester,
+        sidebarRequester = sidebarRequester,
+        onOpen = { id ->
+            id.toIntOrNull()
+                ?.let(items::getOrNull)
+                ?.onClick
+                ?.invoke()
+        }
+    )
+    return
+
+
     var selectedIndex by remember { mutableIntStateOf(0) }
     val requesters = remember(items.map { it.title }) { List(items.size) { FocusRequester() } }
     val openRequester = remember { FocusRequester() }
