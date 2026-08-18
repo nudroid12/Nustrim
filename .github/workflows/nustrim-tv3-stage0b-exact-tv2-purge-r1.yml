@@ -1,0 +1,742 @@
+name: Nustrim TV3 Stage 0B Exact TV2 Purge R1
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: nustrim-tv3-stage0b-exact-tv2-purge-r1
+  cancel-in-progress: false
+
+env:
+  RESET_VERSION: "0.18.0-tv3-reset0b"
+  SOURCE_SHA256: "8a89dc2283fa1ceb36463bb7ad69aaba66773593ad1dd878bcdb8e41d40a74a4"
+
+jobs:
+  purge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout exact main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Lock exact NustrimApp source
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/nustrim-tv3-reset0b-exact"
+          mkdir -p "$DIR"
+
+          git fetch --no-tags origin main
+          git checkout -B main origin/main
+          git reset --hard origin/main
+
+          APP="app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt"
+          test -f "$APP"
+          test -f .nustrim-tv-reset
+          grep -q '^stage=0A$' .nustrim-tv-reset
+          grep -q '^runtime=mobile-only$' .nustrim-tv-reset
+          test -d app/src/main/java/app/nudroidlabs/nustrim/tv2
+
+          repo_sha="$(git rev-parse HEAD)"
+          source_sha="$(sha256sum "$APP" | awk '{print $1}')"
+
+          echo "$repo_sha" > "$DIR/repo-sha.txt"
+          echo "$source_sha" > "$DIR/source-sha256.txt"
+
+          if [[ "$source_sha" != "$SOURCE_SHA256" ]]; then
+            echo "::error::NustrimApp.kt changed since the verified purge snapshot."
+            echo "expected_source_sha256=$SOURCE_SHA256"
+            echo "actual_source_sha256=$source_sha"
+            echo "repo_sha=$repo_sha"
+            exit 1
+          fi
+
+          echo "PASS: exact verified NustrimApp.kt SHA-256 $source_sha"             | tee "$DIR/source-lock.txt"
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "9.5.0"
+
+      - name: Snapshot protected Mobile and updater
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/nustrim-tv3-reset0b-exact"
+          APP="app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt"
+
+          test -f .github/workflows/build.yml
+          test -d app/src/main/java/app/nudroidlabs/nustrim/core/update
+
+          sha256sum .github/workflows/build.yml > "$DIR/build.before"
+          find app/src/main/java/app/nudroidlabs/nustrim/core/update -type f -print0 \
+            | sort -z | xargs -0 sha256sum > "$DIR/updater.before"
+
+          python3 - <<'PY' > "$DIR/build-gradle.normalized.before"
+          from pathlib import Path
+          import re
+          text = Path("app/build.gradle.kts").read_text()
+          text = re.sub(r'versionCode\s*=\s*\d+', 'versionCode = <VERSION_CODE>', text, count=1)
+          text = re.sub(r'versionName\s*=\s*"[^"]+"', 'versionName = "<VERSION_NAME>"', text, count=1)
+          print(text, end="")
+          PY
+
+          # MainShell is the already-proven Mobile-only shell from Stage 0A.
+          python3 - <<'PY' > "$DIR/mainshell.before"
+          from pathlib import Path
+          import re
+
+          text = Path("app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt").read_text()
+
+          def end_block(source, start):
+              depth = 0
+              string = False
+              escape = False
+              i = start
+              while i < len(source):
+                  ch = source[i]
+                  if string:
+                      if escape:
+                          escape = False
+                      elif ch == "\\":
+                          escape = True
+                      elif ch == '"':
+                          string = False
+                      i += 1
+                      continue
+                  if ch == '"':
+                      string = True
+                  elif ch == "{":
+                      depth += 1
+                  elif ch == "}":
+                      depth -= 1
+                      if depth == 0:
+                          print(source[start:end_block_pos] if False else "")
+                          return i + 1
+                  i += 1
+              raise SystemExit("MainShell block unbalanced")
+
+          m = re.search(r'private\s+fun\s+MainShell\s*\(', text)
+          if not m:
+              raise SystemExit("MainShell missing")
+          brace = text.find("{", m.end())
+          end = end_block(text, brace)
+          print(text[m.start():end], end="")
+          PY
+
+          sha256sum "$DIR/mainshell.before" > "$DIR/mainshell.sha256.before"
+
+          {
+            echo "SNAPSHOT SHA: $(git rev-parse HEAD)"
+            echo
+            echo "[TV2 refs before exact purge]"
+            grep -n -E '\b(Tv2|NustrimTv2)[A-Za-z0-9_]*\b|app\.nudroidlabs\.nustrim\.tv2\.' "$APP" || true
+          } > "$DIR/preflight.txt"
+
+      - name: Apply exact verified TV2 purge
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' 2>&1 | tee "$RUNNER_TEMP/nustrim-tv3-reset0b-exact/patch.log"
+          from pathlib import Path
+          import re
+          
+          EXPECTED_SHA = "a4f15750ca622e61e69f4b837c7a862b788c449b"
+          APP = Path("app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt")
+          text = APP.read_text(encoding="utf-8")
+          
+          def match_pair(source: str, start: int, opener="{", closer="}") -> int:
+              if start < 0 or start >= len(source) or source[start] != opener:
+                  raise SystemExit(f"Expected {opener} at {start}")
+              depth = 0
+              i = start
+              in_string = False
+              triple = False
+              escape = False
+              line_comment = False
+              block_comment = 0
+              while i < len(source):
+                  if line_comment:
+                      if source[i] == "\n":
+                          line_comment = False
+                      i += 1
+                      continue
+                  if block_comment:
+                      if source.startswith("/*", i):
+                          block_comment += 1
+                          i += 2
+                          continue
+                      if source.startswith("*/", i):
+                          block_comment -= 1
+                          i += 2
+                          continue
+                      i += 1
+                      continue
+                  if triple:
+                      if source.startswith('"""', i):
+                          triple = False
+                          i += 3
+                      else:
+                          i += 1
+                      continue
+                  if in_string:
+                      ch = source[i]
+                      if escape:
+                          escape = False
+                      elif ch == "\\":
+                          escape = True
+                      elif ch == '"':
+                          in_string = False
+                      i += 1
+                      continue
+          
+                  if source.startswith("//", i):
+                      line_comment = True
+                      i += 2
+                      continue
+                  if source.startswith("/*", i):
+                      block_comment = 1
+                      i += 2
+                      continue
+                  if source.startswith('"""', i):
+                      triple = True
+                      i += 3
+                      continue
+                  if source[i] == '"':
+                      in_string = True
+                      i += 1
+                      continue
+          
+                  ch = source[i]
+                  if ch == opener:
+                      depth += 1
+                  elif ch == closer:
+                      depth -= 1
+                      if depth == 0:
+                          return i + 1
+                  i += 1
+              raise SystemExit(f"Unbalanced {opener}{closer}")
+          
+          def find_nonimport_symbol(source: str, symbol: str) -> int:
+              for match in re.finditer(re.escape(symbol), source):
+                  line_start = source.rfind("\n", 0, match.start()) + 1
+                  line_end = source.find("\n", match.start())
+                  if line_end < 0:
+                      line_end = len(source)
+                  if not source[line_start:line_end].lstrip().startswith("import "):
+                      return match.start()
+              raise SystemExit(f"Expected non-import symbol not found: {symbol}")
+          
+          def find_anchor_block(source: str, symbol: str, anchor: str):
+              position = find_nonimport_symbol(source, symbol)
+              start = source.rfind(anchor, 0, position)
+              if start < 0:
+                  raise SystemExit(f"Anchor not found for {symbol}: {anchor}")
+              brace = source.find("{", start + len(anchor) - 1)
+              end = match_pair(source, brace)
+              if not (brace < position < end):
+                  raise SystemExit(f"Anchor does not contain {symbol}: {anchor}")
+              return start, brace, end
+          
+          def remove_block(source: str, symbol: str, anchor: str) -> str:
+              start, _, end = find_anchor_block(source, symbol, anchor)
+              print(f"REMOVE BLOCK: {symbol} via {anchor}")
+              return source[:start] + source[end:]
+          
+          def fold_else(source: str, symbol: str, anchor: str) -> str:
+              start, _, then_end = find_anchor_block(source, symbol, anchor)
+              cursor = then_end
+              while cursor < len(source) and source[cursor].isspace():
+                  cursor += 1
+              if not source.startswith("else", cursor):
+                  raise SystemExit(f"Expected else/mobile branch for {symbol}")
+              else_brace = cursor + 4
+              while else_brace < len(source) and source[else_brace].isspace():
+                  else_brace += 1
+              if else_brace >= len(source) or source[else_brace] != "{":
+                  raise SystemExit(f"Expected braced else/mobile branch for {symbol}")
+              else_end = match_pair(source, else_brace)
+              mobile_body = source[else_brace + 1:else_end - 1]
+              print(f"FOLD TO MOBILE: {symbol} via {anchor}")
+              return source[:start] + mobile_body + source[else_end:]
+          
+          def find_top_function(source: str, name: str):
+              match = re.search(
+                  rf'(?m)^(?:@[^\n]+\n)*\s*(?:private\s+)?fun\s+{re.escape(name)}\s*\(',
+                  source,
+              )
+              if not match:
+                  raise SystemExit(f"Function not found: {name}")
+              brace = source.find("{", match.end())
+              end = match_pair(source, brace)
+              return match.start(), end
+          
+          def remove_top_function(source: str, name: str) -> str:
+              start, end = find_top_function(source, name)
+              while end < len(source) and source[end] == "\n":
+                  end += 1
+              print(f"REMOVE FUNCTION: {name}")
+              return source[:start] + source[end:]
+          
+          def remove_data_class(source: str, name: str) -> str:
+              match = re.search(
+                  rf'(?m)^\s*private\s+data\s+class\s+{re.escape(name)}\s*\(',
+                  source,
+              )
+              if not match:
+                  raise SystemExit(f"Data class not found: {name}")
+              paren = source.find("(", match.end() - 1)
+              end = match_pair(source, paren, "(", ")")
+              while end < len(source) and source[end] == "\n":
+                  end += 1
+              print(f"REMOVE DATA CLASS: {name}")
+              return source[:match.start()] + source[end:]
+          
+          # Exact Stage 0A snapshot operations. These anchors were verified against
+          # SHA a4f15750ca622e61e69f4b837c7a862b788c449b before this workflow was generated.
+          text = remove_block(text, "Tv2FocusedBackdrop(", "if (pinnedTvHeader) {")
+          text = remove_block(text, "Tv2PosterCard(", "if (isTv) {")
+          
+          text = fold_else(text, "TvSearchScreenContent(", "if (isTv) {")
+          text = remove_top_function(text, "TvSearchScreenContent")
+          
+          text = remove_block(text, "TvLibraryScreenContent(", "if (isTv) {")
+          text = remove_top_function(text, "TvLibraryScreenContent")
+          
+          text = remove_block(text, "TvSettingsWorkspace(", "if (isTv) {")
+          text = remove_data_class(text, "TvSettingsRootItem")
+          text = remove_top_function(text, "TvSettingsWorkspace")
+          
+          text = fold_else(text, "Tv2StreamSourcePicker(", "if (rememberIsTv()) {")
+          
+          text = remove_block(text, "Tv2DetailsHero(", "if (isTv) {")
+          
+          text = remove_block(
+              text,
+              "TvEpisodesSection(",
+              "if (isTv && detailed.episodes.isNotEmpty()) {",
+          )
+          text = remove_top_function(text, "TvEpisodesSection")
+          
+          text = fold_else(text, "Tv2PlayerControls(", "if (isTv) {")
+          
+          # External TV2 imports are safe to remove only after all call sites are gone.
+          text = re.sub(
+              r'(?m)^import\s+app\.nudroidlabs\.nustrim\.tv2\.[^\n]+\n',
+              '',
+              text,
+          )
+          
+          leftovers = sorted(set(re.findall(
+              r'\b(?:Tv2[A-Za-z0-9_]*|NustrimTv2[A-Za-z0-9_]*)\b',
+              text,
+          )))
+          if leftovers:
+              raise SystemExit("TV2 symbols remain: " + ", ".join(leftovers))
+          
+          # Lightweight Kotlin delimiter validation, ignoring comments and strings.
+          stack = []
+          pairs = {')': '(', ']': '[', '}': '{'}
+          i = 0
+          line = 1
+          in_string = False
+          triple = False
+          escape = False
+          line_comment = False
+          block_comment = 0
+          
+          while i < len(text):
+              if text[i] == "\n":
+                  line += 1
+              if line_comment:
+                  if text[i] == "\n":
+                      line_comment = False
+                  i += 1
+                  continue
+              if block_comment:
+                  if text.startswith("/*", i):
+                      block_comment += 1
+                      i += 2
+                      continue
+                  if text.startswith("*/", i):
+                      block_comment -= 1
+                      i += 2
+                      continue
+                  i += 1
+                  continue
+              if triple:
+                  if text.startswith('"""', i):
+                      triple = False
+                      i += 3
+                  else:
+                      i += 1
+                  continue
+              if in_string:
+                  ch = text[i]
+                  if escape:
+                      escape = False
+                  elif ch == "\\":
+                      escape = True
+                  elif ch == '"':
+                      in_string = False
+                  i += 1
+                  continue
+              if text.startswith("//", i):
+                  line_comment = True
+                  i += 2
+                  continue
+              if text.startswith("/*", i):
+                  block_comment = 1
+                  i += 2
+                  continue
+              if text.startswith('"""', i):
+                  triple = True
+                  i += 3
+                  continue
+              if text[i] == '"':
+                  in_string = True
+                  i += 1
+                  continue
+          
+              ch = text[i]
+              if ch in "([{":
+                  stack.append((ch, line))
+              elif ch in ")]}":
+                  if not stack or stack[-1][0] != pairs[ch]:
+                      raise SystemExit(f"Kotlin delimiter mismatch at line {line}: {ch}")
+                  stack.pop()
+              i += 1
+          
+          if stack:
+              raise SystemExit(f"Kotlin delimiter stack not empty: {stack[-5:]}")
+          
+          required_mobile = [
+              "MobileNavItem(",
+              "content(false, 0)",
+              "MobileStreamSourcePicker(",
+              "AppUpdater(context)",
+              "UpdateSettingsScreen",
+          ]
+          missing = [token for token in required_mobile if token not in text]
+          if missing:
+              raise SystemExit("Protected Mobile/updater token missing: " + ", ".join(missing))
+          
+          APP.write_text(text, encoding="utf-8")
+          print("PASS: exact TV2 call-site purge")
+          print("PASS: zero Tv2/NustrimTv2 symbols")
+          print("PASS: Kotlin delimiters balanced")
+          print("PASS: Mobile/updater anchors retained")
+          PY
+          code=${PIPESTATUS[0]}
+          if [[ "$code" -ne 0 ]]; then exit "$code"; fi
+
+      - name: Prove zero references then delete TV2 package
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/nustrim-tv3-reset0b-exact"
+
+          set +e
+          grep -R -n -E '\b(Tv2|NustrimTv2)[A-Za-z0-9_]*\b|app\.nudroidlabs\.nustrim\.tv2\.' \
+            app/src/main/java/app/nudroidlabs/nustrim \
+            --exclude-dir=tv2 \
+            > "$DIR/tv2-reference-blockers.txt" 2>&1
+          refs=$?
+          set -e
+
+          if [[ "$refs" -eq 0 ]]; then
+            cat "$DIR/tv2-reference-blockers.txt"
+            echo "::error::TV2 references remain outside tv2/. Refusing deletion."
+            exit 1
+          elif [[ "$refs" -ne 1 ]]; then
+            cat "$DIR/tv2-reference-blockers.txt"
+            echo "::error::TV2 reference scan failed."
+            exit "$refs"
+          fi
+
+          rm -rf app/src/main/java/app/nudroidlabs/nustrim/tv2
+          rm -rf app/src/main/java/app/nudroidlabs/nustrim/tv
+          rm -rf app/src/main/java/app/nudroidlabs/nustrim/tv3
+
+          echo "PASS: zero external TV2 refs proven before deletion" | tee "$DIR/tv2-delete.txt"
+
+      - name: Advance reset metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' 2>&1 | tee "$RUNNER_TEMP/nustrim-tv3-reset0b-exact/metadata.log"
+          from pathlib import Path
+          import os
+          import re
+          
+          target = os.environ["RESET_VERSION"]
+          path = Path("app/build.gradle.kts")
+          text = path.read_text(encoding="utf-8")
+          
+          cm = re.search(r'versionCode\s*=\s*(\d+)', text)
+          nm = re.search(r'versionName\s*=\s*"([^"]+)"', text)
+          if not cm or not nm:
+              raise SystemExit("Version metadata missing")
+          
+          old_code = int(cm.group(1))
+          old_name = nm.group(1)
+          new_code = old_code if old_name == target else old_code + 1
+          
+          text = re.sub(r'versionCode\s*=\s*\d+', f'versionCode = {new_code}', text, count=1)
+          text = re.sub(r'versionName\s*=\s*"[^"]+"', f'versionName = "{target}"', text, count=1)
+          path.write_text(text, encoding="utf-8")
+          Path(".nustrim-version").write_text(target + "\n", encoding="utf-8")
+          
+          Path(".nustrim-tv-reset").write_text(
+              "generation=3\n"
+              "stage=0B\n"
+              "method=exact-snapshot-purge\n"
+              "source-sha256=8a89dc2283fa1ceb36463bb7ad69aaba66773593ad1dd878bcdb8e41d40a74a4\n"
+              "runtime=mobile-only\n"
+              "tv2-package=removed\n"
+              "external-tv2-references=removed\n"
+              "legacy-inline-tv=pending-0C\n"
+              "mobile=protected\n"
+              "updater=protected\n",
+              encoding="utf-8",
+          )
+          
+          print(f"versionName: {old_name} -> {target}")
+          print(f"versionCode: {old_code} -> {new_code}")
+          PY
+
+      - name: Verify protected Mobile shell and updater
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/nustrim-tv3-reset0b-exact"
+          APP="app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt"
+
+          sha256sum .github/workflows/build.yml > "$DIR/build.after"
+          find app/src/main/java/app/nudroidlabs/nustrim/core/update -type f -print0 \
+            | sort -z | xargs -0 sha256sum > "$DIR/updater.after"
+
+          cmp "$DIR/build.before" "$DIR/build.after"
+          cmp "$DIR/updater.before" "$DIR/updater.after"
+
+          python3 - <<'PY' > "$DIR/build-gradle.normalized.after"
+          from pathlib import Path
+          import re
+          text = Path("app/build.gradle.kts").read_text()
+          text = re.sub(r'versionCode\s*=\s*\d+', 'versionCode = <VERSION_CODE>', text, count=1)
+          text = re.sub(r'versionName\s*=\s*"[^"]+"', 'versionName = "<VERSION_NAME>"', text, count=1)
+          print(text, end="")
+          PY
+          cmp "$DIR/build-gradle.normalized.before" "$DIR/build-gradle.normalized.after"
+
+          python3 - <<'PY' > "$DIR/mainshell.after"
+          from pathlib import Path
+          import re
+
+          text = Path("app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt").read_text()
+
+          def end_block(source, start):
+              depth = 0
+              string = False
+              escape = False
+              i = start
+              while i < len(source):
+                  ch = source[i]
+                  if string:
+                      if escape:
+                          escape = False
+                      elif ch == "\\":
+                          escape = True
+                      elif ch == '"':
+                          string = False
+                      i += 1
+                      continue
+                  if ch == '"':
+                      string = True
+                  elif ch == "{":
+                      depth += 1
+                  elif ch == "}":
+                      depth -= 1
+                      if depth == 0:
+                          return i + 1
+                  i += 1
+              raise SystemExit("MainShell block unbalanced")
+
+          m = re.search(r'private\s+fun\s+MainShell\s*\(', text)
+          if not m:
+              raise SystemExit("MainShell missing")
+          brace = text.find("{", m.end())
+          end = end_block(text, brace)
+          print(text[m.start():end], end="")
+          PY
+
+          sha256sum "$DIR/mainshell.after" > "$DIR/mainshell.sha256.after"
+          cmp "$DIR/mainshell.sha256.before" "$DIR/mainshell.sha256.after"
+
+          grep -q 'MobileNavItem(' "$APP"
+          grep -q 'content(false, 0)' "$APP"
+          grep -q 'MobileStreamSourcePicker(' "$APP"
+          grep -q 'AppUpdater(context)' "$APP"
+          grep -q 'UpdateSettingsScreen' "$APP"
+
+          echo "PASS: Mobile MainShell byte-identical" | tee "$DIR/protection.txt"
+          echo "PASS: updater/build config protected" | tee -a "$DIR/protection.txt"
+
+      - name: Stage 0B architecture audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/nustrim-tv3-reset0b-exact"
+          APP="app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt"
+
+          test ! -d app/src/main/java/app/nudroidlabs/nustrim/tv2
+          test ! -d app/src/main/java/app/nudroidlabs/nustrim/tv3
+
+          if grep -R -n -E '\b(Tv2|NustrimTv2)[A-Za-z0-9_]*\b|app\.nudroidlabs\.nustrim\.tv2\.' \
+            app/src/main/java/app/nudroidlabs/nustrim 2>/dev/null; then
+            echo "::error::TV2 reference remains after exact purge."
+            exit 1
+          fi
+
+          grep -q '^stage=0B$' .nustrim-tv-reset
+          grep -q '^method=exact-snapshot-purge$' .nustrim-tv-reset
+          grep -q "^source-sha256=$SOURCE_SHA256$" .nustrim-tv-reset
+
+          if grep -R -n -E 'NuBrowse|NuBrowseApp|app\.nubrowse' app/src/main app/build.gradle.kts 2>/dev/null; then
+            echo "::error::NuBrowse contamination detected."
+            exit 1
+          fi
+
+          git diff --check
+
+          {
+            echo "PASS: exact snapshot purge completed"
+            echo "PASS: tv2 package deleted"
+            echo "PASS: zero external Tv2/NustrimTv2 references"
+            echo "PASS: Mobile MainShell unchanged"
+            echo "PASS: updater/build protected"
+            echo
+            echo "[remaining legacy TV semantics for Stage 0C]"
+            grep -o -E '\b(Tv[A-Za-z0-9_]+|isTv|rememberIsTv|physicalTv[A-Za-z0-9_]*)\b' "$APP" \
+              | sort | uniq -c | sort -nr | head -n 200 || true
+            echo
+            git status --short
+            git diff --stat
+          } > "$DIR/audit.txt"
+
+          cat "$DIR/audit.txt"
+          git diff > "$DIR/stage0b-exact.patch"
+
+      - name: Compile after exact TV2 purge
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          gradle --no-daemon --build-cache \
+            :app:compileDebugKotlin \
+            --stacktrace --console=plain \
+            2>&1 | tee "$RUNNER_TEMP/nustrim-tv3-reset0b-exact/compile.log"
+          code=${PIPESTATUS[0]}
+          set -e
+          if [[ "$code" -ne 0 ]]; then exit "$code"; fi
+
+      - name: Assemble mobile debug APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          gradle --no-daemon --build-cache \
+            :app:assembleDebug \
+            --stacktrace --console=plain \
+            2>&1 | tee "$RUNNER_TEMP/nustrim-tv3-reset0b-exact/assemble.log"
+          code=${PIPESTATUS[0]}
+          set -e
+          if [[ "$code" -ne 0 ]]; then exit "$code"; fi
+
+      - name: Commit and push exact purge
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$RUNNER_TEMP/nustrim-tv3-reset0b-exact/push.log") 2>&1
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+          git diff --cached --check
+
+          if git diff --cached --quiet; then
+            echo "Stage 0B exact purge already applied."
+          else
+            git commit -m "refactor(tv): purge verified TV2 presentation layer"
+            git push origin HEAD:main
+          fi
+
+      - name: Dispatch protected signed updater
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run build.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            -f publish_release=true \
+            2>&1 | tee "$RUNNER_TEMP/nustrim-tv3-reset0b-exact/dispatch.log"
+
+      - name: Compact failure summary
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          DIR="$RUNNER_TEMP/nustrim-tv3-reset0b-exact"
+
+          echo "========== Nustrim TV3 Stage 0B Exact Purge R1 =========="
+          echo "Result: FAILED"
+          echo "Expected source SHA-256: $SOURCE_SHA256"
+          echo "Actual source SHA-256: $(cat "$DIR/source-sha256.txt" 2>/dev/null || echo unknown)"
+          echo "Repo SHA: $(cat "$DIR/repo-sha.txt" 2>/dev/null || echo unknown)"
+          grep -m1 'versionName' app/build.gradle.kts 2>/dev/null || true
+
+          for file in source-lock.txt preflight.txt patch.log tv2-reference-blockers.txt \
+                      tv2-delete.txt metadata.log protection.txt audit.txt push.log dispatch.log; do
+            if [[ -f "$DIR/$file" ]]; then
+              echo
+              echo "[$file]"
+              tail -n 160 "$DIR/$file" || true
+            fi
+          done
+
+          for file in compile.log assemble.log; do
+            if [[ -f "$DIR/$file" ]]; then
+              echo
+              echo "[$file result]"
+              grep -E 'BUILD SUCCESSFUL|BUILD FAILED|(^|[[:space:]])(e:|error:|FAILURE:|Caused by:|Execution failed for task|What went wrong:)' \
+                "$DIR/$file" | tail -n 180 || true
+            fi
+          done
+
+          echo "======================================================="
+
+      - name: Upload diagnose
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nustrim-tv3-stage0b-exact-r1-diagnose
+          path: ${{ runner.temp }}/nustrim-tv3-reset0b-exact
+          if-no-files-found: ignore
+          retention-days: 7
