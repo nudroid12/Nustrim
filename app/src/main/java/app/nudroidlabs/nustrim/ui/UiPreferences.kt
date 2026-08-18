@@ -2,6 +2,11 @@ package app.nudroidlabs.nustrim.ui
 
 import android.content.Context
 
+enum class InterfaceMode {
+    MOBILE,
+    TV
+}
+
 enum class SubtitleDisplayMode {
     PREFERRED_ONLY,
     SHOW_ALL
@@ -9,6 +14,21 @@ enum class SubtitleDisplayMode {
 
 class UiPreferences(context: Context) {
     private val preferences = context.getSharedPreferences("nustrim_ui", Context.MODE_PRIVATE)
+
+    var interfaceMode: InterfaceMode?
+        get() = preferences.getString(KEY_INTERFACE_MODE, null)
+            ?.let { stored -> runCatching { InterfaceMode.valueOf(stored) }.getOrNull() }
+        set(value) {
+            if (value == null) {
+                preferences.edit().remove(KEY_INTERFACE_MODE).apply()
+            } else {
+                preferences.edit().putString(KEY_INTERFACE_MODE, value.name).apply()
+            }
+        }
+
+    var remoteTestEnabled: Boolean
+        get() = preferences.getBoolean(KEY_REMOTE_TEST_ENABLED, false)
+        set(value) = preferences.edit().putBoolean(KEY_REMOTE_TEST_ENABLED, value).apply()
 
     var developerMode: Boolean
         get() = preferences.getBoolean(KEY_DEVELOPER_MODE, false)
@@ -142,6 +162,8 @@ class UiPreferences(context: Context) {
     }
 
     companion object {
+        private const val KEY_INTERFACE_MODE = "interface_mode"
+        private const val KEY_REMOTE_TEST_ENABLED = "remote_test_enabled"
         private const val KEY_DEVELOPER_MODE = "developer_mode"
         private const val KEY_DEVELOPER_DIAGNOSTICS = "developer_diagnostics"
         private const val KEY_AUTOPLAY_FIRST_SOURCE = "autoplay_first_source"
