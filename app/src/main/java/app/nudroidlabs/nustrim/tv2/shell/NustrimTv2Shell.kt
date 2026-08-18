@@ -2,9 +2,7 @@ package app.nudroidlabs.nustrim.tv2.shell
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
@@ -31,7 +29,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -41,7 +38,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -115,7 +111,7 @@ fun NustrimTv2Shell(
                 .fillMaxHeight()
                 .width(railWidth),
             color = Tv2Colors.rail,
-            border = BorderStroke(1.dp, Tv2Colors.railBorder)
+
         ) {
             Column(
                 modifier = Modifier
@@ -172,6 +168,8 @@ fun NustrimTv2Shell(
 
 @Composable
 private fun Tv2Brand(expanded: Boolean) {
+    if (!expanded) return
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -203,11 +201,6 @@ private fun Tv2Brand(expanded: Boolean) {
             )
         }
     }
-
-    if (expanded) {
-        Spacer(Modifier.size(15.dp))
-        HorizontalDivider(color = Tv2Colors.railBorder)
-    }
 }
 
 @Composable
@@ -221,20 +214,9 @@ private fun Tv2RailItem(
     onClick: () -> Unit
 ) {
     var focused by remember { mutableStateOf(false) }
-
-    val scale by animateFloatAsState(
-        targetValue = if (focused) Tv2Motion.focusScale else 1f,
-        animationSpec = tween(Tv2Motion.focusDurationMs),
-        label = "tv2-nav-scale-${destination.id}"
-    )
-
-    Surface(
+Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
-            }
             .focusRequester(requester)
             .onFocusChanged {
                 focused = it.isFocused
@@ -256,8 +238,8 @@ private fun Tv2RailItem(
             .focusable(),
         shape = Tv2Shapes.navItem,
         color = when {
+            selected -> androidx.compose.ui.graphics.Color.White
             focused -> Tv2Colors.focused
-            selected -> Tv2Colors.active
             else -> androidx.compose.ui.graphics.Color.Transparent
         }
     ) {
@@ -280,6 +262,7 @@ private fun Tv2RailItem(
                 contentDescription = destination.label,
                 modifier = Modifier.size(24.dp),
                 tint = when {
+                    selected -> Tv2Colors.rail
                     focused -> Tv2Colors.focusedContent
                     else -> Tv2Colors.text
                 }
@@ -289,10 +272,10 @@ private fun Tv2RailItem(
                 Spacer(Modifier.width(Tv2Spacing.iconLabelGap))
                 Text(
                     text = destination.label,
-                    color = if (focused) {
-                        Tv2Colors.focusedContent
-                    } else {
-                        Tv2Colors.text
+                    color = when {
+                        selected -> Tv2Colors.rail
+                        focused -> Tv2Colors.focusedContent
+                        else -> Tv2Colors.text
                     },
                     fontWeight = if (focused || selected) {
                         FontWeight.SemiBold
