@@ -27,6 +27,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -35,6 +36,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -43,6 +45,9 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
+import app.nudroidlabs.nustrim.tv.home.TvHomeEntry
+import app.nudroidlabs.nustrim.tv.home.TvHomeScreen
 import app.nudroidlabs.nustrim.tv.navigation.TvDestination
 import app.nudroidlabs.nustrim.tv.theme.TvColors
 
@@ -52,20 +57,25 @@ fun TvShell(
 ) {
     var selected by remember { mutableStateOf(TvDestination.HOME) }
     var sidebarExpanded by remember { mutableStateOf(true) }
+    var contentFocusRequestToken by remember { mutableIntStateOf(0) }
+    var openedHomeEntry by remember { mutableStateOf<TvHomeEntry?>(null) }
 
     val sidebarRequesters = remember {
         TvDestination.entries.associateWith { FocusRequester() }
     }
-    val contentRequester = remember { FocusRequester() }
+    val firstContentRequester = remember { FocusRequester() }
 
     fun focusSidebar() {
         sidebarExpanded = true
-        sidebarRequesters.getValue(selected).requestFocus()
+        openedHomeEntry = null
+        runCatching {
+            sidebarRequesters.getValue(selected).requestFocus()
+        }
     }
 
     fun focusContent() {
         sidebarExpanded = false
-        contentRequester.requestFocus()
+        contentFocusRequestToken += 1
     }
 
     LaunchedEffect(Unit) {
@@ -73,32 +83,65 @@ fun TvShell(
     }
 
     BackHandler {
-        if (sidebarExpanded) onExit() else focusSidebar()
+        when {
+            openedHomeEntry != null -> {
+                openedHomeEntry = null
+                contentFocusRequestToken += 1
+            }
+            sidebarExpanded -> onExit()
+            else -> focusSidebar()
+        }
     }
 
-    Row(
+    Box(
         modifier = Modifier
             .fillMaxSize()
             .background(TvColors.Background)
     ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(start = 72.dp)
+        ) {
+            if (openedHomeEntry != null) {
+                TvStageDetailsPreview(
+                    entry = openedHomeEntry!!,
+                    onMoveLeft = { focusSidebar() },
+                    focusRequester = firstContentRequester
+                )
+            } else {
+                when (selected) {
+                    TvDestination.HOME -> TvHomeScreen(
+                        contentFocusRequestToken = contentFocusRequestToken,
+                        firstContentRequester = firstContentRequester,
+                        onContentFocused = {
+                            sidebarExpanded = false
+                        },
+                        onMoveLeft = { focusSidebar() },
+                        onOpen = { openedHomeEntry = it }
+                    )
+                    else -> TvStagePlaceholder(
+                        destination = selected,
+                        focusRequester = firstContentRequester,
+                        onMoveLeft = { focusSidebar() }
+                    )
+                }
+            }
+        }
+
         TvSidebar(
             selected = selected,
             expanded = sidebarExpanded,
             requesters = sidebarRequesters,
             onSelected = { destination ->
                 selected = destination
+                openedHomeEntry = null
                 sidebarExpanded = true
             },
-            onMoveRight = { focusContent() }
-        )
-
-        TvStagePlaceholder(
-            destination = selected,
-            focusRequester = contentRequester,
-            onMoveLeft = { focusSidebar() },
+            onMoveRight = { focusContent() },
             modifier = Modifier
-                .fillMaxHeight()
-                .fillMaxWidth()
+                .align(Alignment.CenterStart)
+                .zIndex(10f)
         )
     }
 }
@@ -109,20 +152,30 @@ private fun TvSidebar(
     expanded: Boolean,
     requesters: Map<TvDestination, FocusRequester>,
     onSelected: (TvDestination) -> Unit,
-    onMoveRight: () -> Unit
+    onMoveRight: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val width by animateDpAsState(
-        targetValue = if (expanded) 236.dp else 78.dp,
+        targetValue = if (expanded) 224.dp else 72.dp,
         label = "tvSidebarWidth"
     )
 
     Column(
-        modifier = Modifier
+        modifier = modifier
             .width(width)
             .fillMaxHeight()
-            .background(TvColors.BackgroundElevated)
-            .padding(horizontal = 12.dp, vertical = 28.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
+            .background(
+                if (expanded) {
+                    TvColors.BackgroundElevated.copy(alpha = 0.98f)
+                } else {
+                    TvColors.BackgroundElevated.copy(alpha = 0.72f)
+                }
+            )
+            .padding(
+                horizontal = if (expanded) 12.dp else 9.dp,
+                vertical = 28.dp
+            ),
+        verticalArrangement = Arrangement.spacedBy(9.dp)
     ) {
         if (expanded) {
             Text(
@@ -130,9 +183,12 @@ private fun TvSidebar(
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold,
                 color = TvColors.TextPrimary,
-                modifier = Modifier.padding(horizontal = 12.dp)
+                modifier = Modifier.padding(
+                    horizontal = 12.dp,
+                    vertical = 5.dp
+                )
             )
-            Spacer(Modifier.height(18.dp))
+            Spacer(Modifier.height(14.dp))
         } else {
             Spacer(Modifier.height(46.dp))
         }
@@ -162,27 +218,24 @@ private fun TvSidebarItem(
     var focused by remember { mutableStateOf(false) }
 
     val background by animateColorAsState(
-        targetValue = if (focused || selected) {
-            TvColors.FocusBackground
-        } else {
-            androidx.compose.ui.graphics.Color.Transparent
+        targetValue = when {
+            focused -> TvColors.FocusRing
+            selected -> TvColors.FocusBackground
+            else -> Color.Transparent
         },
         label = "tvSidebarItemBackground"
     )
 
-    val ring by animateColorAsState(
-        targetValue = if (focused) {
-            TvColors.FocusRing
-        } else {
-            androidx.compose.ui.graphics.Color.Transparent
-        },
-        label = "tvSidebarItemRing"
-    )
+    val foreground = when {
+        focused -> TvColors.Background
+        selected -> TvColors.TextPrimary
+        else -> TvColors.TextSecondary
+    }
 
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .height(52.dp)
+            .height(50.dp)
             .focusRequester(focusRequester)
             .onFocusChanged { state -> focused = state.hasFocus }
             .onPreviewKeyEvent { event ->
@@ -200,46 +253,39 @@ private fun TvSidebarItem(
             .focusable(),
         shape = RoundedCornerShape(12.dp),
         color = background,
-        border = BorderStroke(1.dp, ring)
+        border = if (selected && !focused) {
+            BorderStroke(
+                1.dp,
+                Color.White.copy(alpha = 0.10f)
+            )
+        } else {
+            null
+        }
     ) {
         Row(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 14.dp),
+                .padding(horizontal = 13.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(14.dp)
+            horizontalArrangement = Arrangement.spacedBy(13.dp)
         ) {
-            Box(
-                modifier = Modifier
-                    .size(30.dp)
-                    .background(
-                        TvColors.SurfaceVariant,
-                        RoundedCornerShape(9.dp)
-                    ),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = destination.icon,
-                    contentDescription = destination.label,
-                    tint = TvColors.TextPrimary,
-                    modifier = Modifier.size(18.dp)
-                )
-            }
+            Icon(
+                imageVector = destination.icon,
+                contentDescription = destination.label,
+                tint = foreground,
+                modifier = Modifier.size(22.dp)
+            )
 
             if (expanded) {
                 Text(
                     text = destination.label,
-                    color = if (focused || selected) {
-                        TvColors.TextPrimary
-                    } else {
-                        TvColors.TextSecondary
-                    },
-                    fontWeight = if (selected) {
+                    color = foreground,
+                    fontWeight = if (focused || selected) {
                         FontWeight.SemiBold
                     } else {
                         FontWeight.Normal
                     },
-                    fontSize = 16.sp
+                    fontSize = 15.sp
                 )
             }
         }
@@ -250,11 +296,12 @@ private fun TvSidebarItem(
 private fun TvStagePlaceholder(
     destination: TvDestination,
     focusRequester: FocusRequester,
-    onMoveLeft: () -> Unit,
-    modifier: Modifier = Modifier
+    onMoveLeft: () -> Unit
 ) {
     Box(
-        modifier = modifier.padding(horizontal = 42.dp, vertical = 34.dp),
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 42.dp, vertical = 34.dp),
         contentAlignment = Alignment.TopStart
     ) {
         Surface(
@@ -294,11 +341,81 @@ private fun TvStagePlaceholder(
                     color = TvColors.TextPrimary
                 )
                 Text(
-                    text = "TV foundation ready. Content will be connected in the next stage.",
+                    text = "This workspace lands in a later TV stage.",
                     color = TvColors.TextSecondary,
                     fontSize = 15.sp
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun TvStageDetailsPreview(
+    entry: TvHomeEntry,
+    onMoveLeft: () -> Unit,
+    focusRequester: FocusRequester
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(TvColors.Background),
+        contentAlignment = Alignment.CenterStart
+    ) {
+        Surface(
+            modifier = Modifier
+                .width(540.dp)
+                .padding(start = 48.dp)
+                .focusRequester(focusRequester)
+                .onPreviewKeyEvent { event ->
+                    if (
+                        event.type == KeyEventType.KeyDown &&
+                        event.key == Key.DirectionLeft
+                    ) {
+                        onMoveLeft()
+                        true
+                    } else {
+                        false
+                    }
+                }
+                .focusable(),
+            shape = RoundedCornerShape(20.dp),
+            color = TvColors.BackgroundElevated,
+            border = BorderStroke(
+                1.dp,
+                Color.White.copy(alpha = 0.12f)
+            )
+        ) {
+            Column(
+                modifier = Modifier.padding(30.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = entry.item.title,
+                    color = TvColors.TextPrimary,
+                    fontSize = 30.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = entry.item.description.ifBlank {
+                        "Details page will be connected in TV Stage 3."
+                    },
+                    color = TvColors.TextSecondary,
+                    fontSize = 15.sp,
+                    maxLines = 5,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                )
+                Text(
+                    text = "Stage 3 will replace this preview with the full details experience.",
+                    color = TvColors.Accent,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+        }
+    }
+
+    LaunchedEffect(entry.stableKey) {
+        runCatching { focusRequester.requestFocus() }
     }
 }
