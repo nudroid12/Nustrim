@@ -1,0 +1,921 @@
+name: Nustrim M11 TV2 Stage 2 Home R8
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nustrim-m11-tv2-stage2-home-r8
+  cancel-in-progress: false
+
+env:
+  TV2_REFERENCE: "NuvioTV 0.8.3-beta"
+  TV2_STYLE: "modern-minimalist"
+  TV2_VERSION: "0.17.0-tv2-rc2"
+
+jobs:
+  patch:
+    name: Patch, verify and commit TV2 Home
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Synchronise checkout with origin main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          git checkout -B main origin/main
+          git reset --hard origin/main
+          echo "Checked out main at $(git rev-parse HEAD)"
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle 9.5.0 with cache
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "9.5.0"
+
+      - name: Prepare Stage 2 diagnose
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/nustrim-tv2-stage2-diagnose"
+          {
+            echo "NUSTRIM TV2 STAGE 2 R8 DIAGNOSE"
+            echo "================================"
+            echo "run_id=${GITHUB_RUN_ID}"
+            echo "event_sha=${GITHUB_SHA}"
+            echo "event_ref=${GITHUB_REF}"
+            echo "checked_out_sha=$(git rev-parse HEAD)"
+            echo "checked_out_branch=$(git branch --show-current)"
+            echo
+            echo "[initial git status]"
+            git status --short
+          } > "$RUNNER_TEMP/nustrim-tv2-stage2-diagnose/preflight.txt"
+
+      - name: Verify TV2 Stage 1 baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          DIAG="$RUNNER_TEMP/nustrim-tv2-stage2-diagnose/preflight.txt"
+          TV2_ROOT="app/src/main/java/app/nudroidlabs/nustrim/tv2"
+          APP="app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt"
+
+          fail() {
+            echo "::error::$1"
+            echo "FAIL: $1" >> "$DIAG"
+            echo >> "$DIAG"
+            echo "[tv2 tree]" >> "$DIAG"
+            find "$TV2_ROOT" -maxdepth 4 -type f -print 2>/dev/null | sort >> "$DIAG" || true
+            exit 1
+          }
+
+          [[ -f .nustrim-tv2 ]] || fail "Missing .nustrim-tv2 marker."
+          [[ -d "$TV2_ROOT" ]] || fail "Missing TV2 source directory."
+          [[ -f "$APP" ]] || fail "Missing NustrimApp.kt."
+
+          marker_value() {
+            local key="$1"
+            awk -F= -v wanted="$key" '
+              $1 == wanted {
+                value = substr($0, index($0, "=") + 1)
+                gsub(/\r/, "", value)
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+                print value
+                exit
+              }
+            ' .nustrim-tv2
+          }
+
+          generation="$(marker_value generation)"
+          stage="$(marker_value stage)"
+
+          [[ "$generation" == "2" ]]             || fail ".nustrim-tv2 generation is '${generation:-missing}', expected '2'."
+
+          case "$stage" in
+            1|2|foundation-1|home-2)
+              ;;
+            *)
+              echo "Resolved marker bytes:" >> "$DIAG"
+              od -An -tx1c .nustrim-tv2 >> "$DIAG" 2>&1 || true
+              fail ".nustrim-tv2 stage resolved as '${stage:-missing}', expected Stage 1 or Stage 2."
+              ;;
+          esac
+
+          find "$TV2_ROOT/design" -maxdepth 1 -type f -name '*.kt' -print -quit | grep -q . \
+            || fail "TV2 design layer is empty."
+          find "$TV2_ROOT/navigation" -maxdepth 1 -type f -name '*.kt' -print -quit | grep -q . \
+            || fail "TV2 navigation layer is empty."
+          find "$TV2_ROOT/shell" -maxdepth 1 -type f -name '*.kt' -print -quit | grep -q . \
+            || fail "TV2 shell layer is empty."
+
+          grep -R -q 'NustrimTv2Shell' "$TV2_ROOT/shell" "$APP" \
+            || fail "NustrimTv2Shell wiring is missing."
+
+          if grep -R -n -E 'NuBrowse|NuBrowseApp|app\.nubrowse' app/src/main app/build.gradle.kts 2>/dev/null | tee -a "$DIAG"; then
+            fail "NuBrowse contamination detected in the Nustrim app baseline."
+          fi
+
+          {
+            echo
+            echo "[resolved TV2 foundation]"
+            find "$TV2_ROOT" -maxdepth 3 -type f -name '*.kt' -print | sort
+            echo
+            echo "[baseline marker]"
+            cat .nustrim-tv2
+            echo
+            echo "PASS: TV2 Stage 1 structural baseline"
+          } >> "$DIAG"
+
+      - name: Create isolated TV2 Home presentation
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$RUNNER_TEMP/nustrim-tv2-stage2-diagnose/create-home.log") 2>&1
+          mkdir -p app/src/main/java/app/nudroidlabs/nustrim/tv2/home
+
+          cat > app/src/main/java/app/nudroidlabs/nustrim/tv2/home/Tv2Home.kt <<'KOTLIN'
+          package app.nudroidlabs.nustrim.tv2.home
+
+          import androidx.compose.animation.core.animateDpAsState
+          import androidx.compose.animation.core.animateFloatAsState
+          import androidx.compose.animation.core.tween
+          import androidx.compose.foundation.BorderStroke
+          import androidx.compose.foundation.background
+          import androidx.compose.foundation.focusable
+          import androidx.compose.foundation.gestures.detectTapGestures
+          import androidx.compose.foundation.layout.Box
+          import androidx.compose.foundation.layout.Column
+          import androidx.compose.foundation.layout.PaddingValues
+          import androidx.compose.foundation.layout.Spacer
+          import androidx.compose.foundation.layout.fillMaxSize
+          import androidx.compose.foundation.layout.fillMaxWidth
+          import androidx.compose.foundation.layout.height
+          import androidx.compose.foundation.layout.padding
+          import androidx.compose.foundation.layout.width
+          import androidx.compose.foundation.layout.widthIn
+          import androidx.compose.foundation.shape.RoundedCornerShape
+          import androidx.compose.material3.Button
+          import androidx.compose.material3.ButtonDefaults
+          import androidx.compose.material3.Card
+          import androidx.compose.material3.CardDefaults
+          import androidx.compose.material3.Text
+          import androidx.compose.runtime.Composable
+          import androidx.compose.runtime.LaunchedEffect
+          import androidx.compose.runtime.getValue
+          import androidx.compose.runtime.mutableStateOf
+          import androidx.compose.runtime.remember
+          import androidx.compose.runtime.setValue
+          import androidx.compose.ui.Alignment
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.focus.FocusRequester
+          import androidx.compose.ui.focus.focusRequester
+          import androidx.compose.ui.focus.onFocusChanged
+          import androidx.compose.ui.graphics.Brush
+          import androidx.compose.ui.graphics.Color
+          import androidx.compose.ui.graphics.graphicsLayer
+          import androidx.compose.ui.input.key.Key
+          import androidx.compose.ui.input.key.KeyEventType
+          import androidx.compose.ui.input.key.key
+          import androidx.compose.ui.input.key.onPreviewKeyEvent
+          import androidx.compose.ui.input.key.type
+          import androidx.compose.ui.input.pointer.pointerInput
+          import androidx.compose.ui.layout.ContentScale
+          import androidx.compose.ui.text.font.FontWeight
+          import androidx.compose.ui.text.style.TextOverflow
+          import androidx.compose.ui.unit.Dp
+          import androidx.compose.ui.unit.dp
+          import androidx.compose.ui.unit.sp
+          import androidx.compose.ui.zIndex
+          import coil3.compose.AsyncImage
+          import kotlinx.coroutines.delay
+
+          private object Tv2HomeColors {
+              val Background = Color(0xFF090A0D)
+              val Surface = Color(0xFF121419)
+              val SurfaceRaised = Color(0xFF1A1D24)
+              val ContentPrimary = Color(0xFFF4F5F7)
+              val ContentSecondary = Color(0xFFB3B7C2)
+          }
+
+          private const val TV2_HOME_FOCUS_MILLIS = 180
+          private const val TV2_HOME_FOCUS_SCALE = 1.055f
+          private val TV2_HOME_SMALL_RADIUS = 10.dp
+
+          /**
+           * TV2 Home presentation layer.
+           *
+           * This file intentionally accepts primitive UI values and focus requesters
+           * instead of source/session models. Data loading, playback, addon, Trakt,
+           * library and updater behaviour remain owned by the existing Nustrim core.
+           */
+          @Composable
+          fun Tv2FocusedBackdrop(
+              artworkUrl: String,
+              title: String,
+              metadata: String,
+              description: String,
+              height: Dp,
+              onOpen: () -> Unit,
+              modifier: Modifier = Modifier
+          ) {
+              Box(
+                  modifier = modifier
+                      .fillMaxWidth()
+                      .height(height)
+                      .background(Tv2HomeColors.Background)
+              ) {
+                  Tv2Artwork(
+                      url = artworkUrl,
+                      title = title,
+                      modifier = Modifier.fillMaxSize()
+                  )
+
+                  Box(
+                      Modifier
+                          .fillMaxSize()
+                          .background(
+                              Brush.horizontalGradient(
+                                  colors = listOf(
+                                      Tv2HomeColors.Background.copy(alpha = 0.99f),
+                                      Tv2HomeColors.Background.copy(alpha = 0.93f),
+                                      Tv2HomeColors.Background.copy(alpha = 0.66f),
+                                      Tv2HomeColors.Background.copy(alpha = 0.16f),
+                                      Color.Transparent
+                                  )
+                              )
+                          )
+                  )
+
+                  Box(
+                      Modifier
+                          .fillMaxSize()
+                          .background(
+                              Brush.verticalGradient(
+                                  colors = listOf(
+                                      Color.Transparent,
+                                      Color.Transparent,
+                                      Tv2HomeColors.Background.copy(alpha = 0.54f),
+                                      Tv2HomeColors.Background.copy(alpha = 0.94f),
+                                      Tv2HomeColors.Background
+                                  )
+                              )
+                          )
+                  )
+
+                  Column(
+                      modifier = Modifier
+                          .align(Alignment.TopStart)
+                          .fillMaxWidth(0.44f)
+                          .padding(start = 38.dp, end = 18.dp, top = 48.dp)
+                  ) {
+                      Text(
+                          text = title,
+                          color = Tv2HomeColors.ContentPrimary,
+                          fontSize = 32.sp,
+                          lineHeight = 35.sp,
+                          fontWeight = FontWeight.Black,
+                          maxLines = 2,
+                          overflow = TextOverflow.Ellipsis
+                      )
+
+                      if (metadata.isNotBlank()) {
+                          Spacer(Modifier.height(8.dp))
+                          Text(
+                              text = metadata,
+                              color = Tv2HomeColors.ContentPrimary.copy(alpha = 0.90f),
+                              fontSize = 13.sp,
+                              fontWeight = FontWeight.SemiBold,
+                              maxLines = 1,
+                              overflow = TextOverflow.Ellipsis
+                          )
+                      }
+
+                      if (description.isNotBlank()) {
+                          Spacer(Modifier.height(9.dp))
+                          Text(
+                              text = description,
+                              color = Tv2HomeColors.ContentSecondary,
+                              fontSize = 13.sp,
+                              lineHeight = 18.sp,
+                              maxLines = 3,
+                              overflow = TextOverflow.Ellipsis
+                          )
+                      }
+
+                      Spacer(Modifier.height(12.dp))
+                      Button(
+                          onClick = onOpen,
+                          colors = ButtonDefaults.buttonColors(
+                              containerColor = Tv2HomeColors.ContentPrimary,
+                              contentColor = Tv2HomeColors.Background
+                          ),
+                          contentPadding = PaddingValues(horizontal = 18.dp, vertical = 7.dp),
+                          modifier = Modifier.widthIn(min = 132.dp)
+                      ) {
+                          Text(
+                              text = "View Details",
+                              fontSize = 12.sp,
+                              fontWeight = FontWeight.Bold
+                          )
+                      }
+                  }
+              }
+          }
+
+          /**
+           * TV-only catalog card.
+           *
+           * Preserves Nustrim's existing remote contract:
+           * 1. Focus remains portrait initially.
+           * 2. A focused card expands to landscape after 3 seconds.
+           * 3. Losing focus immediately cancels landscape preview.
+           * 4. OK short press opens details.
+           * 5. OK long press at 650 ms opens the action menu.
+           * 6. Left from the first card can return focus to the TV rail.
+           */
+          @Composable
+          fun Tv2PosterCard(
+              itemKey: String,
+              posterUrl: String,
+              landscapeUrl: String,
+              title: String,
+              releaseInfo: String,
+              reduceMotion: Boolean,
+              requester: FocusRequester?,
+              previousRequester: FocusRequester?,
+              nextRequester: FocusRequester?,
+              sidebarRequester: FocusRequester?,
+              onFocused: () -> Unit,
+              onLongPress: () -> Unit,
+              onClick: () -> Unit
+          ) {
+              var focused by remember(itemKey) { mutableStateOf(false) }
+              var landscapePreview by remember(itemKey) { mutableStateOf(false) }
+              var pressStartedAtMs by remember(itemKey) { mutableStateOf(0L) }
+
+              LaunchedEffect(focused, itemKey) {
+                  if (focused) {
+                      delay(3_000)
+                      if (focused) landscapePreview = true
+                  } else {
+                      landscapePreview = false
+                  }
+              }
+
+              val targetWidth = if (landscapePreview) 286.dp else 110.dp
+              val width by animateDpAsState(
+                  targetValue = targetWidth,
+                  animationSpec = tween(durationMillis = TV2_HOME_FOCUS_MILLIS),
+                  label = "tv2-home-poster-width"
+              )
+              val scale by animateFloatAsState(
+                  targetValue = if (focused && !reduceMotion) TV2_HOME_FOCUS_SCALE else 1f,
+                  animationSpec = tween(durationMillis = TV2_HOME_FOCUS_MILLIS),
+                  label = "tv2-home-poster-scale"
+              )
+              val requesterModifier = requester?.let { Modifier.focusRequester(it) } ?: Modifier
+
+              fun openContext() {
+                  landscapePreview = false
+                  onLongPress()
+              }
+
+              Column(
+                  modifier = Modifier
+                      .width(width)
+                      .then(requesterModifier)
+                      .zIndex(if (focused) 1f else 0f)
+                      .graphicsLayer {
+                          scaleX = scale
+                          scaleY = scale
+                      }
+                      .onFocusChanged {
+                          focused = it.isFocused
+                          if (it.isFocused) {
+                              onFocused()
+                          } else {
+                              landscapePreview = false
+                              pressStartedAtMs = 0L
+                          }
+                      }
+                      .onPreviewKeyEvent { event ->
+                          when {
+                              isActivateKey(event.key) && event.type == KeyEventType.KeyDown -> {
+                                  if (pressStartedAtMs == 0L) {
+                                      pressStartedAtMs = System.currentTimeMillis()
+                                  }
+                                  true
+                              }
+
+                              isActivateKey(event.key) && event.type == KeyEventType.KeyUp -> {
+                                  val heldMs = if (pressStartedAtMs > 0L) {
+                                      System.currentTimeMillis() - pressStartedAtMs
+                                  } else {
+                                      0L
+                                  }
+                                  pressStartedAtMs = 0L
+                                  if (heldMs >= 650L) openContext() else onClick()
+                                  true
+                              }
+
+                              event.type == KeyEventType.KeyDown &&
+                                  event.key == Key.DirectionLeft -> {
+                                  when {
+                                      previousRequester != null -> requestFocusSafely(previousRequester)
+                                      sidebarRequester != null -> requestFocusSafely(sidebarRequester)
+                                      else -> false
+                                  }
+                              }
+
+                              event.type == KeyEventType.KeyDown &&
+                                  event.key == Key.DirectionRight &&
+                                  nextRequester != null -> requestFocusSafely(nextRequester)
+
+                              else -> false
+                          }
+                      }
+                      .pointerInput(itemKey) {
+                          detectTapGestures(
+                              onTap = { onClick() },
+                              onLongPress = { openContext() }
+                          )
+                      }
+                      .focusable()
+              ) {
+                  Card(
+                      modifier = Modifier
+                          .fillMaxWidth()
+                          .height(165.dp),
+                      shape = RoundedCornerShape(TV2_HOME_SMALL_RADIUS),
+                      border = if (focused) {
+                          BorderStroke(2.dp, Tv2HomeColors.ContentPrimary.copy(alpha = 0.96f))
+                      } else {
+                          null
+                      },
+                      colors = CardDefaults.cardColors(containerColor = Tv2HomeColors.SurfaceRaised)
+                  ) {
+                      Tv2Artwork(
+                          url = if (landscapePreview) {
+                              landscapeUrl.ifBlank { posterUrl }
+                          } else {
+                              posterUrl
+                          },
+                          title = title,
+                          modifier = Modifier.fillMaxSize()
+                      )
+                  }
+
+                  Spacer(Modifier.height(8.dp))
+                  Text(
+                      text = title,
+                      color = Tv2HomeColors.ContentPrimary,
+                      fontSize = 12.sp,
+                      fontWeight = if (focused) FontWeight.SemiBold else FontWeight.Medium,
+                      maxLines = 1,
+                      overflow = TextOverflow.Ellipsis
+                  )
+
+                  if (releaseInfo.isNotBlank()) {
+                      Spacer(Modifier.height(2.dp))
+                      Text(
+                          text = releaseInfo,
+                          color = Tv2HomeColors.ContentSecondary,
+                          fontSize = 10.sp,
+                          maxLines = 1,
+                          overflow = TextOverflow.Ellipsis
+                      )
+                  }
+              }
+          }
+
+          @Composable
+          private fun Tv2Artwork(
+              url: String,
+              title: String,
+              modifier: Modifier
+          ) {
+              if (url.isBlank()) {
+                  Box(
+                      modifier = modifier.background(
+                          Brush.linearGradient(
+                              listOf(Tv2HomeColors.SurfaceRaised, Tv2HomeColors.Surface)
+                          )
+                      ),
+                      contentAlignment = Alignment.Center
+                  ) {
+                      Text(
+                          text = title.take(1).uppercase().ifBlank { "N" },
+                          color = Tv2HomeColors.ContentSecondary,
+                          fontWeight = FontWeight.Black,
+                          fontSize = 30.sp
+                      )
+                  }
+              } else {
+                  AsyncImage(
+                      model = url,
+                      contentDescription = title,
+                      modifier = modifier,
+                      contentScale = ContentScale.Crop
+                  )
+              }
+          }
+
+          private fun isActivateKey(key: Key): Boolean =
+              key == Key.DirectionCenter || key == Key.Enter
+
+          private fun requestFocusSafely(requester: FocusRequester?): Boolean {
+              if (requester == null) return false
+              return runCatching {
+                  requester.requestFocus()
+                  true
+              }.getOrDefault(false)
+          }
+          KOTLIN
+
+      - name: Wire TV Home into TV2 presentation
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY' 2>&1 | tee "$RUNNER_TEMP/nustrim-tv2-stage2-diagnose/wire.log"
+          from pathlib import Path
+
+          path = Path("app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt")
+          text = path.read_text(encoding="utf-8")
+          print(f"NustrimApp bytes: {len(text)}")
+
+          required_imports = [
+              "import app.nudroidlabs.nustrim.tv2.home.Tv2FocusedBackdrop\n",
+              "import app.nudroidlabs.nustrim.tv2.home.Tv2PosterCard\n",
+          ]
+
+          lines = text.splitlines(keepends=True)
+          import_indices = [
+              index for index, line in enumerate(lines)
+              if line.startswith("import ")
+          ]
+          if not import_indices:
+              raise SystemExit("No Kotlin import block found in NustrimApp.kt")
+
+          last_import_index = import_indices[-1]
+          missing_imports = [
+              required for required in required_imports
+              if required not in text
+          ]
+          if missing_imports:
+              lines[last_import_index + 1:last_import_index + 1] = missing_imports
+              text = "".join(lines)
+          print(f"Import block found: {len(import_indices)} imports")
+          print(f"TV2 imports added: {len(missing_imports)}")
+
+          old_header = (
+              "        if (pinnedTvHeader) {\n"
+              "            TvFocusDetailsHeader(\n"
+              "                entry = displayedTvEntry ?: heroEntries.first(),\n"
+              "                onOpen = onOpen,\n"
+              "                height = tvHeaderHeight,\n"
+              "                modifier = Modifier.align(Alignment.TopCenter)\n"
+              "            )\n"
+              "        }\n"
+          )
+          new_header = (
+              "        if (pinnedTvHeader) {\n"
+              "            val headerEntry = displayedTvEntry ?: heroEntries.first()\n"
+              "            val headerItem = headerEntry.item\n"
+              "            Tv2FocusedBackdrop(\n"
+              "                artworkUrl = headerItem.backgroundUrl.ifBlank { headerItem.posterUrl },\n"
+              "                title = headerItem.title,\n"
+              "                metadata = listOf(\n"
+              "                    headerItem.type.name.lowercase().replaceFirstChar { it.uppercase() },\n"
+              "                    headerItem.releaseInfo\n"
+              "                ).filter { it.isNotBlank() }.joinToString(\"  •  \"),\n"
+              "                description = headerItem.description,\n"
+              "                height = tvHeaderHeight,\n"
+              "                onOpen = { onOpen(headerEntry) },\n"
+              "                modifier = Modifier.align(Alignment.TopCenter)\n"
+              "            )\n"
+              "        }\n"
+          )
+          if "Tv2FocusedBackdrop(" not in text:
+              if old_header not in text:
+                  raise SystemExit("Pinned TV header block not found")
+              text = text.replace(old_header, new_header, 1)
+
+          function_marker = """@Composable
+          private fun HomePosterCard(
+          """
+          function_start = text.find(function_marker)
+          if function_start < 0:
+              raise SystemExit("HomePosterCard function not found")
+
+          next_marker = text.find("\nprivate enum class DiscoverFilterSheet", function_start)
+          if next_marker < 0:
+              raise SystemExit("HomePosterCard end marker not found")
+
+          poster_segment = text[function_start:next_marker]
+          if "Tv2PosterCard(" not in poster_segment:
+              body_start = text.find(") {", function_start, next_marker)
+              if body_start < 0:
+                  raise SystemExit("HomePosterCard body start not found")
+              insertion_at = body_start + len(") {")
+              tv2_branch = """
+              if (isTv) {
+                  Tv2PosterCard(
+                      itemKey = item.id,
+                      posterUrl = item.posterUrl,
+                      landscapeUrl = item.backgroundUrl.ifBlank { item.posterUrl },
+                      title = item.title,
+                      releaseInfo = item.releaseInfo,
+                      reduceMotion = reduceMotion,
+                      requester = requester,
+                      previousRequester = previousRequester,
+                      nextRequester = nextRequester,
+                      sidebarRequester = LocalTvSidebarFocusRequester.current,
+                      onFocused = onFocused,
+                      onLongPress = onLongPress,
+                      onClick = onClick
+                  )
+                  return
+              }
+          """
+              text = text[:insertion_at] + tv2_branch + text[insertion_at:]
+
+          path.write_text(text, encoding="utf-8")
+          PY
+          wire_code=${PIPESTATUS[0]}
+          if [[ "$wire_code" -ne 0 ]]; then
+            echo "::error::TV2 Home wiring step failed."
+            exit "$wire_code"
+          fi
+
+      - name: Normalise TV2 version metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import re
+
+          gradle_path = Path("app/build.gradle.kts")
+          gradle = gradle_path.read_text(encoding="utf-8")
+          target = os.environ["TV2_VERSION"]
+
+          code_match = re.search(r'versionCode\s*=\s*(\d+)', gradle)
+          name_match = re.search(r'versionName\s*=\s*"([^"]+)"', gradle)
+          if not code_match or not name_match:
+              raise SystemExit("Could not read versionCode/versionName")
+
+          current_code = int(code_match.group(1))
+          current_name = name_match.group(1)
+          next_code = current_code if current_name == target else current_code + 1
+
+          gradle = re.sub(
+              r'versionCode\s*=\s*\d+',
+              f'versionCode = {next_code}',
+              gradle,
+              count=1
+          )
+          gradle = re.sub(
+              r'versionName\s*=\s*"[^"]+"',
+              f'versionName = "{target}"',
+              gradle,
+              count=1
+          )
+          gradle_path.write_text(gradle, encoding="utf-8")
+
+          Path(".nustrim-version").write_text(target + "\n", encoding="utf-8")
+
+          readme_path = Path("README.md")
+          if readme_path.exists():
+              readme = readme_path.read_text(encoding="utf-8")
+              if "Current development baseline:" in readme:
+                  readme = re.sub(
+                      r'Current development baseline:\s*`[^`]+`',
+                      f'Current development baseline: `{target}`',
+                      readme,
+                      count=1
+                  )
+                  readme_path.write_text(readme, encoding="utf-8")
+          PY
+
+          cat > .nustrim-tv2 <<EOF
+          generation=2
+          architecture=clean-layer
+          reference=${TV2_REFERENCE}
+          direction=${TV2_STYLE}
+          stage=2
+          EOF
+
+      - name: Audit TV2 Stage 2 invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APP="app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt"
+          HOME="app/src/main/java/app/nudroidlabs/nustrim/tv2/home/Tv2Home.kt"
+
+          DIAG="$RUNNER_TEMP/nustrim-tv2-stage2-diagnose/audit.txt"
+          fail() {
+            echo "::error::$1"
+            echo "FAIL: $1" >> "$DIAG"
+            git diff --stat >> "$DIAG" 2>&1 || true
+            exit 1
+          }
+
+          [[ -f "$HOME" ]] || fail "Tv2Home.kt was not created."
+          grep -q 'Tv2FocusedBackdrop' "$APP" || fail "Tv2FocusedBackdrop was not wired into NustrimApp.kt."
+          grep -q 'Tv2PosterCard' "$APP" || fail "Tv2PosterCard was not wired into NustrimApp.kt."
+          grep -q 'delay(3_000)' "$HOME" || fail "3 second landscape-preview contract is missing."
+          grep -q 'heldMs >= 650L' "$HOME" || fail "650 ms long-press contract is missing."
+          grep -q 'Key.DirectionLeft' "$HOME" || fail "D-pad left handling is missing."
+          grep -q 'sidebarRequester = LocalTvSidebarFocusRequester.current' "$APP" || fail "Sidebar focus handoff was not wired."
+          resolved_stage="$(
+            awk -F= '$1 == "stage" {
+              value = substr($0, index($0, "=") + 1)
+              gsub(/\r/, "", value)
+              gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+              print value
+              exit
+            }' .nustrim-tv2
+          )"
+          case "$resolved_stage" in
+            2|home-2)
+              ;;
+            *)
+              fail "TV2 marker resolved as '${resolved_stage:-missing}' instead of Stage 2 after patch."
+              ;;
+          esac
+          grep -q "versionName = \"${TV2_VERSION}\"" app/build.gradle.kts || fail "app versionName was not updated to ${TV2_VERSION}."
+          grep -q "^${TV2_VERSION}$" .nustrim-version || fail ".nustrim-version was not synchronised."
+
+          if grep -R -n 'com\.nuvio' app/src/main/java/app/nudroidlabs/nustrim/tv2 | tee "$DIAG"; then
+            fail "TV2 contains a forbidden Nuvio package import."
+          fi
+
+          if grep -R -n -E 'NuBrowse|NuBrowseApp|app\.nubrowse' app/src/main app/build.gradle.kts 2>/dev/null | tee -a "$DIAG"; then
+            fail "NuBrowse contamination detected after Stage 2 patch."
+          fi
+
+          git diff --check || fail "git diff --check found whitespace or patch corruption."
+
+          {
+            echo "PASS: Stage 2 invariant audit"
+            echo
+            echo "[git status]"
+            git status --short
+            echo
+            echo "[diff stat]"
+            git diff --stat
+          } >> "$DIAG"
+
+          git status --short
+          git diff --stat
+          git diff > "$RUNNER_TEMP/nustrim-tv2-stage2-diagnose/stage2.patch"
+          cp .nustrim-tv2 "$RUNNER_TEMP/nustrim-tv2-stage2-diagnose/tv2-marker.txt"
+          cp app/build.gradle.kts "$RUNNER_TEMP/nustrim-tv2-stage2-diagnose/app-build.gradle.kts"
+
+      - name: Compile TV2 Stage 2
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/nustrim-tv2-stage2-diagnose"
+
+          set +e
+          gradle --no-daemon --build-cache \
+            :app:compileDebugKotlin \
+            --stacktrace \
+            --console=plain \
+            2>&1 | tee "$RUNNER_TEMP/nustrim-tv2-stage2-diagnose/compile.log"
+          code=${PIPESTATUS[0]}
+          set -e
+
+          if [[ "$code" -ne 0 ]]; then
+            echo "::error::TV2 Stage 2 Kotlin compile failed. The last relevant lines are printed below."
+            tail -n 140 "$RUNNER_TEMP/nustrim-tv2-stage2-diagnose/compile.log" || true
+            exit "$code"
+          fi
+
+      - name: Commit and push Stage 2
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if git diff --quiet; then
+            echo "TV2 Stage 2 is already applied. Nothing to commit."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add \
+            app/src/main/java/app/nudroidlabs/nustrim/tv2/home/Tv2Home.kt \
+            app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt \
+            app/build.gradle.kts \
+            .nustrim-tv2 \
+            .nustrim-version \
+            README.md
+
+          git commit -m "feat(tv2): build Stage 2 home experience"
+          git push origin HEAD:main
+
+      - name: Print compact failure summary
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          DIR="$RUNNER_TEMP/nustrim-tv2-stage2-diagnose"
+
+          echo
+          echo "========== Nustrim TV2 Stage 2 R8 Summary =========="
+          echo "Result: FAILED"
+          echo "Checked-out SHA: $(git rev-parse HEAD 2>/dev/null || echo unknown)"
+          echo "Branch: $(git branch --show-current 2>/dev/null || echo unknown)"
+          echo "TV2 marker:"
+          cat .nustrim-tv2 2>/dev/null || echo "  unavailable"
+          echo "Version:"
+          grep -m1 'versionName' app/build.gradle.kts 2>/dev/null | sed 's/^[[:space:]]*/  /' || echo "  unavailable"
+          echo "TV2 source tree:"
+          find app/src/main/java/app/nudroidlabs/nustrim/tv2 -maxdepth 3 -type f -print 2>/dev/null | sort | sed 's/^/  /' | head -n 20 || true
+
+          if [[ -f "$DIR/preflight.txt" ]]; then
+            fail_line=$(grep -E '^FAIL:' "$DIR/preflight.txt" | tail -n 1)
+            [[ -n "$fail_line" ]] && echo "Primary: $fail_line"
+          fi
+
+          if [[ -f "$DIR/audit.txt" ]]; then
+            fail_line=$(grep -E '^FAIL:' "$DIR/audit.txt" | tail -n 1)
+            [[ -n "$fail_line" ]] && echo "Primary: $fail_line"
+          fi
+
+          if [[ -f "$DIR/wire.log" ]]; then
+            echo
+            echo "Wiring error:"
+            tail -n 30 "$DIR/wire.log" || true
+          fi
+
+          if [[ -f "$DIR/create-home.log" ]]; then
+            echo
+            echo "Create-home tail:"
+            tail -n 20 "$DIR/create-home.log" || true
+          fi
+
+          if [[ -f "$DIR/compile.log" ]]; then
+            echo
+            echo "Compiler errors:"
+            grep -E '(^|[[:space:]])(e:|error:|FAILURE:|Caused by:|Execution failed for task|What went wrong:)' "$DIR/compile.log" \
+              | tail -n 45 || true
+          fi
+
+          echo
+          echo "TV2 files:"
+          find app/src/main/java/app/nudroidlabs/nustrim/tv2 -maxdepth 3 -type f -print 2>/dev/null | sort | head -n 30 || true
+          echo "===================================================="
+          echo
+
+      - name: Upload Stage 2 diagnose
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nustrim-m11-tv2-stage2-home-diagnose
+          path: ${{ runner.temp }}/nustrim-tv2-stage2-diagnose
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Summary
+        if: success()
+        shell: bash
+        run: |
+          {
+            echo "## Nustrim M11 TV2 Stage 2 Home R8"
+            echo
+            echo "- TV2 reference remains locked to ${TV2_REFERENCE}.\n            echo "- Marker schema preserved as clean-layer and advanced from stage 1 to stage 2.""
+            echo "- Added isolated tv2/home presentation layer."
+            echo "- TV focused backdrop now uses TV2 design tokens."
+            echo "- TV catalog poster rendering now lives in TV2."
+            echo "- Preserved 3 second focused poster landscape preview."
+            echo "- Preserved 650 ms OK long press action contract."
+            echo "- Preserved left edge focus return to the TV rail."
+            echo "- Mobile Home path remains on the existing implementation."
+            echo "- Source, addon, playback, Trakt, library and updater logic were not rewritten."
+            echo "- Version metadata normalised to ${TV2_VERSION}."
+            echo "- Kotlin compilation passed before commit."
+            echo "- Push to main will trigger Build Nustrim for the permanent signed updater APK."
+          } >> "$GITHUB_STEP_SUMMARY"
