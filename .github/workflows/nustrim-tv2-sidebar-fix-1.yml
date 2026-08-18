@@ -1,0 +1,509 @@
+name: Nustrim TV2 Sidebar Fix 1
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: nustrim-tv2-sidebar-fix-1
+  cancel-in-progress: false
+
+env:
+  TV2_VERSION: "0.17.0-tv2-rc8"
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Sync main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          git checkout -B main origin/main
+          git reset --hard origin/main
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "9.5.0"
+
+      - name: Prepare diagnose
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/nustrim-sidebar-fix-diagnose"
+          mkdir -p "$DIR"
+          {
+            echo "NUSTRIM TV2 SIDEBAR FIX 1"
+            echo "sha=$(git rev-parse HEAD)"
+            cat .nustrim-tv2 2>/dev/null || true
+            grep -m1 'versionName' app/build.gradle.kts 2>/dev/null || true
+          } > "$DIR/preflight.txt"
+
+      - name: Verify baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/nustrim-sidebar-fix-diagnose"
+          SHELL="app/src/main/java/app/nudroidlabs/nustrim/tv2/shell/NustrimTv2Shell.kt"
+          APP="app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt"
+
+          fail() {
+            echo "::error::$1"
+            echo "FAIL: $1" >> "$DIR/preflight.txt"
+            exit 1
+          }
+
+          [[ -f "$SHELL" ]] || fail "NustrimTv2Shell.kt missing."
+          [[ -f "$APP" ]] || fail "NustrimApp.kt missing."
+          grep -q 'fun NustrimTv2Shell(' "$SHELL" || fail "TV2 shell missing."
+          grep -q 'private fun Tv2RailItem(' "$SHELL" || fail "TV2 rail item missing."
+          grep -q 'NustrimTv2Shell(' "$APP" || fail "TV2 shell wiring missing."
+
+          stage="$(awk -F= '$1=="stage"{gsub(/\r/,"",$2);gsub(/^[[:space:]]+|[[:space:]]+$/,"",$2);print $2;exit}' .nustrim-tv2)"
+          case "$stage" in
+            7|8) ;;
+            *) fail "Expected Stage 7 baseline, found '${stage:-missing}'." ;;
+          esac
+
+          echo "PASS: RC7 sidebar baseline" >> "$DIR/preflight.txt"
+
+      - name: Patch sidebar
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' 2>&1 | tee "$RUNNER_TEMP/nustrim-sidebar-fix-diagnose/patch.log"
+          from pathlib import Path
+          import re
+
+          shell_path = Path("app/src/main/java/app/nudroidlabs/nustrim/tv2/shell/NustrimTv2Shell.kt")
+          app_path = Path("app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt")
+          shell = shell_path.read_text(encoding="utf-8")
+          app = app_path.read_text(encoding="utf-8")
+
+          brand = """                Tv2BrandMark(
+                      expanded = railExpanded,
+                      modifier = Modifier.align(Alignment.TopStart)
+                  )
+          """
+          if brand in shell:
+              shell = shell.replace(
+                  brand,
+                  """                if (railExpanded) {
+                      Tv2BrandMark(
+                          expanded = true,
+                          modifier = Modifier.align(Alignment.TopStart)
+                      )
+                  }
+          """,
+                  1,
+              )
+          elif "if (railExpanded)" not in shell:
+              raise SystemExit("Brand mark anchor not found.")
+
+          scale_pattern = re.compile(r'\n\s*val scale by animateFloatAsState\(.*?label = "tv2-rail-item-scale"\s*\)\n', re.S)
+          shell = scale_pattern.sub("\n", shell, count=1)
+          shell = shell.replace("\n            .scale(scale)", "", 1)
+
+          border_pattern = re.compile(r'\n\s*\.then\(\s*if \(focused\) Modifier\.border\(1\.dp, Tv2Colors\.FocusStroke, shape\)\s*else Modifier\s*\)', re.S)
+          shell = border_pattern.sub("", shell, count=1)
+
+          old_fill = """    val fill = when {
+              focused -> Tv2Colors.Focus
+              selected -> Tv2Colors.Selection
+              else -> Color.Transparent
+          }
+          """
+          new_fill = """    val fill = when {
+              selected -> Color.White
+              focused -> Color.White.copy(alpha = 0.10f)
+              else -> Color.Transparent
+          }
+          """
+          if old_fill in shell:
+              shell = shell.replace(old_fill, new_fill, 1)
+          elif "selected -> Color.White" not in shell:
+              raise SystemExit("Rail fill anchor not found.")
+
+          old_icon = """        Icon(
+              imageVector = destination.icon,
+              contentDescription = destination.label,
+              tint = if (selected || focused) Tv2Colors.ContentPrimary else Tv2Colors.ContentSecondary,
+              modifier = Modifier.size(24.dp)
+          )
+          """
+          new_icon = """        Icon(
+              imageVector = destination.icon,
+              contentDescription = destination.label,
+              tint = when {
+                  selected -> Tv2Colors.Background
+                  focused -> Tv2Colors.ContentPrimary
+                  else -> Tv2Colors.ContentSecondary
+              },
+              modifier = Modifier.size(24.dp)
+          )
+          """
+          if old_icon in shell:
+              shell = shell.replace(old_icon, new_icon, 1)
+
+          old_text = """                color = if (selected || focused) Tv2Colors.ContentPrimary else Tv2Colors.ContentSecondary,
+                  fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+          """
+          new_text = """                color = when {
+                      selected -> Tv2Colors.Background
+                      focused -> Tv2Colors.ContentPrimary
+                      else -> Tv2Colors.ContentSecondary
+                  },
+                  fontWeight = if (selected || focused) FontWeight.SemiBold else FontWeight.Medium,
+          """
+          if old_text in shell:
+              shell = shell.replace(old_text, new_text, 1)
+
+          gradient_pattern = re.compile(r'\.background\(\s*Brush\.horizontalGradient\(\s*listOf\(\s*Tv2Colors\.Rail,\s*Tv2Colors\.Rail\.copy\(alpha = 0\.96f\),\s*Color\.Transparent\s*\)\s*\)\s*\)', re.S)
+          shell = gradient_pattern.sub(".background(Tv2Colors.Rail)", shell, count=1)
+
+          signature_anchor = "    onDestinationSelected: (String) -> Unit,\n    content: @Composable () -> Unit"
+          if "    onMoveRight: () -> Unit,\n    content: @Composable () -> Unit" not in shell:
+              if signature_anchor not in shell:
+                  raise SystemExit("Shell callback signature anchor not found.")
+              shell = shell.replace(
+                  signature_anchor,
+                  "    onDestinationSelected: (String) -> Unit,\n    onMoveRight: () -> Unit,\n    content: @Composable () -> Unit",
+                  1,
+              )
+
+          rail_call = """                        Tv2RailItem(
+                              destination = destination,
+                              selected = destination.key == selectedKey,
+                              expanded = railExpanded,
+          """
+          if rail_call in shell and "onMoveRight = onMoveRight" not in shell:
+              shell = shell.replace(rail_call, rail_call + "                            onMoveRight = onMoveRight,\n", 1)
+
+          sig = """    expanded: Boolean,
+              onFocus: (Boolean) -> Unit,
+          """
+          if sig in shell:
+              shell = shell.replace(sig, """    expanded: Boolean,
+              onMoveRight: () -> Unit,
+              onFocus: (Boolean) -> Unit,
+          """, 1)
+
+          old_keys = """            .onPreviewKeyEvent { event ->
+                  if ((event.key == Key.DirectionCenter || event.key == Key.Enter) &&
+                      event.type == KeyEventType.KeyDown
+                  ) {
+                      onClick()
+                      true
+                  } else false
+              }
+          """
+          new_keys = """            .onPreviewKeyEvent { event ->
+                  when {
+                      event.type == KeyEventType.KeyDown && event.key == Key.DirectionRight -> {
+                          onMoveRight()
+                          true
+                      }
+                      (event.key == Key.DirectionCenter || event.key == Key.Enter) &&
+                          event.type == KeyEventType.KeyDown -> {
+                          onClick()
+                          true
+                      }
+                      else -> false
+                  }
+              }
+          """
+          if old_keys in shell:
+              shell = shell.replace(old_keys, new_keys, 1)
+          elif "event.key == Key.DirectionRight" not in shell:
+              raise SystemExit("Rail key-event anchor not found.")
+
+          for unused in (
+              "import androidx.compose.animation.core.animateFloatAsState\n",
+              "import androidx.compose.foundation.border\n",
+              "import androidx.compose.ui.draw.scale\n",
+              "import androidx.compose.ui.graphics.Brush\n",
+          ):
+              shell = shell.replace(unused, "")
+
+          if "var tvContentFocusToken by remember" not in app:
+              anchor = "    var tv2RailExpanded by remember { mutableStateOf(false) }\n"
+              if anchor not in app:
+                  raise SystemExit("MainShell rail state anchor not found.")
+              app = app.replace(anchor, anchor + "    var tvContentFocusToken by remember { mutableIntStateOf(0) }\n", 1)
+
+          main_start = app.find("private fun MainShell(")
+          if main_start < 0:
+              raise SystemExit("MainShell not found.")
+          main_end = app.find("\nprivate fun ", main_start + 20)
+          if main_end < 0:
+              main_end = len(app)
+          main = app[main_start:main_end]
+
+          if "onMoveRight = {" not in main:
+              callback = """        onDestinationSelected = { key ->
+              MainSection.entries.firstOrNull { it.name == key }?.let(onSection)
+          }
+          """
+              if callback not in main:
+                  raise SystemExit("Shell destination callback anchor not found.")
+              main = main.replace(callback, """        onDestinationSelected = { key ->
+              MainSection.entries.firstOrNull { it.name == key }?.let(onSection)
+          },
+          onMoveRight = {
+              tv2RailExpanded = false
+              tvContentFocusToken += 1
+          }
+          """, 1)
+
+          main = main.replace("        content(true)\n", "        content(true, tvContentFocusToken)\n", 1)
+          if "content(true, tvContentFocusToken)" not in main:
+              main = re.sub(r'content\(true,\s*[A-Za-z0-9_]+\)', 'content(true, tvContentFocusToken)', main, count=1)
+          if "content(true, tvContentFocusToken)" not in main:
+              raise SystemExit("TV content focus-token handoff not wired.")
+
+          app = app[:main_start] + main + app[main_end:]
+
+          for token in (
+              "if (railExpanded) {",
+              "selected -> Color.White",
+              "focused -> Color.White.copy(alpha = 0.10f)",
+              "event.key == Key.DirectionRight",
+              "onMoveRight()",
+          ):
+              if token not in shell:
+                  raise SystemExit(f"Missing sidebar contract: {token}")
+
+          if "Modifier.border(1.dp, Tv2Colors.FocusStroke" in shell:
+              raise SystemExit("Thin white focus border still present.")
+          if ".scale(scale)" in shell:
+              raise SystemExit("Rail scale effect still present.")
+
+          shell_path.write_text(shell, encoding="utf-8")
+          app_path.write_text(app, encoding="utf-8")
+
+          print("PASS: hide N logo when collapsed")
+          print("PASS: remove opening scale/gradient flicker sources")
+          print("PASS: remove thin white focus border")
+          print("PASS: selected section owns white marker")
+          print("PASS: D-pad Right requests focus back to catalog/page")
+          PY
+          code=${PIPESTATUS[0]}
+          if [[ "$code" -ne 0 ]]; then
+            exit "$code"
+          fi
+
+      - name: Advance RC8 metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' 2>&1 | tee "$RUNNER_TEMP/nustrim-sidebar-fix-diagnose/metadata.log"
+          from pathlib import Path
+          import os, re
+
+          target = os.environ["TV2_VERSION"]
+          path = Path("app/build.gradle.kts")
+          text = path.read_text(encoding="utf-8")
+          cm = re.search(r'versionCode\s*=\s*(\d+)', text)
+          nm = re.search(r'versionName\s*=\s*"([^"]+)"', text)
+          if not cm or not nm:
+              raise SystemExit("Version metadata not found.")
+
+          old_code = int(cm.group(1))
+          old_name = nm.group(1)
+          new_code = old_code if old_name == target else old_code + 1
+          text = re.sub(r'versionCode\s*=\s*\d+', f'versionCode = {new_code}', text, count=1)
+          text = re.sub(r'versionName\s*=\s*"[^"]+"', f'versionName = "{target}"', text, count=1)
+          path.write_text(text, encoding="utf-8")
+          Path(".nustrim-version").write_text(target + "\n", encoding="utf-8")
+
+          marker = Path(".nustrim-tv2")
+          lines = marker.read_text(encoding="utf-8").splitlines()
+          out = []
+          seen = False
+          for line in lines:
+              if line.strip().startswith("stage="):
+                  out.append("stage=8")
+                  seen = True
+              else:
+                  out.append(line.rstrip("\r"))
+          if not seen:
+              out.append("stage=8")
+          marker.write_text("\n".join(out) + "\n", encoding="utf-8")
+          print(f"versionName: {old_name} -> {target}")
+          print(f"versionCode: {old_code} -> {new_code}")
+          print("TV2 marker advanced to stage=8")
+          PY
+
+      - name: Audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/nustrim-sidebar-fix-diagnose"
+          SHELL="app/src/main/java/app/nudroidlabs/nustrim/tv2/shell/NustrimTv2Shell.kt"
+          APP="app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt"
+          LOG="$DIR/audit.txt"
+
+          fail() {
+            echo "::error::$1"
+            echo "FAIL: $1" >> "$LOG"
+            exit 1
+          }
+
+          grep -q 'selected -> Color.White' "$SHELL" || fail "Selected white marker missing."
+          grep -q 'focused -> Color.White.copy(alpha = 0.10f)' "$SHELL" || fail "Soft focus state missing."
+          grep -q 'event.key == Key.DirectionRight' "$SHELL" || fail "Right handler missing."
+          grep -q 'onMoveRight = {' "$APP" || fail "MainShell Right callback missing."
+          grep -q 'tvContentFocusToken += 1' "$APP" || fail "Content focus token missing."
+          grep -q 'content(true, tvContentFocusToken)' "$APP" || fail "Content focus token not passed."
+          grep -q 'if (railExpanded)' "$SHELL" || fail "Collapsed brand guard missing."
+
+          if grep -q 'Modifier.border(1.dp, Tv2Colors.FocusStroke' "$SHELL"; then
+            fail "Thin white line still present."
+          fi
+          if grep -q '\.scale(scale)' "$SHELL"; then
+            fail "Rail scale glitch source still present."
+          fi
+          if grep -R -n -E 'NuBrowse|NuBrowseApp|app\.nubrowse' app/src/main app/build.gradle.kts 2>/dev/null; then
+            fail "NuBrowse contamination detected."
+          fi
+
+          git diff --check || fail "git diff --check failed."
+          {
+            echo "PASS: sidebar audit"
+            git status --short
+            git diff --stat
+          } > "$LOG"
+          cat "$LOG"
+          git diff > "$DIR/sidebar-fix.patch"
+
+      - name: Compile
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          gradle --no-daemon --build-cache \
+            :app:compileDebugKotlin \
+            --stacktrace \
+            --console=plain \
+            2>&1 | tee "$RUNNER_TEMP/nustrim-sidebar-fix-diagnose/compile.log"
+          code=${PIPESTATUS[0]}
+          set -e
+          if [[ "$code" -ne 0 ]]; then
+            echo "::error::Sidebar fix compile failed."
+            exit "$code"
+          fi
+
+      - name: Commit and push
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$RUNNER_TEMP/nustrim-sidebar-fix-diagnose/push.log") 2>&1
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add \
+            app/src/main/java/app/nudroidlabs/nustrim/tv2/shell/NustrimTv2Shell.kt \
+            app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt \
+            app/build.gradle.kts \
+            .nustrim-tv2 \
+            .nustrim-version
+
+          if git diff --cached --quiet; then
+            echo "Sidebar fix already applied."
+          else
+            git diff --cached --check
+            git commit -m "fix(tv2): polish sidebar focus and navigation"
+            git fetch --no-tags origin main
+            if ! git merge-base --is-ancestor origin/main HEAD; then
+              git rebase origin/main
+            fi
+            git push origin HEAD:main
+          fi
+
+      - name: Dispatch signed updater
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          exec > >(tee "$RUNNER_TEMP/nustrim-sidebar-fix-diagnose/dispatch.log") 2>&1
+          gh workflow run build.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            -f publish_release=true
+          echo "Build Nustrim dispatched."
+
+      - name: Compact failure summary
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          DIR="$RUNNER_TEMP/nustrim-sidebar-fix-diagnose"
+          echo "========== Nustrim TV2 Sidebar Fix 1 Summary =========="
+          echo "Result: FAILED"
+          echo "SHA: $(git rev-parse HEAD 2>/dev/null || echo unknown)"
+          cat .nustrim-tv2 2>/dev/null || true
+          grep -m1 'versionName' app/build.gradle.kts 2>/dev/null || true
+
+          for file in preflight.txt patch.log metadata.log audit.txt push.log dispatch.log; do
+            if [[ -f "$DIR/$file" ]]; then
+              echo
+              echo "[$file]"
+              tail -n 45 "$DIR/$file" || true
+            fi
+          done
+
+          if [[ -f "$DIR/compile.log" ]]; then
+            echo
+            echo "[compile result]"
+            grep -E 'BUILD SUCCESSFUL|BUILD FAILED|(^|[[:space:]])(e:|error:|FAILURE:|Caused by:|Execution failed for task|What went wrong:)' \
+              "$DIR/compile.log" | tail -n 60 || true
+          fi
+          echo "========================================================"
+
+      - name: Upload diagnose
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nustrim-tv2-sidebar-fix-1-diagnose
+          path: ${{ runner.temp }}/nustrim-sidebar-fix-diagnose
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Summary
+        if: success()
+        shell: bash
+        run: |
+          {
+            echo "## TV2 Sidebar Fix 1"
+            echo
+            echo "- N logo hidden while sidebar is collapsed."
+            echo "- Rail scale and thin white focus border removed."
+            echo "- Rail opening uses a stable solid background."
+            echo "- Current section owns the white marker."
+            echo "- Focused non-current item uses a soft highlight."
+            echo "- D-pad Right closes sidebar and requests page/catalog focus."
+            echo "- Mobile Mode untouched."
+            echo "- Version advanced to ${TV2_VERSION}."
+            echo "- Signed updater dispatched automatically."
+          } >> "$GITHUB_STEP_SUMMARY"
