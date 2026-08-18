@@ -1,0 +1,187 @@
+name: Nustrim TV3 Final Cleanup Audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 1
+
+      - name: Capture exact current repo
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/nustrim-tv3-final-cleanup-audit"
+          mkdir -p "$OUT"
+
+          APP="app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt"
+
+          git rev-parse HEAD > "$OUT/sha.txt"
+          git status --short > "$OUT/git-status-before.txt"
+          git ls-files | sort > "$OUT/tracked-files.txt"
+
+          if [[ -f "$APP" ]]; then
+            cp "$APP" "$OUT/NustrimApp.kt"
+            sha256sum "$APP" > "$OUT/NustrimApp.sha256.txt"
+          fi
+
+          [[ -f app/src/main/java/app/nudroidlabs/nustrim/ui/UiPreferences.kt ]] && \
+            cp app/src/main/java/app/nudroidlabs/nustrim/ui/UiPreferences.kt "$OUT/UiPreferences.kt" || true
+          [[ -f app/build.gradle.kts ]] && cp app/build.gradle.kts "$OUT/app-build.gradle.kts"
+          [[ -f settings.gradle.kts ]] && cp settings.gradle.kts "$OUT/settings.gradle.kts"
+          [[ -f .nustrim-tv-reset ]] && cp .nustrim-tv-reset "$OUT/nustrim-tv-reset.txt" || true
+
+          {
+            echo "SOURCE TREE"
+            echo "==========="
+            find app/src/main/java/app/nudroidlabs/nustrim -type f -print | sort
+          } > "$OUT/source-tree.txt"
+
+          {
+            echo "RESOURCE TREE"
+            echo "============="
+            find app/src/main/res -type f -print 2>/dev/null | sort || true
+          } > "$OUT/resource-tree.txt"
+
+          {
+            echo "WORKFLOWS"
+            echo "========="
+            find .github/workflows -maxdepth 1 -type f -print 2>/dev/null | sort || true
+          } > "$OUT/workflows.txt"
+
+          {
+            echo "LEGACY TV REFERENCES"
+            echo "===================="
+            grep -R -n -E \
+              'app\.nudroidlabs\.nustrim\.tv2\.|NustrimTv2|Tv2[A-Za-z0-9_]*|\bInterfaceMode\.TV\b|\brememberIsTv\b|\brememberIsPhysicalTv\b|\bTvNavigationMemory\b|\bTvTestRemote\b|\bTvReferenceCanvas\b|\bLocalTvSidebarFocusRequester\b|\brequestTvFocus\b|\bconsumeTvActivateKey\b|\bisTvActivateKey\b' \
+              app/src/main/java/app/nudroidlabs/nustrim 2>/dev/null || true
+          } > "$OUT/legacy-tv-references.txt"
+
+          {
+            echo "TV-NAMED SYMBOL INVENTORY"
+            echo "========================="
+            grep -R -o -E \
+              '\b(Tv[A-Za-z0-9_]+|isTv|rememberIsTv|rememberIsPhysicalTv|physicalTv[A-Za-z0-9_]*)\b' \
+              app/src/main/java/app/nudroidlabs/nustrim 2>/dev/null \
+              | sort | uniq -c | sort -nr || true
+          } > "$OUT/tv-symbol-inventory.txt"
+
+          {
+            echo "TV DIRECTORIES"
+            echo "=============="
+            find app/src/main/java/app/nudroidlabs/nustrim -type d \
+              \( -name tv -o -name tv2 -o -name tv3 \) -print 2>/dev/null || true
+          } > "$OUT/tv-directories.txt"
+
+          {
+            echo "UPDATER PROTECTED BASELINE"
+            echo "=========================="
+            [[ -f .github/workflows/build.yml ]] && sha256sum .github/workflows/build.yml || true
+            find app/src/main/java/app/nudroidlabs/nustrim/core/update -type f -print0 2>/dev/null \
+              | sort -z | xargs -0 -r sha256sum || true
+          } > "$OUT/updater-protected.txt"
+
+          {
+            echo "POTENTIAL TEMP/GENERATED TRACKED FILES"
+            echo "======================================"
+            git ls-files | grep -E \
+              '(\.tmp$|\.bak$|\.orig$|\.rej$|\.patch$|\.log$|diagnose.*\.zip$|/build/|^build/|\.DS_Store$)' \
+              || true
+          } > "$OUT/temp-candidates.txt"
+
+          {
+            echo "WORKFLOW AGE/TV CANDIDATES"
+            echo "=========================="
+            find .github/workflows -maxdepth 1 -type f 2>/dev/null \
+              | grep -Ei '(tv|stage|sidebar|navigation|home|details|sources|player|workspace|regression|rc)' \
+              | sort || true
+          } > "$OUT/old-workflow-candidates.txt"
+
+          python3 - <<'PY' > "$OUT/kotlin-reference-candidates.txt"
+          from pathlib import Path
+          import re
+
+          root = Path("app/src/main/java/app/nudroidlabs/nustrim")
+          files = sorted(root.rglob("*.kt"))
+          all_text = {p: p.read_text(encoding="utf-8", errors="replace") for p in files}
+
+          decl_pattern = re.compile(
+              r'(?m)^\s*(?:private\s+|internal\s+|public\s+)?'
+              r'(?:data\s+class|sealed\s+class|sealed\s+interface|enum\s+class|class|object|fun)\s+'
+              r'([A-Za-z_][A-Za-z0-9_]*)'
+          )
+
+          print("KOTLIN REFERENCE CANDIDATES")
+          print("===========================")
+          print("Heuristic only. Zero/low outside references are candidates, not automatic deletes.")
+          print()
+
+          for path, text in all_text.items():
+              names = [m.group(1) for m in decl_pattern.finditer(text)]
+              publicish = [n for n in names if not n.startswith("_")]
+              if not publicish:
+                  continue
+              outside_hits = 0
+              examples = []
+              for name in publicish[:20]:
+                  hits = []
+                  needle = re.compile(rf'\b{re.escape(name)}\b')
+                  for other, other_text in all_text.items():
+                      if other == path:
+                          continue
+                      count = len(needle.findall(other_text))
+                      if count:
+                          hits.append((other, count))
+                  if hits:
+                      outside_hits += sum(c for _, c in hits)
+                      examples.append((name, hits[:3]))
+              if outside_hits <= 1:
+                  print(f"{path}: outside_refs={outside_hits}")
+                  for name, hits in examples[:5]:
+                      print(f"  {name}: " + ", ".join(f"{p}:{c}" for p, c in hits))
+          PY
+
+          {
+            echo "MOBILE PROTECTION TOKENS"
+            echo "========================"
+            grep -n 'MobileNavItem(' "$APP" | head -n 20 || true
+            grep -n 'content(false, 0)' "$APP" | head -n 20 || true
+            grep -n 'MobileStreamSourcePicker(' "$APP" | head -n 20 || true
+            grep -n 'AppUpdater(context)' "$APP" | head -n 20 || true
+            grep -n 'UpdateSettingsScreen' "$APP" | head -n 20 || true
+          } > "$OUT/mobile-protection.txt"
+
+          git status --short > "$OUT/git-status-after.txt"
+
+          echo "Audit SHA: $(cat "$OUT/sha.txt")"
+          echo "Read-only audit complete."
+
+      - name: Verify repository remains unchanged
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "$(git status --porcelain)" ]]; then
+            echo "::error::Audit modified tracked checkout."
+            git status --short
+            exit 1
+          fi
+          echo "PASS: repository unchanged"
+
+      - name: Upload final cleanup audit
+        uses: actions/upload-artifact@v7
+        with:
+          name: nustrim-tv3-final-cleanup-audit
+          path: ${{ runner.temp }}/nustrim-tv3-final-cleanup-audit
+          if-no-files-found: error
+          retention-days: 7
