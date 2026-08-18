@@ -1,0 +1,10 @@
+generation=2
+quality_profile=tv2-regression-rc1
+home_landscape_delay_ms=3000
+home_long_press_ms=650
+details_focus_restore=required
+sources_inline_loading=required
+player_auto_hide_ms=4000
+player_core=media3-preserved
+mobile_isolation=required
+status=passed-static-contracts
