@@ -835,8 +835,6 @@ private fun MainShell(
     val isTv = rememberIsTv()
     val physicalTv = isTv && rememberIsPhysicalTv()
     val activity = LocalContext.current.findActivity()
-    var exitRequested by remember { mutableStateOf(false) }
-
     LaunchedEffect(isTv, physicalTv) {
         if (isTv) {
             NustrimDiagnostics.log(
@@ -848,9 +846,6 @@ private fun MainShell(
 
     BackHandler(enabled = selected != MainSection.HOME) {
         onSection(MainSection.HOME)
-    }
-    BackHandler(enabled = selected == MainSection.HOME && !exitRequested) {
-        exitRequested = true
     }
 
     if (isTv) {
@@ -938,31 +933,6 @@ private fun MainShell(
         }
     }
 
-    if (exitRequested) {
-        Dialog(onDismissRequest = { exitRequested = false }) {
-            Surface(
-                modifier = Modifier.widthIn(max = 320.dp),
-                shape = RoundedCornerShape(24.dp),
-                color = AppSurface2,
-                tonalElevation = 12.dp
-            ) {
-                Column(Modifier.padding(20.dp)) {
-                    Text("Exit Nustrim?", fontSize = 22.sp, fontWeight = FontWeight.Bold)
-                    Spacer(Modifier.height(18.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)
-                    ) {
-                        OutlinedButton(onClick = { exitRequested = false }) { Text("Cancel") }
-                        Button(onClick = {
-                            exitRequested = false
-                            activity?.finishAndRemoveTask()
-                        }) { Text("Exit") }
-                    }
-                }
-            }
-        }
-    }
 }
 private fun dispatchTvTestKey(activity: Activity?, keyCode: Int) {
     if (activity == null) return
@@ -1385,7 +1355,7 @@ private fun HomeScreen(
                 }
             }
 
-            if (continueWatching.isNotEmpty()) {
+            if (!loading && continueWatching.isNotEmpty()) {
                 item(key = "home-continue", contentType = "media-row") {
                     ContinueWatchingHomeRow(
                         entries = continueWatching,

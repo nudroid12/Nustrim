@@ -1,5 +1,10 @@
 package app.nudroidlabs.nustrim.tv2.shell
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
@@ -47,6 +52,12 @@ import app.nudroidlabs.nustrim.tv2.design.Tv2Shapes
 import app.nudroidlabs.nustrim.tv2.design.Tv2Spacing
 import app.nudroidlabs.nustrim.tv2.navigation.Tv2Destination
 
+private tailrec fun Context.findTv2Activity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findTv2Activity()
+    else -> null
+}
+
 /**
  * TV2 root shell.
  *
@@ -66,6 +77,8 @@ fun NustrimTv2Shell(
     val requesters = remember {
         Tv2Destination.entries.associateWith { FocusRequester() }
     }
+    val focusManager = LocalFocusManager.current
+    val activity = LocalContext.current.findTv2Activity()
 
     var railExpanded by remember { mutableStateOf(false) }
     var contentFocusRequestToken by remember { mutableIntStateOf(1) }
@@ -82,11 +95,17 @@ fun NustrimTv2Shell(
 
     fun moveToContent() {
         railExpanded = false
+        focusManager.clearFocus(force = true)
         contentFocusRequestToken += 1
     }
 
-    BackHandler(enabled = railExpanded) {
-        moveToContent()
+    BackHandler {
+        if (railExpanded) {
+            activity?.finishAndRemoveTask() ?: activity?.finish()
+        } else {
+            railExpanded = true
+            requesters.getValue(selected).requestFocus()
+        }
     }
 
     Box(
@@ -237,10 +256,10 @@ Surface(
             .clickable(onClick = onClick)
             .focusable(),
         shape = Tv2Shapes.navItem,
-        color = when {
-            selected -> androidx.compose.ui.graphics.Color.White
-            focused -> Tv2Colors.focused
-            else -> androidx.compose.ui.graphics.Color.Transparent
+        color = if (selected) {
+            androidx.compose.ui.graphics.Color.White
+        } else {
+            androidx.compose.ui.graphics.Color.Transparent
         }
     ) {
         Row(
