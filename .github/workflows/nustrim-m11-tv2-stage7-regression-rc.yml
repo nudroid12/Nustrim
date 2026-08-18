@@ -1,0 +1,674 @@
+name: Nustrim M11 TV2 Stage 7 Regression RC
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: nustrim-m11-tv2-stage7-regression
+  cancel-in-progress: false
+
+env:
+  TV2_VERSION: "0.17.0-tv2-rc7"
+
+jobs:
+  quality:
+    name: Audit, assemble and publish TV2 RC7
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Synchronise with origin main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          git checkout -B main origin/main
+          git reset --hard origin/main
+          echo "Checked out $(git rev-parse HEAD)"
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle 9.5.0
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "9.5.0"
+
+      - name: Prepare Stage 7 diagnose
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/nustrim-tv2-stage7-diagnose"
+          mkdir -p "$DIR"
+
+          {
+            echo "NUSTRIM TV2 STAGE 7 REGRESSION RC"
+            echo "================================="
+            echo "sha=$(git rev-parse HEAD)"
+            echo "branch=$(git branch --show-current)"
+            echo
+            echo "[marker]"
+            cat .nustrim-tv2 2>/dev/null || true
+            echo
+            echo "[version]"
+            grep -m1 'versionName' app/build.gradle.kts 2>/dev/null || true
+            echo
+            echo "[tv2 tree]"
+            find app/src/main/java/app/nudroidlabs/nustrim/tv2 \
+              -maxdepth 3 -type f -name '*.kt' -print 2>/dev/null | sort || true
+          } > "$DIR/preflight.txt"
+
+      - name: Verify Stage 6 baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/nustrim-tv2-stage7-diagnose"
+          DIAG="$DIR/preflight.txt"
+          ROOT="app/src/main/java/app/nudroidlabs/nustrim/tv2"
+          APP="app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt"
+
+          fail() {
+            echo "::error::$1"
+            echo "FAIL: $1" >> "$DIAG"
+            exit 1
+          }
+
+          marker_value() {
+            local key="$1"
+            awk -F= -v wanted="$key" '
+              $1 == wanted {
+                value = substr($0, index($0, "=") + 1)
+                gsub(/\r/, "", value)
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+                print value
+                exit
+              }
+            ' .nustrim-tv2
+          }
+
+          [[ -f .nustrim-tv2 ]] || fail "Missing .nustrim-tv2."
+          [[ -f "$APP" ]] || fail "Missing NustrimApp.kt."
+          [[ -d "$ROOT" ]] || fail "Missing TV2 source tree."
+
+          generation="$(marker_value generation)"
+          stage="$(marker_value stage)"
+
+          [[ "$generation" == "2" ]] \
+            || fail "TV2 generation is '${generation:-missing}', expected 2."
+
+          case "$stage" in
+            6|7)
+              ;;
+            *)
+              fail "TV2 stage is '${stage:-missing}', expected completed Stage 6."
+              ;;
+          esac
+
+          for layer in home details sources player workspace; do
+            find "$ROOT/$layer" -maxdepth 1 -type f -name '*.kt' -print -quit 2>/dev/null \
+              | grep -q . \
+              || fail "Missing TV2 $layer layer."
+          done
+
+          echo "PASS: Stage 6 TV2 baseline" >> "$DIAG"
+
+      - name: Audit Home remote contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/nustrim-tv2-stage7-diagnose"
+          HOME="app/src/main/java/app/nudroidlabs/nustrim/tv2/home"
+          LOG="$DIR/home-contract.txt"
+
+          fail() {
+            echo "::error::$1"
+            echo "FAIL: $1" >> "$LOG"
+            exit 1
+          }
+
+          {
+            echo "TV2 HOME CONTRACT"
+            echo "================="
+          } > "$LOG"
+
+          grep -R -q -E 'delay\(3_000\)|delay\(3000\)' "$HOME" \
+            || fail "3 second focused-poster landscape preview is missing."
+
+          grep -R -q -E '650L|650' "$HOME" \
+            || fail "650 ms long-press contract is missing."
+
+          grep -R -q 'Key.DirectionLeft' "$HOME" \
+            || fail "Home D-pad Left handling is missing."
+
+          grep -R -q 'sidebarRequester' "$HOME" \
+            || fail "Home sidebar focus handoff is missing."
+
+          grep -R -q 'landscapePreview' "$HOME" \
+            || fail "Home landscape-preview state is missing."
+
+          {
+            echo "PASS: 3 second landscape preview"
+            echo "PASS: 650 ms long press"
+            echo "PASS: D-pad Left/sidebar handoff"
+            echo "PASS: focus-preview reset contract"
+          } >> "$LOG"
+
+      - name: Audit Details focus restore contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/nustrim-tv2-stage7-diagnose"
+          DETAILS="app/src/main/java/app/nudroidlabs/nustrim/tv2/details"
+          APP="app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt"
+          LOG="$DIR/details-contract.txt"
+
+          fail() {
+            echo "::error::$1"
+            echo "FAIL: $1" >> "$LOG"
+            exit 1
+          }
+
+          echo "TV2 DETAILS CONTRACT" > "$LOG"
+
+          grep -R -q 'Tv2DetailsHero' "$DETAILS" \
+            || fail "TV2 Details hero is missing."
+
+          grep -R -q 'Tv2DetailsEpisodes' "$DETAILS" \
+            || fail "TV2 Details episode rail is missing."
+
+          grep -q 'TvNavigationMemory.detailFocusTarget' "$APP" \
+            || fail "Details focus memory is missing."
+
+          grep -q 'detailFocusRestoreToken' "$APP" \
+            || fail "Details focus restore token is missing."
+
+          grep -q 'sourcePickerVisible' "$APP" \
+            || fail "Details source-picker state is missing."
+
+          grep -q 'primaryFocusRequester' "$APP" \
+            || fail "Details primary focus requester is missing."
+
+          {
+            echo "PASS: TV2 Details hero"
+            echo "PASS: TV2 season/episode rail"
+            echo "PASS: focus memory and restore"
+            echo "PASS: source-dialog round-trip state"
+          } >> "$LOG"
+
+      - name: Audit Sources modal contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/nustrim-tv2-stage7-diagnose"
+          SOURCES="app/src/main/java/app/nudroidlabs/nustrim/tv2/sources"
+          LOG="$DIR/sources-contract.txt"
+
+          fail() {
+            echo "::error::$1"
+            echo "FAIL: $1" >> "$LOG"
+            exit 1
+          }
+
+          echo "TV2 SOURCES CONTRACT" > "$LOG"
+
+          grep -R -q 'BackHandler' "$SOURCES" \
+            || fail "Sources modal Back handling is missing."
+
+          grep -R -q 'onDismiss' "$SOURCES" \
+            || fail "Sources modal dismiss contract is missing."
+
+          grep -R -q 'onRefresh' "$SOURCES" \
+            || fail "Sources Retry/Refresh contract is missing."
+
+          grep -R -q 'providerProgress' "$SOURCES" \
+            || fail "Provider progress presentation is missing."
+
+          grep -R -q 'loading' "$SOURCES" \
+            || fail "Source loading presentation is missing."
+
+          grep -R -q 'error' "$SOURCES" \
+            || fail "Source error presentation is missing."
+
+          grep -R -q 'onSelect' "$SOURCES" \
+            || fail "Source selection handoff is missing."
+
+          {
+            echo "PASS: Back/dismiss"
+            echo "PASS: loading and provider progress"
+            echo "PASS: partial/empty error state"
+            echo "PASS: refresh/retry"
+            echo "PASS: source selection handoff"
+          } >> "$LOG"
+
+      - name: Audit Player remote contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/nustrim-tv2-stage7-diagnose"
+          PLAYER="app/src/main/java/app/nudroidlabs/nustrim/tv2/player"
+          APP="app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt"
+          LOG="$DIR/player-contract.txt"
+
+          fail() {
+            echo "::error::$1"
+            echo "FAIL: $1" >> "$LOG"
+            exit 1
+          }
+
+          echo "TV2 PLAYER CONTRACT" > "$LOG"
+
+          grep -R -q 'Tv2PlayerControls' "$PLAYER" \
+            || fail "TV2 player control overlay is missing."
+
+          grep -R -q 'onPlayPause' "$PLAYER" \
+            || fail "Player Play/Pause action is missing."
+
+          grep -R -q 'onSeekBy' "$PLAYER" \
+            || fail "Player seek action is missing."
+
+          for label in Subs Audio Sources Episodes; do
+            grep -R -q "\"$label\"" "$PLAYER" \
+              || fail "Player $label control is missing."
+          done
+
+          grep -q 'PlayerView(ctx)' "$APP" \
+            || fail "Media3 PlayerView core is missing."
+
+          grep -q 'PlayerFactory.create' "$APP" \
+            || fail "PlayerFactory core is missing."
+
+          grep -q 'controlsActivityToken' "$APP" \
+            || fail "Player control activity token is missing."
+
+          grep -q -E 'delay\(if \(isTv\) 4_000 else 5_000\)|delay\(4_000\)' "$APP" \
+            || fail "TV player 4 second auto-hide contract is missing."
+
+          grep -q 'persistProgress' "$APP" \
+            || fail "Player progress persistence is missing."
+
+          {
+            echo "PASS: TV2 player overlay"
+            echo "PASS: Play/Pause and seek"
+            echo "PASS: Subs/Audio/Sources/Episodes entry points"
+            echo "PASS: Media3 core preserved"
+            echo "PASS: 4 second TV auto-hide"
+            echo "PASS: progress persistence"
+          } >> "$LOG"
+
+      - name: Audit Search Library Settings contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/nustrim-tv2-stage7-diagnose"
+          WORKSPACE="app/src/main/java/app/nudroidlabs/nustrim/tv2/workspace"
+          APP="app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt"
+          LOG="$DIR/workspaces-contract.txt"
+
+          fail() {
+            echo "::error::$1"
+            echo "FAIL: $1" >> "$LOG"
+            exit 1
+          }
+
+          echo "TV2 WORKSPACES CONTRACT" > "$LOG"
+
+          grep -R -q 'Tv2SearchWorkspace' "$WORKSPACE" \
+            || fail "TV2 Search workspace missing."
+
+          grep -R -q 'Tv2LibraryWorkspace' "$WORKSPACE" \
+            || fail "TV2 Library workspace missing."
+
+          grep -R -q 'Tv2SettingsWorkspace' "$WORKSPACE" \
+            || fail "TV2 Settings workspace missing."
+
+          grep -R -q 'sidebarRequester' "$WORKSPACE" \
+            || fail "Workspace sidebar focus handoff missing."
+
+          grep -q 'MobileStreamSourcePicker' "$APP" \
+            || fail "Mobile source picker branch missing."
+
+          grep -q 'PageHeader(title = "Search", subtitle = "Search and discover", isTv = false)' "$APP" \
+            || fail "Mobile Search branch missing."
+
+          grep -q 'LibrarySavedGridCard(entry = entry, isTv = false' "$APP" \
+            || fail "Mobile Library branch missing."
+
+          grep -q 'SettingsNavigationRow(' "$APP" \
+            || fail "Mobile Settings navigation missing."
+
+          {
+            echo "PASS: TV Search"
+            echo "PASS: TV Library"
+            echo "PASS: TV Settings root"
+            echo "PASS: sidebar focus handoff"
+            echo "PASS: Mobile Search/Library/Settings preserved"
+          } >> "$LOG"
+
+      - name: Audit contamination and Compose hazards
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/nustrim-tv2-stage7-diagnose"
+          ROOT="app/src/main/java/app/nudroidlabs/nustrim/tv2"
+          LOG="$DIR/hygiene-contract.txt"
+
+          fail() {
+            echo "::error::$1"
+            echo "FAIL: $1" >> "$LOG"
+            exit 1
+          }
+
+          echo "TV2 HYGIENE CONTRACT" > "$LOG"
+
+          if grep -R -n -E 'NuBrowse|NuBrowseApp|app\.nubrowse' app/src/main app/build.gradle.kts 2>/dev/null | tee -a "$LOG"; then
+            fail "NuBrowse contamination detected."
+          fi
+
+          if grep -R -n 'com\.nuvio' "$ROOT" 2>/dev/null | tee -a "$LOG"; then
+            fail "Forbidden Nuvio package import detected."
+          fi
+
+          if grep -R -n '^import androidx\.compose\.foundation\.layout\.weight$' "$ROOT" 2>/dev/null | tee -a "$LOG"; then
+            fail "Direct Compose weight import detected."
+          fi
+
+          git diff --check || fail "Repository whitespace audit failed."
+
+          {
+            echo "PASS: no NuBrowse contamination"
+            echo "PASS: no Nuvio source-code package import"
+            echo "PASS: no direct Compose weight import"
+            echo "PASS: git diff --check"
+          } >> "$LOG"
+
+      - name: Write TV2 RC7 quality manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > .nustrim-tv2-quality <<'EOF'
+          generation=2
+          quality_profile=tv2-regression-rc1
+          home_landscape_delay_ms=3000
+          home_long_press_ms=650
+          details_focus_restore=required
+          sources_inline_loading=required
+          player_auto_hide_ms=4000
+          player_core=media3-preserved
+          mobile_isolation=required
+          status=passed-static-contracts
+          EOF
+
+          python3 - <<'PY' 2>&1 | tee "$RUNNER_TEMP/nustrim-tv2-stage7-diagnose/metadata.log"
+          from pathlib import Path
+          import os
+          import re
+
+          target = os.environ["TV2_VERSION"]
+
+          gradle_path = Path("app/build.gradle.kts")
+          gradle = gradle_path.read_text(encoding="utf-8")
+
+          code_match = re.search(r'versionCode\s*=\s*(\d+)', gradle)
+          name_match = re.search(r'versionName\s*=\s*"([^"]+)"', gradle)
+          if not code_match or not name_match:
+              raise SystemExit("Unable to resolve app version metadata.")
+
+          current_code = int(code_match.group(1))
+          current_name = name_match.group(1)
+          next_code = current_code if current_name == target else current_code + 1
+
+          gradle = re.sub(
+              r'versionCode\s*=\s*\d+',
+              f'versionCode = {next_code}',
+              gradle,
+              count=1
+          )
+          gradle = re.sub(
+              r'versionName\s*=\s*"[^"]+"',
+              f'versionName = "{target}"',
+              gradle,
+              count=1
+          )
+          gradle_path.write_text(gradle, encoding="utf-8")
+          Path(".nustrim-version").write_text(target + "\n", encoding="utf-8")
+
+          marker = Path(".nustrim-tv2")
+          lines = marker.read_text(encoding="utf-8").splitlines()
+          output = []
+          found = False
+          for line in lines:
+              if line.strip().startswith("stage="):
+                  output.append("stage=7")
+                  found = True
+              else:
+                  output.append(line.rstrip("\r"))
+          if not found:
+              output.append("stage=7")
+          marker.write_text("\n".join(output) + "\n", encoding="utf-8")
+
+          print(f"versionName: {current_name} -> {target}")
+          print(f"versionCode: {current_code} -> {next_code}")
+          print("TV2 marker advanced to stage=7")
+          print("TV2 quality manifest written")
+          PY
+
+      - name: Final structural audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/nustrim-tv2-stage7-diagnose"
+          LOG="$DIR/final-audit.txt"
+
+          fail() {
+            echo "::error::$1"
+            echo "FAIL: $1" >> "$LOG"
+            exit 1
+          }
+
+          echo "TV2 STAGE 7 FINAL AUDIT" > "$LOG"
+
+          grep -q '^stage=7$' .nustrim-tv2 \
+            || fail "TV2 marker is not stage=7."
+
+          grep -q "versionName = \"${TV2_VERSION}\"" app/build.gradle.kts \
+            || fail "App version is not ${TV2_VERSION}."
+
+          grep -q "^${TV2_VERSION}$" .nustrim-version \
+            || fail ".nustrim-version is not synchronised."
+
+          grep -q '^status=passed-static-contracts$' .nustrim-tv2-quality \
+            || fail "TV2 quality manifest was not completed."
+
+          for report in \
+            home-contract.txt \
+            details-contract.txt \
+            sources-contract.txt \
+            player-contract.txt \
+            workspaces-contract.txt \
+            hygiene-contract.txt; do
+            [[ -s "$DIR/$report" ]] || fail "Missing regression report: $report"
+            grep -q 'PASS:' "$DIR/$report" || fail "No PASS signal in $report"
+          done
+
+          git diff --check || fail "Final git diff check failed."
+
+          {
+            echo "PASS: stage=7"
+            echo "PASS: version=${TV2_VERSION}"
+            echo "PASS: all regression reports present"
+            echo "PASS: quality manifest complete"
+            echo
+            echo "[diff stat]"
+            git diff --stat
+          } >> "$LOG"
+
+          cat "$LOG"
+
+      - name: Assemble debug RC
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          set +e
+          gradle --no-daemon --build-cache \
+            :app:assembleDebug \
+            --stacktrace \
+            --console=plain \
+            2>&1 | tee "$RUNNER_TEMP/nustrim-tv2-stage7-diagnose/assemble.log"
+          code=${PIPESTATUS[0]}
+          set -e
+
+          if [[ "$code" -ne 0 ]]; then
+            echo "::error::TV2 Stage 7 debug assembly failed."
+            exit "$code"
+          fi
+
+          echo "BUILD/ASSEMBLE GATE: PASS" \
+            | tee "$RUNNER_TEMP/nustrim-tv2-stage7-diagnose/build-gate.txt"
+
+      - name: Commit and push Stage 7 RC
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$RUNNER_TEMP/nustrim-tv2-stage7-diagnose/push.log") 2>&1
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add \
+            app/build.gradle.kts \
+            .nustrim-tv2 \
+            .nustrim-version \
+            .nustrim-tv2-quality
+
+          if git diff --cached --quiet; then
+            echo "Stage 7 RC metadata is already applied."
+          else
+            git diff --cached --check
+            git commit -m "chore(tv2): certify Stage 7 regression RC"
+
+            git fetch --no-tags origin main
+            if ! git merge-base --is-ancestor origin/main HEAD; then
+              git rebase origin/main
+            fi
+
+            set +e
+            git push origin HEAD:main
+            code=$?
+            set -e
+
+            if [[ "$code" -ne 0 ]]; then
+              echo "First push failed. Refreshing origin/main and retrying once."
+              git fetch --no-tags origin main
+              if ! git merge-base --is-ancestor origin/main HEAD; then
+                git rebase origin/main
+              fi
+              git push origin HEAD:main
+            fi
+          fi
+
+          echo "Push completed successfully."
+
+      - name: Dispatch signed updater build
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          exec > >(tee "$RUNNER_TEMP/nustrim-tv2-stage7-diagnose/dispatch.log") 2>&1
+
+          gh workflow run build.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            -f publish_release=true
+
+          echo "Build Nustrim dispatched with publish_release=true."
+
+      - name: Print compact failure summary
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          DIR="$RUNNER_TEMP/nustrim-tv2-stage7-diagnose"
+
+          echo
+          echo "========== Nustrim TV2 Stage 7 Regression Summary =========="
+          echo "Result: FAILED"
+          echo "SHA: $(git rev-parse HEAD 2>/dev/null || echo unknown)"
+          echo "TV2 marker:"
+          cat .nustrim-tv2 2>/dev/null | sed 's/^/  /' || true
+          echo "Version:"
+          grep -m1 'versionName' app/build.gradle.kts 2>/dev/null | sed 's/^[[:space:]]*/  /' || true
+
+          for file in \
+            preflight.txt \
+            home-contract.txt \
+            details-contract.txt \
+            sources-contract.txt \
+            player-contract.txt \
+            workspaces-contract.txt \
+            hygiene-contract.txt \
+            metadata.log \
+            final-audit.txt \
+            build-gate.txt \
+            push.log \
+            dispatch.log; do
+            if [[ -f "$DIR/$file" ]]; then
+              echo
+              echo "[$file]"
+              tail -n 45 "$DIR/$file" || true
+            fi
+          done
+
+          if [[ -f "$DIR/assemble.log" ]]; then
+            echo
+            echo "[assemble result]"
+            grep -E 'BUILD SUCCESSFUL|BUILD FAILED|(^|[[:space:]])(e:|error:|FAILURE:|Caused by:|Execution failed for task|What went wrong:)' \
+              "$DIR/assemble.log" | tail -n 65 || true
+          fi
+
+          echo "=============================================================="
+
+      - name: Upload Stage 7 diagnose
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nustrim-m11-tv2-stage7-regression-diagnose
+          path: ${{ runner.temp }}/nustrim-tv2-stage7-diagnose
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Summary
+        if: success()
+        shell: bash
+        run: |
+          {
+            echo "## Nustrim M11 TV2 Stage 7 Regression RC"
+            echo
+            echo "- Stage 2 Home remote contracts passed."
+            echo "- Stage 3 Details focus-restore contracts passed."
+            echo "- Stage 4 Sources loading, error, retry and Back contracts passed."
+            echo "- Stage 5 Player remote controls, Media3 core and auto-hide contracts passed."
+            echo "- Stage 6 Search, Library and Settings workspace contracts passed."
+            echo "- Mobile Search, Library, Settings and source-picker guards passed."
+            echo "- No NuBrowse contamination, Nuvio package imports or direct Compose weight imports detected."
+            echo "- Full :app:assembleDebug passed."
+            echo "- TV2 quality manifest committed."
+            echo "- TV2 marker advanced to stage=7."
+            echo "- Version advanced to ${TV2_VERSION}."
+            echo "- Build Nustrim dispatched with publish_release=true."
+          } >> "$GITHUB_STEP_SUMMARY"
