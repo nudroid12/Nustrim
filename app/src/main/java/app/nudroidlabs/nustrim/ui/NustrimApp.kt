@@ -209,6 +209,7 @@ import app.nudroidlabs.nustrim.tv2.home.Tv2FocusedBackdrop
 import app.nudroidlabs.nustrim.tv2.home.Tv2PosterCard
 import app.nudroidlabs.nustrim.tv2.details.Tv2DetailsEpisodes
 import app.nudroidlabs.nustrim.tv2.details.Tv2DetailsHero
+import app.nudroidlabs.nustrim.tv2.sources.Tv2StreamSourcePicker
 
 private val AppBackground = Color(0xFF090A0C)
 private val AppSurface = Color(0xFF15171B)
@@ -7473,7 +7474,7 @@ private fun StreamSourcePicker(
     onSelect: (StreamSource) -> Unit
 ) {
     if (rememberIsTv()) {
-        TvStreamSourcePickerDialog(
+        Tv2StreamSourcePicker(
             title = title,
             item = item,
             episode = episode,
