@@ -1,0 +1,472 @@
+name: Nustrim TV3 Stage 0A Mobile Quarantine R2
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: nustrim-tv3-stage0a-mobile-quarantine-r2
+  cancel-in-progress: false
+
+env:
+  RESET_VERSION: "0.18.0-tv3-reset0a"
+
+jobs:
+  quarantine:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Sync exact main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          git checkout -B main origin/main
+          git reset --hard origin/main
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "9.5.0"
+
+      - name: Protect updater baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/nustrim-tv3-reset0a-r2"
+          mkdir -p "$DIR"
+
+          test -f .github/workflows/build.yml
+          test -d app/src/main/java/app/nudroidlabs/nustrim/core/update
+          test -d app/src/main/java/app/nudroidlabs/nustrim/tv2
+
+          sha256sum .github/workflows/build.yml > "$DIR/build.before"
+          find app/src/main/java/app/nudroidlabs/nustrim/core/update -type f -print0 \
+            | sort -z | xargs -0 sha256sum > "$DIR/updater.before"
+
+          {
+            echo "NUSTRIM TV3 STAGE 0A R2"
+            echo "sha=$(git rev-parse HEAD)"
+            grep -m1 'versionName' app/build.gradle.kts || true
+            echo
+            echo "[current TV runtime hooks]"
+            grep -n -E 'interfaceMode|NustrimTv2Shell|TvTestRemote|InterfaceModePicker|TvReferenceCanvas' \
+              app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt | head -n 120 || true
+          } > "$DIR/preflight.txt"
+
+      - name: Quarantine legacy TV runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' 2>&1 | tee "$RUNNER_TEMP/nustrim-tv3-reset0a-r2/patch.log"
+          from pathlib import Path
+          import re
+          
+          path = Path("app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt")
+          text = path.read_text(encoding="utf-8")
+          
+          def match_block(source: str, start: int, opener="{", closer="}") -> int:
+              depth = 0
+              in_string = False
+              triple = False
+              escape = False
+              i = start
+              while i < len(source):
+                  if source.startswith('"""', i):
+                      triple = not triple
+                      i += 3
+                      continue
+                  ch = source[i]
+                  if triple:
+                      i += 1
+                      continue
+                  if in_string:
+                      if escape:
+                          escape = False
+                      elif ch == "\\":
+                          escape = True
+                      elif ch == '"':
+                          in_string = False
+                      i += 1
+                      continue
+                  if ch == '"':
+                      in_string = True
+                      i += 1
+                      continue
+                  if ch == opener:
+                      depth += 1
+                  elif ch == closer:
+                      depth -= 1
+                      if depth == 0:
+                          return i + 1
+                  i += 1
+              raise SystemExit("Unbalanced Kotlin block")
+          
+          def function_bounds(source: str, name: str):
+              match = re.search(rf'(?m)^\s*(?:private\s+)?fun\s+{re.escape(name)}\s*\(', source)
+              if not match:
+                  raise SystemExit(f"Function {name} not found")
+              brace = source.find("{", match.end())
+              if brace < 0:
+                  raise SystemExit(f"Function {name} body not found")
+              return match.start(), match_block(source, brace)
+          
+          # 1. Force the stored runtime mode to MOBILE, while keeping it mutable so all
+          # existing settings code continues to compile unchanged.
+          text, mode_count = re.subn(
+              r'var\s+interfaceMode\s+by\s+remember\s*\{\s*mutableStateOf\(preferences\.interfaceMode\)\s*\}',
+              'var interfaceMode by remember { mutableStateOf<InterfaceMode?>(InterfaceMode.MOBILE) }',
+              text,
+              count=1,
+          )
+          if mode_count != 1 and 'mutableStateOf<InterfaceMode?>(InterfaceMode.MOBILE)' not in text:
+              raise SystemExit("interfaceMode state anchor not found")
+          
+          # 2. Any old UI control that tries to switch mode is neutralized. It always
+          # returns to MOBILE. The control itself is removed later in Stage 0B.
+          switch_match = re.search(
+              r'fun\s+switchInterfaceMode\s*\(\s*selected:\s*InterfaceMode\s*\)\s*\{',
+              text,
+          )
+          if not switch_match:
+              raise SystemExit("switchInterfaceMode function not found")
+          switch_brace = text.find("{", switch_match.start())
+          switch_end = match_block(text, switch_brace)
+          switch_replacement = (
+              "fun switchInterfaceMode(selected: InterfaceMode) {\n"
+              "        preferences.interfaceMode = InterfaceMode.MOBILE\n"
+              "        interfaceMode = InterfaceMode.MOBILE\n"
+              "        screen = Screen.Main(MainSection.HOME)\n"
+              "    }"
+          )
+          text = text[:switch_match.start()] + switch_replacement + text[switch_end:]
+          
+          # 3. Replace MainShell with its exact existing MOBILE Scaffold branch.
+          main_start, main_end = function_bounds(text, "MainShell")
+          main = text[main_start:main_end]
+          
+          scaffold_start = main.find("Scaffold(")
+          if scaffold_start < 0:
+              raise SystemExit("Mobile Scaffold not found in MainShell")
+          paren = main.find("(", scaffold_start)
+          scaffold_end = match_block(main, paren, "(", ")")
+          
+          cursor = scaffold_end
+          while cursor < len(main) and main[cursor].isspace():
+              cursor += 1
+          if cursor < len(main) and main[cursor] == "{":
+              scaffold_end = match_block(main, cursor)
+          
+          scaffold = main[scaffold_start:scaffold_end]
+          
+          # Do not add @Composable here. The original annotation immediately above the
+          # function is intentionally preserved to avoid the duplicate-annotation error
+          # seen in Stage 0A R1.
+          mobile_main = (
+              "private fun MainShell(\n"
+              "    selected: MainSection,\n"
+              "    remoteTestActive: Boolean,\n"
+              "    onRemoteTestClose: () -> Unit,\n"
+              "    onSection: (MainSection) -> Unit,\n"
+              "    content: @Composable (Boolean, Int) -> Unit\n"
+              ") {\n"
+              + "\n".join("    " + line if line else line for line in scaffold.splitlines())
+              + "\n}\n"
+          )
+          
+          text = text[:main_start] + mobile_main + text[main_end:]
+          
+          # Validate only the runtime quarantine. Legacy TV helpers/imports are allowed
+          # to remain dead until Stage 0B.
+          new_main_start, new_main_end = function_bounds(text, "MainShell")
+          new_main = text[new_main_start:new_main_end]
+          
+          checks = {
+              "mode starts mobile": 'mutableStateOf<InterfaceMode?>(InterfaceMode.MOBILE)' in text,
+              "mode switch neutralized": (
+                  "preferences.interfaceMode = InterfaceMode.MOBILE" in text
+                  and "interfaceMode = InterfaceMode.MOBILE" in text
+              ),
+              "mobile scaffold active": "Scaffold(" in new_main and "MobileNavItem(" in new_main,
+              "content receives mobile flag": "content(false, 0)" in new_main,
+              "old TV shell unreachable": "NustrimTv2Shell(" not in new_main,
+              "floating TV remote unreachable": "TvTestRemote(" not in new_main,
+              "exit dialog no longer in shell": "Exit Nustrim?" not in new_main,
+              "updater UI retained": "AppUpdater(context)" in text and "UpdateSettingsScreen" in text,
+          }
+          failed = [name for name, ok in checks.items() if not ok]
+          if failed:
+              raise SystemExit("Stage 0A R2 runtime contract failed: " + ", ".join(failed))
+          
+          path.write_text(text, encoding="utf-8")
+          
+          for name in checks:
+              print("PASS:", name)
+          PY
+          code=${PIPESTATUS[0]}
+          if [[ "$code" -ne 0 ]]; then
+            exit "$code"
+          fi
+
+          # TV3 must not exist yet. Legacy TV2 source is intentionally preserved
+          # until Stage 0B so dead inline references continue compiling.
+          rm -rf app/src/main/java/app/nudroidlabs/nustrim/tv3
+
+      - name: Advance reset metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' 2>&1 | tee "$RUNNER_TEMP/nustrim-tv3-reset0a-r2/metadata.log"
+          from pathlib import Path
+          import os
+          import re
+          
+          target = os.environ["RESET_VERSION"]
+          path = Path("app/build.gradle.kts")
+          text = path.read_text(encoding="utf-8")
+          
+          code_match = re.search(r'versionCode\s*=\s*(\d+)', text)
+          name_match = re.search(r'versionName\s*=\s*"([^"]+)"', text)
+          if not code_match or not name_match:
+              raise SystemExit("Version metadata missing")
+          
+          old_code = int(code_match.group(1))
+          old_name = name_match.group(1)
+          new_code = old_code if old_name == target else old_code + 1
+          
+          text = re.sub(r'versionCode\s*=\s*\d+', f'versionCode = {new_code}', text, count=1)
+          text = re.sub(r'versionName\s*=\s*"[^"]+"', f'versionName = "{target}"', text, count=1)
+          path.write_text(text, encoding="utf-8")
+          Path(".nustrim-version").write_text(target + "\n", encoding="utf-8")
+          
+          Path(".nustrim-tv-reset").write_text(
+              "generation=3\n"
+              "stage=0A\n"
+              "runtime=mobile-only\n"
+              "legacy-tv-source=quarantined\n"
+              "tv2-delete=pending-stage0B\n"
+              "mobile=protected\n"
+              "updater=protected\n",
+              encoding="utf-8",
+          )
+          
+          print(f"versionName: {old_name} -> {target}")
+          print(f"versionCode: {old_code} -> {new_code}")
+          print("TV reset stage=0A runtime quarantine")
+          PY
+
+      - name: Verify updater protection
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/nustrim-tv3-reset0a-r2"
+
+          sha256sum .github/workflows/build.yml > "$DIR/build.after"
+          find app/src/main/java/app/nudroidlabs/nustrim/core/update -type f -print0 \
+            | sort -z | xargs -0 sha256sum > "$DIR/updater.after"
+
+          cmp "$DIR/build.before" "$DIR/build.after"
+          cmp "$DIR/updater.before" "$DIR/updater.after"
+
+          echo "PASS: updater/build workflow untouched" | tee "$DIR/updater-protection.txt"
+
+      - name: Runtime quarantine audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/nustrim-tv3-reset0a-r2"
+          APP="app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt"
+
+          test -d app/src/main/java/app/nudroidlabs/nustrim/tv2
+          test ! -d app/src/main/java/app/nudroidlabs/nustrim/tv3
+
+          grep -q 'mutableStateOf<InterfaceMode?>(InterfaceMode.MOBILE)' "$APP"
+          grep -q 'preferences.interfaceMode = InterfaceMode.MOBILE' "$APP"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          text = Path("app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt").read_text()
+
+          def end_block(source, start):
+              depth = 0
+              string = False
+              esc = False
+              for i in range(start, len(source)):
+                  ch = source[i]
+                  if string:
+                      if esc:
+                          esc = False
+                      elif ch == "\\":
+                          esc = True
+                      elif ch == '"':
+                          string = False
+                      continue
+                  if ch == '"':
+                      string = True
+                  elif ch == "{":
+                      depth += 1
+                  elif ch == "}":
+                      depth -= 1
+                      if depth == 0:
+                          return i + 1
+              raise SystemExit("Unbalanced MainShell")
+
+          m = re.search(r'private\s+fun\s+MainShell\s*\(', text)
+          if not m:
+              raise SystemExit("MainShell missing")
+          b = text.find("{", m.end())
+          e = end_block(text, b)
+          main = text[m.start():e]
+
+          assert "Scaffold(" in main
+          assert "MobileNavItem(" in main
+          assert "content(false, 0)" in main
+          assert "NustrimTv2Shell(" not in main
+          assert "TvTestRemote(" not in main
+          assert "Exit Nustrim?" not in main
+          print("PASS: MainShell is mobile-only")
+          PY
+
+          grep -q 'AppUpdater(context)' "$APP"
+          grep -q 'UpdateSettingsScreen' "$APP"
+          grep -q '^runtime=mobile-only$' .nustrim-tv-reset
+          grep -q '^legacy-tv-source=quarantined$' .nustrim-tv-reset
+
+          {
+            echo "PASS: mobile-only runtime"
+            echo "PASS: legacy TV2 source quarantined, not deleted"
+            echo "PASS: updater retained"
+            echo
+            echo "[legacy TV inventory for Stage 0B]"
+            grep -o -E '\b(Tv2[A-Za-z0-9_]*|Tv[A-Za-z0-9_]+|isTv|rememberIsTv)\b' "$APP" \
+              | sort | uniq -c | sort -nr | head -n 140 || true
+            echo
+            git status --short
+            git diff --stat
+          } > "$DIR/audit.txt"
+
+          cat "$DIR/audit.txt"
+          git diff --check
+          git diff > "$DIR/stage0a-r2.patch"
+
+      - name: Compile quarantined mobile runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          gradle --no-daemon --build-cache \
+            :app:compileDebugKotlin \
+            --stacktrace \
+            --console=plain \
+            2>&1 | tee "$RUNNER_TEMP/nustrim-tv3-reset0a-r2/compile.log"
+          code=${PIPESTATUS[0]}
+          set -e
+          if [[ "$code" -ne 0 ]]; then
+            exit "$code"
+          fi
+
+      - name: Assemble mobile debug APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          gradle --no-daemon --build-cache \
+            :app:assembleDebug \
+            --stacktrace \
+            --console=plain \
+            2>&1 | tee "$RUNNER_TEMP/nustrim-tv3-reset0a-r2/assemble.log"
+          code=${PIPESTATUS[0]}
+          set -e
+          if [[ "$code" -ne 0 ]]; then
+            exit "$code"
+          fi
+
+      - name: Commit and push
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$RUNNER_TEMP/nustrim-tv3-reset0a-r2/push.log") 2>&1
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+          git diff --cached --check
+
+          if git diff --cached --quiet; then
+            echo "Stage 0A R2 already applied."
+          else
+            git commit -m "refactor(tv): quarantine legacy TV runtime before purge"
+            git fetch --no-tags origin main
+            if ! git merge-base --is-ancestor origin/main HEAD; then
+              git rebase origin/main
+            fi
+            git push origin HEAD:main
+          fi
+
+      - name: Dispatch protected signed updater
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run build.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            -f publish_release=true \
+            2>&1 | tee "$RUNNER_TEMP/nustrim-tv3-reset0a-r2/dispatch.log"
+
+      - name: Compact failure summary
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          DIR="$RUNNER_TEMP/nustrim-tv3-reset0a-r2"
+
+          echo "========== Nustrim TV3 Stage 0A R2 Summary =========="
+          echo "Result: FAILED"
+          grep -m1 'versionName' app/build.gradle.kts 2>/dev/null || true
+
+          for file in preflight.txt patch.log metadata.log updater-protection.txt audit.txt push.log dispatch.log; do
+            if [[ -f "$DIR/$file" ]]; then
+              echo
+              echo "[$file]"
+              tail -n 100 "$DIR/$file" || true
+            fi
+          done
+
+          for file in compile.log assemble.log; do
+            if [[ -f "$DIR/$file" ]]; then
+              echo
+              echo "[$file result]"
+              grep -E 'BUILD SUCCESSFUL|BUILD FAILED|(^|[[:space:]])(e:|error:|FAILURE:|Caused by:|Execution failed for task|What went wrong:)' \
+                "$DIR/$file" | tail -n 110 || true
+            fi
+          done
+
+      - name: Upload diagnose
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nustrim-tv3-stage0a-r2-diagnose
+          path: ${{ runner.temp }}/nustrim-tv3-reset0a-r2
+          if-no-files-found: ignore
+          retention-days: 7
