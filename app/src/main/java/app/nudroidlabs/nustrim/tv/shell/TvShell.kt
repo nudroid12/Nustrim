@@ -46,10 +46,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
+import app.nudroidlabs.nustrim.tv.details.TvDetailsScreen
 import app.nudroidlabs.nustrim.tv.home.TvHomeEntry
 import app.nudroidlabs.nustrim.tv.home.TvHomeScreen
 import app.nudroidlabs.nustrim.tv.navigation.TvDestination
 import app.nudroidlabs.nustrim.tv.theme.TvColors
+import kotlinx.coroutines.delay
 
 @Composable
 fun TvShell(
@@ -58,7 +60,9 @@ fun TvShell(
     var selected by remember { mutableStateOf(TvDestination.HOME) }
     var sidebarExpanded by remember { mutableStateOf(true) }
     var contentFocusRequestToken by remember { mutableIntStateOf(0) }
-    var openedHomeEntry by remember { mutableStateOf<TvHomeEntry?>(null) }
+    var openedDetailsEntry by remember { mutableStateOf<TvHomeEntry?>(null) }
+    var lastHomeFocusRequester by remember { mutableStateOf<FocusRequester?>(null) }
+    var restoreHomeFocusToken by remember { mutableIntStateOf(0) }
 
     val sidebarRequesters = remember {
         TvDestination.entries.associateWith { FocusRequester() }
@@ -67,7 +71,6 @@ fun TvShell(
 
     fun focusSidebar() {
         sidebarExpanded = true
-        openedHomeEntry = null
         runCatching {
             sidebarRequesters.getValue(selected).requestFocus()
         }
@@ -78,18 +81,34 @@ fun TvShell(
         contentFocusRequestToken += 1
     }
 
+    fun closeDetailsAndRestoreHome() {
+        openedDetailsEntry = null
+        sidebarExpanded = false
+        restoreHomeFocusToken += 1
+    }
+
     LaunchedEffect(Unit) {
         sidebarRequesters.getValue(selected).requestFocus()
     }
 
-    BackHandler {
-        when {
-            openedHomeEntry != null -> {
-                openedHomeEntry = null
+    LaunchedEffect(restoreHomeFocusToken) {
+        if (restoreHomeFocusToken > 0) {
+            delay(70)
+            val requester = lastHomeFocusRequester
+            val restored = requester != null &&
+                runCatching { requester.requestFocus() }.isSuccess
+
+            if (!restored) {
                 contentFocusRequestToken += 1
             }
-            sidebarExpanded -> onExit()
-            else -> focusSidebar()
+        }
+    }
+
+    BackHandler(enabled = openedDetailsEntry == null) {
+        if (sidebarExpanded) {
+            onExit()
+        } else {
+            focusSidebar()
         }
     }
 
@@ -103,46 +122,59 @@ fun TvShell(
                 .fillMaxSize()
                 .padding(start = 72.dp)
         ) {
-            if (openedHomeEntry != null) {
-                TvStageDetailsPreview(
-                    entry = openedHomeEntry!!,
+            when (selected) {
+                TvDestination.HOME -> TvHomeScreen(
+                    contentFocusRequestToken = contentFocusRequestToken,
+                    firstContentRequester = firstContentRequester,
+                    onContentFocused = { _, requester ->
+                        sidebarExpanded = false
+                        lastHomeFocusRequester = requester
+                    },
                     onMoveLeft = { focusSidebar() },
-                    focusRequester = firstContentRequester
+                    onOpen = { entry ->
+                        openedDetailsEntry = entry
+                        sidebarExpanded = false
+                    }
                 )
-            } else {
-                when (selected) {
-                    TvDestination.HOME -> TvHomeScreen(
-                        contentFocusRequestToken = contentFocusRequestToken,
-                        firstContentRequester = firstContentRequester,
-                        onContentFocused = {
-                            sidebarExpanded = false
-                        },
-                        onMoveLeft = { focusSidebar() },
-                        onOpen = { openedHomeEntry = it }
-                    )
-                    else -> TvStagePlaceholder(
-                        destination = selected,
-                        focusRequester = firstContentRequester,
-                        onMoveLeft = { focusSidebar() }
-                    )
-                }
+
+                else -> TvStagePlaceholder(
+                    destination = selected,
+                    focusRequester = firstContentRequester,
+                    onMoveLeft = { focusSidebar() }
+                )
             }
         }
 
-        TvSidebar(
-            selected = selected,
-            expanded = sidebarExpanded,
-            requesters = sidebarRequesters,
-            onSelected = { destination ->
-                selected = destination
-                openedHomeEntry = null
-                sidebarExpanded = true
-            },
-            onMoveRight = { focusContent() },
-            modifier = Modifier
-                .align(Alignment.CenterStart)
-                .zIndex(10f)
-        )
+        if (openedDetailsEntry == null) {
+            TvSidebar(
+                selected = selected,
+                expanded = sidebarExpanded,
+                requesters = sidebarRequesters,
+                onSelected = { destination ->
+                    selected = destination
+                    sidebarExpanded = true
+                },
+                onMoveRight = { focusContent() },
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .zIndex(10f)
+            )
+        }
+
+        openedDetailsEntry?.let { entry ->
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .zIndex(20f)
+            ) {
+                TvDetailsScreen(
+                    entry = entry,
+                    onBack = {
+                        closeDetailsAndRestoreHome()
+                    }
+                )
+            }
+        }
     }
 }
 
@@ -347,75 +379,5 @@ private fun TvStagePlaceholder(
                 )
             }
         }
-    }
-}
-
-@Composable
-private fun TvStageDetailsPreview(
-    entry: TvHomeEntry,
-    onMoveLeft: () -> Unit,
-    focusRequester: FocusRequester
-) {
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(TvColors.Background),
-        contentAlignment = Alignment.CenterStart
-    ) {
-        Surface(
-            modifier = Modifier
-                .width(540.dp)
-                .padding(start = 48.dp)
-                .focusRequester(focusRequester)
-                .onPreviewKeyEvent { event ->
-                    if (
-                        event.type == KeyEventType.KeyDown &&
-                        event.key == Key.DirectionLeft
-                    ) {
-                        onMoveLeft()
-                        true
-                    } else {
-                        false
-                    }
-                }
-                .focusable(),
-            shape = RoundedCornerShape(20.dp),
-            color = TvColors.BackgroundElevated,
-            border = BorderStroke(
-                1.dp,
-                Color.White.copy(alpha = 0.12f)
-            )
-        ) {
-            Column(
-                modifier = Modifier.padding(30.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Text(
-                    text = entry.item.title,
-                    color = TvColors.TextPrimary,
-                    fontSize = 30.sp,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = entry.item.description.ifBlank {
-                        "Details page will be connected in TV Stage 3."
-                    },
-                    color = TvColors.TextSecondary,
-                    fontSize = 15.sp,
-                    maxLines = 5,
-                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
-                )
-                Text(
-                    text = "Stage 3 will replace this preview with the full details experience.",
-                    color = TvColors.Accent,
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
-            }
-        }
-    }
-
-    LaunchedEffect(entry.stableKey) {
-        runCatching { focusRequester.requestFocus() }
     }
 }

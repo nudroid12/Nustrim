@@ -1,8 +1,10 @@
 generation=fresh
-stage=2
+stage=3
 namespace=tv
 reference=NuvioTV
-home=modern-hero-catalogs-continue-watching
-focused-poster=delayed-landscape-expansion
+details=full-screen-overlay
+episodes=season-aware
+sources=stage4-preview-modal
+home-focus=restore-origin-card
 mobile=protected
 updater=protected

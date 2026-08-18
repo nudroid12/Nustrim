@@ -69,7 +69,7 @@ import kotlinx.coroutines.delay
 fun TvHomeScreen(
     contentFocusRequestToken: Int,
     firstContentRequester: FocusRequester,
-    onContentFocused: () -> Unit,
+    onContentFocused: (TvHomeEntry, FocusRequester) -> Unit,
     onMoveLeft: () -> Unit,
     onOpen: (TvHomeEntry) -> Unit
 ) {
@@ -259,9 +259,9 @@ fun TvHomeScreen(
                         entries = continueEntries,
                         firstContentRequester = firstContentRequester,
                         autoAttachFirstRequester = catalogSections.isEmpty(),
-                        onFocused = {
-                            focusedEntry = it
-                            onContentFocused()
+                        onFocused = { entry, requester ->
+                            focusedEntry = entry
+                            onContentFocused(entry, requester)
                         },
                         onMoveLeft = onMoveLeft,
                         onOpen = onOpen
@@ -275,9 +275,9 @@ fun TvHomeScreen(
                         section = section,
                         firstContentRequester = firstContentRequester,
                         autoAttachFirstRequester = sectionIndex == 0,
-                        onFocused = {
-                            focusedEntry = it
-                            onContentFocused()
+                        onFocused = { entry, requester ->
+                            focusedEntry = entry
+                            onContentFocused(entry, requester)
                         },
                         onMoveLeft = onMoveLeft,
                         onOpen = onOpen
@@ -452,7 +452,7 @@ private fun TvCatalogRow(
     section: TvHomeSection,
     firstContentRequester: FocusRequester,
     autoAttachFirstRequester: Boolean,
-    onFocused: (TvHomeEntry) -> Unit,
+    onFocused: (TvHomeEntry, FocusRequester) -> Unit,
     onMoveLeft: () -> Unit,
     onOpen: (TvHomeEntry) -> Unit
 ) {
@@ -498,7 +498,7 @@ private fun TvContinueRow(
     entries: List<TvHomeEntry>,
     firstContentRequester: FocusRequester,
     autoAttachFirstRequester: Boolean,
-    onFocused: (TvHomeEntry) -> Unit,
+    onFocused: (TvHomeEntry, FocusRequester) -> Unit,
     onMoveLeft: () -> Unit,
     onOpen: (TvHomeEntry) -> Unit
 ) {
@@ -543,12 +543,15 @@ private fun TvContinueRow(
 private fun TvPosterCard(
     entry: TvHomeEntry,
     focusRequester: FocusRequester?,
-    onFocused: (TvHomeEntry) -> Unit,
+    onFocused: (TvHomeEntry, FocusRequester) -> Unit,
     onMoveLeft: (() -> Unit)?,
     onOpen: (TvHomeEntry) -> Unit
 ) {
     var focused by remember { mutableStateOf(false) }
     var expanded by remember { mutableStateOf(false) }
+    val cardRequester = remember(entry.stableKey, focusRequester) {
+        focusRequester ?: FocusRequester()
+    }
 
     LaunchedEffect(focused) {
         if (focused) {
@@ -588,16 +591,10 @@ private fun TvPosterCard(
                 scaleX = scale
                 scaleY = scale
             }
-            .then(
-                if (focusRequester != null) {
-                    Modifier.focusRequester(focusRequester)
-                } else {
-                    Modifier
-                }
-            )
+            .focusRequester(cardRequester)
             .onFocusChanged {
                 focused = it.hasFocus
-                if (it.hasFocus) onFocused(entry)
+                if (it.hasFocus) onFocused(entry, cardRequester)
             }
             .onPreviewKeyEvent { event ->
                 when {
@@ -675,11 +672,14 @@ private fun TvPosterCard(
 private fun TvContinueCard(
     entry: TvHomeEntry,
     focusRequester: FocusRequester?,
-    onFocused: (TvHomeEntry) -> Unit,
+    onFocused: (TvHomeEntry, FocusRequester) -> Unit,
     onMoveLeft: (() -> Unit)?,
     onOpen: (TvHomeEntry) -> Unit
 ) {
     var focused by remember { mutableStateOf(false) }
+    val cardRequester = remember(entry.stableKey, focusRequester) {
+        focusRequester ?: FocusRequester()
+    }
     val scale by animateFloatAsState(
         targetValue = if (focused) 1.04f else 1f,
         label = "continueScale"
@@ -697,16 +697,10 @@ private fun TvContinueCard(
                 scaleX = scale
                 scaleY = scale
             }
-            .then(
-                if (focusRequester != null) {
-                    Modifier.focusRequester(focusRequester)
-                } else {
-                    Modifier
-                }
-            )
+            .focusRequester(cardRequester)
             .onFocusChanged {
                 focused = it.hasFocus
-                if (it.hasFocus) onFocused(entry)
+                if (it.hasFocus) onFocused(entry, cardRequester)
             }
             .onPreviewKeyEvent { event ->
                 when {
