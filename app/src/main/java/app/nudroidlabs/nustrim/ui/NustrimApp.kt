@@ -1,5 +1,7 @@
 package app.nudroidlabs.nustrim.ui
 
+import app.nudroidlabs.nustrim.tv.TvApp
+
 import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -731,12 +733,24 @@ fun NustrimApp() {
                 }
             }
             val physicalTvDevice = rememberIsPhysicalTv()
-            Surface(modifier = Modifier.fillMaxSize(), color = AppBackground) {
-                if (interfaceMode == InterfaceMode.TV && !physicalTvDevice) {
-                    TvReferenceCanvas { screenContent() }
-                } else {
-                    screenContent()
-                }
+            if (interfaceMode == InterfaceMode.TV) {
+                TvApp(
+                    onExit = {
+                        if (physicalTvDevice) {
+                            activity?.finish()
+                        } else {
+                            switchInterfaceMode(InterfaceMode.MOBILE)
+                        }
+                    }
+                )
+            } else {
+                Surface(modifier = Modifier.fillMaxSize(), color = AppBackground) {
+                                if (interfaceMode == InterfaceMode.TV && !physicalTvDevice) {
+                                    TvReferenceCanvas { screenContent() }
+                                } else {
+                                    screenContent()
+                                }
+                            }
             }
             if (interfaceMode == null) {
                 InterfaceModePicker(onSelect = { switchInterfaceMode(it) })
