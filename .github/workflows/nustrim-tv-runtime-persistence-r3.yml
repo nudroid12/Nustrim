@@ -1,0 +1,296 @@
+name: Nustrim TV Runtime Persistence R3
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: nustrim-tv-runtime-persistence-r3
+  cancel-in-progress: false
+
+env:
+  TARGET_VERSION: "0.21.1-tv-route-r3"
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Sync exact main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          git checkout -B main origin/main
+          git reset --hard origin/main
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "9.5.0"
+
+      - name: Runtime preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/tv-runtime-r3"
+          mkdir -p "$DIR"
+
+          APP="app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt"
+          PREFS="app/src/main/java/app/nudroidlabs/nustrim/ui/UiPreferences.kt"
+
+          test -f "$APP"
+          test -f "$PREFS"
+          test -f app/src/main/java/app/nudroidlabs/nustrim/tv/TvApp.kt
+          test -f app/src/main/java/app/nudroidlabs/nustrim/tv/shell/TvShell.kt
+          test -f .github/workflows/build.yml
+          test -d app/src/main/java/app/nudroidlabs/nustrim/core/update
+
+          cp "$APP" "$DIR/NustrimApp.before.kt"
+
+          sha256sum .github/workflows/build.yml > "$DIR/build.before"
+          find app/src/main/java/app/nudroidlabs/nustrim/core/update -type f -print0             | sort -z | xargs -0 sha256sum > "$DIR/updater.before"
+
+          grep -q 'if (interfaceMode == InterfaceMode.TV)' "$APP"
+          grep -q 'TvApp(' "$APP"
+          grep -q 'switchInterfaceMode(InterfaceMode.MOBILE)' "$APP"
+
+          if grep -q 'interfaceMode == InterfaceMode.TV && !physicalTvDevice' "$APP"; then
+            echo "::error::Legacy TV route is still active."
+            exit 1
+          fi
+
+          {
+            echo "TV RUNTIME PERSISTENCE R3"
+            echo "========================="
+            echo "sha=$(git rev-parse HEAD)"
+            grep -m1 'versionCode' app/build.gradle.kts || true
+            grep -m1 'versionName' app/build.gradle.kts || true
+            echo
+            echo "[route]"
+            grep -n -E 'if \(interfaceMode == InterfaceMode.TV\)|TvApp\(|switchInterfaceMode\(InterfaceMode.MOBILE\)' "$APP" | head -n 60 || true
+            echo
+            echo "[interface mode prefs]"
+            grep -n -A14 -B3 'var interfaceMode' "$PREFS" | head -n 50 || true
+          } > "$DIR/preflight.txt"
+
+          cat "$DIR/preflight.txt"
+
+      - name: Harden interface mode persistence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          
+          PREFS = Path("app/src/main/java/app/nudroidlabs/nustrim/ui/UiPreferences.kt")
+          text = PREFS.read_text(encoding="utf-8")
+          before = text
+          
+          # Change only interfaceMode writes from apply() to commit().
+          text, count_put = re.subn(
+              r'putString\(KEY_INTERFACE_MODE,\s*value\.name\)\.apply\(\)',
+              'putString(KEY_INTERFACE_MODE, value.name).commit()',
+              text,
+              count=1,
+          )
+          text, count_remove = re.subn(
+              r'remove\(KEY_INTERFACE_MODE\)\.apply\(\)',
+              'remove(KEY_INTERFACE_MODE).commit()',
+              text,
+              count=1,
+          )
+          
+          already_sync = (
+              'putString(KEY_INTERFACE_MODE, value.name).commit()' in text
+              and 'remove(KEY_INTERFACE_MODE).commit()' in text
+          )
+          
+          if not already_sync:
+              raise SystemExit(
+                  f"Could not harden interfaceMode persistence "
+                  f"(put={count_put}, remove={count_remove})"
+              )
+          
+          if 'putString(KEY_INTERFACE_MODE, value.name).apply()' in text:
+              raise SystemExit("Async interfaceMode write still present")
+          
+          PREFS.write_text(text, encoding="utf-8")
+          
+          print("PASS: interfaceMode uses commit()")
+          print("Changed:", before != text)
+          PY
+
+      - name: Force new APK version
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import re
+          
+          target = os.environ["TARGET_VERSION"]
+          path = Path("app/build.gradle.kts")
+          text = path.read_text(encoding="utf-8")
+          
+          cm = re.search(r'versionCode\s*=\s*(\d+)', text)
+          nm = re.search(r'versionName\s*=\s*"([^"]+)"', text)
+          if not cm or not nm:
+              raise SystemExit("versionCode/versionName not found")
+          
+          old_code = int(cm.group(1))
+          old_name = nm.group(1)
+          new_code = old_code if old_name == target else old_code + 1
+          
+          text = re.sub(
+              r'versionCode\s*=\s*\d+',
+              f'versionCode = {new_code}',
+              text,
+              count=1,
+          )
+          text = re.sub(
+              r'versionName\s*=\s*"[^"]+"',
+              f'versionName = "{target}"',
+              text,
+              count=1,
+          )
+          
+          path.write_text(text, encoding="utf-8")
+          
+          print(f"versionName: {old_name} -> {target}")
+          print(f"versionCode: {old_code} -> {new_code}")
+          PY
+
+      - name: Runtime contract audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/tv-runtime-r3"
+          APP="app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt"
+          PREFS="app/src/main/java/app/nudroidlabs/nustrim/ui/UiPreferences.kt"
+
+          echo "AUDIT VERSION: TV-RUNTIME-PERSISTENCE-R3"
+
+          cmp "$DIR/NustrimApp.before.kt" "$APP"
+
+          grep -q 'putString(KEY_INTERFACE_MODE, value.name).commit()' "$PREFS"
+          grep -q 'remove(KEY_INTERFACE_MODE).commit()' "$PREFS"
+
+          if grep -q 'putString(KEY_INTERFACE_MODE, value.name).apply()' "$PREFS"; then
+            echo "::error::interfaceMode still uses apply()."
+            exit 1
+          fi
+
+          grep -q 'versionName = "0.21.1-tv-route-r3"' app/build.gradle.kts
+
+          sha256sum .github/workflows/build.yml > "$DIR/build.after"
+          find app/src/main/java/app/nudroidlabs/nustrim/core/update -type f -print0             | sort -z | xargs -0 sha256sum > "$DIR/updater.after"
+
+          cmp "$DIR/build.before" "$DIR/build.after"
+          cmp "$DIR/updater.before" "$DIR/updater.after"
+
+          git diff --check
+          git diff > "$DIR/r3.patch"
+
+          echo "PASS: R2 route unchanged"
+          echo "PASS: interfaceMode persistence synchronous"
+          echo "PASS: APK version bumped"
+          echo "PASS: updater/build untouched"
+
+      - name: Compile R3
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          gradle --no-daemon --build-cache             :app:compileDebugKotlin             --stacktrace --console=plain             2>&1 | tee "$RUNNER_TEMP/tv-runtime-r3/compile.log"
+          code=${PIPESTATUS[0]}
+          set -e
+          if [[ "$code" -ne 0 ]]; then exit "$code"; fi
+
+      - name: Assemble R3
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle --no-daemon --build-cache             :app:assembleDebug             --stacktrace --console=plain             2>&1 | tee "$RUNNER_TEMP/tv-runtime-r3/assemble.log"
+
+      - name: Commit and push
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$RUNNER_TEMP/tv-runtime-r3/push.log") 2>&1
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add             app/src/main/java/app/nudroidlabs/nustrim/ui/UiPreferences.kt             app/build.gradle.kts
+
+          git diff --cached --check
+
+          if git diff --cached --quiet; then
+            echo "Runtime Persistence R3 already applied."
+          else
+            git commit -m "fix(tv): persist TV mode and bump runtime build"
+            git fetch --no-tags origin main
+            git rebase origin/main
+            git push origin HEAD:main
+          fi
+
+      - name: Dispatch signed updater build
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run build.yml             --repo "$GITHUB_REPOSITORY"             --ref main             -f publish_release=true             2>&1 | tee "$RUNNER_TEMP/tv-runtime-r3/dispatch.log"
+
+      - name: Compact failure summary
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          DIR="$RUNNER_TEMP/tv-runtime-r3"
+          echo "========== TV Runtime Persistence R3 =========="
+          echo "Result: FAILED"
+
+          for file in preflight.txt push.log dispatch.log; do
+            if [[ -f "$DIR/$file" ]]; then
+              echo
+              echo "[$file]"
+              tail -n 160 "$DIR/$file" || true
+            fi
+          done
+
+          for file in compile.log assemble.log; do
+            if [[ -f "$DIR/$file" ]]; then
+              echo
+              echo "[$file result]"
+              grep -E                 'BUILD SUCCESSFUL|BUILD FAILED|(^|[[:space:]])(e:|error:|FAILURE:|Caused by:|Execution failed for task|What went wrong:)'                 "$DIR/$file" | tail -n 200 || true
+            fi
+          done
+
+      - name: Upload diagnose
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nustrim-tv-runtime-persistence-r3-diagnose
+          path: ${{ runner.temp }}/tv-runtime-r3
+          if-no-files-found: ignore
+          retention-days: 7
