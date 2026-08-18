@@ -16,8 +16,8 @@ android {
         applicationId = "app.nudroidlabs.nustrim"
         minSdk = 23
         targetSdk = 37
-        versionCode = 58
-        versionName = "0.21.0-tv-stage3"
+        versionCode = 59
+        versionName = "0.21.1-tv-route-r3"
     }
 
     val persistentUpdateSigning = if (

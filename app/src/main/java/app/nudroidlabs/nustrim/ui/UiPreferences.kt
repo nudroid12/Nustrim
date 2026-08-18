@@ -20,9 +20,9 @@ class UiPreferences(context: Context) {
             ?.let { stored -> runCatching { InterfaceMode.valueOf(stored) }.getOrNull() }
         set(value) {
             if (value == null) {
-                preferences.edit().remove(KEY_INTERFACE_MODE).apply()
+                preferences.edit().remove(KEY_INTERFACE_MODE).commit()
             } else {
-                preferences.edit().putString(KEY_INTERFACE_MODE, value.name).apply()
+                preferences.edit().putString(KEY_INTERFACE_MODE, value.name).commit()
             }
         }
 
