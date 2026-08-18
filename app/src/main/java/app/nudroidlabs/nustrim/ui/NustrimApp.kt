@@ -745,11 +745,7 @@ fun NustrimApp() {
                 )
             } else {
                 Surface(modifier = Modifier.fillMaxSize(), color = AppBackground) {
-                                if (interfaceMode == InterfaceMode.TV && !physicalTvDevice) {
-                                    TvReferenceCanvas { screenContent() }
-                                } else {
-                                    screenContent()
-                                }
+                                screenContent()
                             }
             }
             if (interfaceMode == null) {
