@@ -193,7 +193,6 @@ import app.nudroidlabs.nustrim.core.update.UpdateInfo
 import app.nudroidlabs.nustrim.features.streams.StreamResolver
 import app.nudroidlabs.nustrim.features.streams.StreamProviderProgress
 import app.nudroidlabs.nustrim.features.streams.SubtitleResolver
-import app.nudroidlabs.nustrim.tv2.shell.NustrimTv2Shell
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -205,17 +204,6 @@ import kotlin.math.abs
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import app.nudroidlabs.nustrim.tv2.home.Tv2FocusedBackdrop
-import app.nudroidlabs.nustrim.tv2.home.Tv2PosterCard
-import app.nudroidlabs.nustrim.tv2.details.Tv2DetailsEpisodes
-import app.nudroidlabs.nustrim.tv2.details.Tv2DetailsHero
-import app.nudroidlabs.nustrim.tv2.sources.Tv2StreamSourcePicker
-import app.nudroidlabs.nustrim.tv2.player.Tv2PlayerControls
-import app.nudroidlabs.nustrim.tv2.workspace.Tv2LibraryWorkspace
-import app.nudroidlabs.nustrim.tv2.workspace.Tv2MediaTile
-import app.nudroidlabs.nustrim.tv2.workspace.Tv2SearchWorkspace
-import app.nudroidlabs.nustrim.tv2.workspace.Tv2SettingsEntry
-import app.nudroidlabs.nustrim.tv2.workspace.Tv2SettingsWorkspace
 
 private val AppBackground = Color(0xFF090A0C)
 private val AppSurface = Color(0xFF15171B)
@@ -1257,22 +1245,7 @@ private fun HomeScreen(
     }
 
     Box(Modifier.fillMaxSize()) {
-        if (pinnedTvHeader) {
-            val headerEntry = displayedTvEntry ?: heroEntries.first()
-            val headerItem = headerEntry.item
-            Tv2FocusedBackdrop(
-                artworkUrl = headerItem.backgroundUrl.ifBlank { headerItem.posterUrl },
-                title = headerItem.title,
-                metadata = listOf(
-                    headerItem.type.name.lowercase().replaceFirstChar { it.uppercase() },
-                    headerItem.releaseInfo
-                ).filter { it.isNotBlank() }.joinToString("  •  "),
-                description = headerItem.description,
-                height = tvHeaderHeight,
-                onOpen = { onOpen(headerEntry) },
-                modifier = Modifier.align(Alignment.TopCenter)
-            )
-        }
+
 
         LazyColumn(
             state = homeListState,
@@ -2299,24 +2272,7 @@ private fun HomePosterCard(
     onLongPress: () -> Unit = {},
     onClick: () -> Unit
 ) {
-    if (isTv) {
-        Tv2PosterCard(
-            itemKey = item.id,
-            posterUrl = item.posterUrl,
-            landscapeUrl = item.backgroundUrl.ifBlank { item.posterUrl },
-            title = item.title,
-            releaseInfo = item.releaseInfo,
-            reduceMotion = reduceMotion,
-            requester = requester,
-            previousRequester = previousRequester,
-            nextRequester = nextRequester,
-            sidebarRequester = LocalTvSidebarFocusRequester.current,
-            onFocused = onFocused,
-            onLongPress = onLongPress,
-            onClick = onClick
-        )
-        return
-    }
+
 
     val sidebarRequester = LocalTvSidebarFocusRequester.current
     var focused by remember { mutableStateOf(false) }
@@ -2721,37 +2677,7 @@ private fun SearchScreen(
     }
     val searchContentFocusRequester = remember { FocusRequester() }
 
-    if (isTv) {
-        TvSearchScreenContent(
-            query = query,
-            onQueryChanged = {
-                query = it
-                if (it.isBlank()) searched = false
-            },
-            onSearch = { performSearch() },
-            searchFocusRequester = searchFocusRequester,
-            contentFocusRequester = searchContentFocusRequester,
-            sidebarRequester = sidebarRequester,
-            searched = searched,
-            loading = loading,
-            discoverLoading = discoverLoading,
-            results = results.filter(::matchesType),
-            discover = discover,
-            filteredDiscover = filteredDiscover,
-            typeFilter = typeFilter,
-            catalogFilter = catalogFilter,
-            genreFilter = genreFilter,
-            onTypeFilter = { filterSheet = DiscoverFilterSheet.TYPE },
-            onCatalogFilter = { filterSheet = DiscoverFilterSheet.CATALOG },
-            onGenreFilter = { filterSheet = DiscoverFilterSheet.GENRE },
-            onOpen = onOpen,
-            diagnostics = if (preferences.developerDiagnostics && failures > 0) {
-                "$failures source(s) failed while loading Search or Discover."
-            } else {
-                null
-            }
-        )
-    } else {
+
         Column(Modifier.fillMaxSize()) {
             PageHeader(title = "Search", subtitle = "Search and discover", isTv = false)
             OutlinedTextField(
@@ -2815,7 +2741,7 @@ private fun SearchScreen(
                 DiagnosticBanner("$failures source(s) failed while loading Search or Discover.")
             }
         }
-    }
+
 
     when (filterSheet) {
         DiscoverFilterSheet.TYPE -> DiscoverFilterBottomSheet(
@@ -2852,187 +2778,6 @@ private fun SearchScreen(
             onDismiss = { filterSheet = null }
         )
         null -> Unit
-    }
-}
-
-@Composable
-private fun TvSearchScreenContent(
-    query: String,
-    onQueryChanged: (String) -> Unit,
-    onSearch: () -> Unit,
-    searchFocusRequester: FocusRequester,
-    contentFocusRequester: FocusRequester,
-    sidebarRequester: FocusRequester?,
-    searched: Boolean,
-    loading: Boolean,
-    discoverLoading: Boolean,
-    results: List<UiMediaEntry>,
-    discover: List<UiMediaEntry>,
-    filteredDiscover: List<UiMediaEntry>,
-    typeFilter: String,
-    catalogFilter: String,
-    genreFilter: String,
-    onTypeFilter: () -> Unit,
-    onCatalogFilter: () -> Unit,
-    onGenreFilter: () -> Unit,
-    onOpen: (UiMediaEntry) -> Unit,
-    diagnostics: String?
-) {
-    val tv2Results = results.map { entry ->
-        Tv2MediaTile(
-            key = discoverEntryKey(entry),
-            title = entry.item.title,
-            posterUrl = entry.item.posterUrl,
-            backgroundUrl = entry.item.backgroundUrl,
-            releaseInfo = entry.item.releaseInfo
-        )
-    }
-    val tv2Discover = discover.map { entry ->
-        Tv2MediaTile(
-            key = discoverEntryKey(entry),
-            title = entry.item.title,
-            posterUrl = entry.item.posterUrl,
-            backgroundUrl = entry.item.backgroundUrl,
-            releaseInfo = entry.item.releaseInfo
-        )
-    }
-    val tv2FilteredDiscover = filteredDiscover.map { entry ->
-        Tv2MediaTile(
-            key = discoverEntryKey(entry),
-            title = entry.item.title,
-            posterUrl = entry.item.posterUrl,
-            backgroundUrl = entry.item.backgroundUrl,
-            releaseInfo = entry.item.releaseInfo
-        )
-    }
-    Tv2SearchWorkspace(
-        query = query,
-        onQueryChanged = onQueryChanged,
-        onSearch = onSearch,
-        searchFocusRequester = searchFocusRequester,
-        contentFocusRequester = contentFocusRequester,
-        sidebarRequester = sidebarRequester,
-        searched = searched,
-        loading = loading,
-        discoverLoading = discoverLoading,
-        results = tv2Results,
-        discover = tv2Discover,
-        filteredDiscover = tv2FilteredDiscover,
-        typeFilter = typeFilter,
-        catalogFilter = catalogFilter,
-        genreFilter = genreFilter,
-        onTypeFilter = onTypeFilter,
-        onCatalogFilter = onCatalogFilter,
-        onGenreFilter = onGenreFilter,
-        onOpen = { key ->
-            (results + filteredDiscover)
-                .firstOrNull { discoverEntryKey(it) == key }
-                ?.let(onOpen)
-        },
-        diagnostics = diagnostics
-    )
-    return
-
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(top = 18.dp)
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 32.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text("Search", fontSize = 30.sp, fontWeight = FontWeight.Black)
-                Text(
-                    if (searched) "Search results" else "Discover movies and series",
-                    color = AppTextMuted,
-                    fontSize = 13.sp
-                )
-            }
-            Text(
-                if (searched) "RESULTS" else "DISCOVER",
-                color = AppTextMuted,
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Bold
-            )
-        }
-        Spacer(Modifier.height(14.dp))
-        OutlinedTextField(
-            value = query,
-            onValueChange = onQueryChanged,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 32.dp)
-                .focusRequester(searchFocusRequester)
-                .onPreviewKeyEvent { event ->
-                    when {
-                        event.type == KeyEventType.KeyDown && event.key == Key.DirectionLeft ->
-                            requestTvFocus(sidebarRequester)
-                        event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown ->
-                            requestTvFocus(contentFocusRequester)
-                        else -> false
-                    }
-                },
-            placeholder = { Text("Search movies, shows...") },
-            leadingIcon = { Icon(Icons.Outlined.Search, null) },
-            shape = RoundedCornerShape(16.dp),
-            singleLine = true,
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-            keyboardActions = KeyboardActions(onSearch = { onSearch() })
-        )
-        Spacer(Modifier.height(12.dp))
-        if (!searched) {
-            LazyRow(
-                contentPadding = PaddingValues(horizontal = 32.dp),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                item { TvSearchFilterPill(typeFilter, onTypeFilter) }
-                item { TvSearchFilterPill(catalogFilter, onCatalogFilter) }
-                item { TvSearchFilterPill(genreFilter, onGenreFilter) }
-            }
-            Spacer(Modifier.height(10.dp))
-        }
-
-        Box(Modifier.fillMaxWidth().weight(1f)) {
-            when {
-                loading -> TvSearchState("Searching...", "Checking enabled sources")
-                searched && results.isEmpty() -> TvSearchState(
-                    "No results",
-                    "No enabled searchable addon returned a match."
-                )
-                searched -> TvSearchMediaGrid(
-                    entries = results,
-                    firstFocusRequester = contentFocusRequester,
-                    onOpen = onOpen
-                )
-                discoverLoading -> TvSearchState("Loading Discover...", "Building your catalog")
-                discover.isEmpty() -> TvSearchState(
-                    "Discover is empty",
-                    "Enable a catalog addon in Addons to populate Discover."
-                )
-                filteredDiscover.isEmpty() -> TvSearchState(
-                    "No Discover matches",
-                    "Try another type, catalog or genre."
-                )
-                else -> TvSearchMediaGrid(
-                    entries = filteredDiscover,
-                    firstFocusRequester = contentFocusRequester,
-                    onOpen = onOpen
-                )
-            }
-        }
-        diagnostics?.let {
-            Text(
-                it,
-                color = Color(0xFFFFB4AB),
-                fontSize = 11.sp,
-                modifier = Modifier.padding(horizontal = 32.dp, vertical = 8.dp)
-            )
-        }
     }
 }
 
@@ -3330,17 +3075,7 @@ private fun LibraryScreen(
         }
     }
 
-    if (isTv) {
-        TvLibraryScreenContent(
-            saved = saved,
-            gridMode = gridMode,
-            onGridMode = { gridMode = it },
-            primaryFocusRequester = libraryFocusRequester,
-            sidebarRequester = sidebarRequester,
-            onOpen = onOpen
-        )
-        return
-    }
+
 
     Column(
         modifier = Modifier
@@ -3400,98 +3135,6 @@ private fun LibraryScreen(
                 modifier = Modifier.fillMaxWidth().weight(1f),
                 verticalArrangement = Arrangement.spacedBy(9.dp),
                 contentPadding = PaddingValues(bottom = 18.dp)
-            ) {
-                items(saved, key = { it.key }) { entry ->
-                    LibrarySavedListRow(entry = entry, onOpen = onOpen)
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun TvLibraryScreenContent(
-    saved: List<LocalMediaEntry>,
-    gridMode: Boolean,
-    onGridMode: (Boolean) -> Unit,
-    primaryFocusRequester: FocusRequester,
-    sidebarRequester: FocusRequester?,
-    onOpen: (LocalMediaEntry) -> Unit
-) {
-    Tv2LibraryWorkspace(
-        saved = saved,
-        gridMode = gridMode,
-        onGridMode = onGridMode,
-        primaryFocusRequester = primaryFocusRequester,
-        sidebarRequester = sidebarRequester,
-        onOpen = onOpen
-    )
-    return
-
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(start = 32.dp, end = 32.dp, top = 22.dp)
-    ) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text("Library", fontSize = 30.sp, fontWeight = FontWeight.Black)
-                Text(
-                    if (saved.isEmpty()) "Saved titles" else "${saved.size} saved title${if (saved.size == 1) "" else "s"}",
-                    color = AppTextMuted,
-                    fontSize = 13.sp
-                )
-            }
-            Text("LOCAL", color = AppTextMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-        }
-        Spacer(Modifier.height(16.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-            TvLibraryControl(
-                label = "Saved",
-                selected = true,
-                requester = primaryFocusRequester,
-                onMoveLeft = { requestTvFocus(sidebarRequester) },
-                onClick = {}
-            )
-            TvLibraryControl(label = "Cloud", selected = false, enabled = false, onClick = {})
-            Spacer(Modifier.weight(1f))
-            TvLibraryControl(label = "Grid", selected = gridMode, onClick = { onGridMode(true) })
-            TvLibraryControl(label = "List", selected = !gridMode, onClick = { onGridMode(false) })
-        }
-        Spacer(Modifier.height(18.dp))
-
-        if (saved.isEmpty()) {
-            Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(Icons.Outlined.LibraryAdd, null, modifier = Modifier.size(48.dp), tint = AppTextMuted)
-                    Spacer(Modifier.height(12.dp))
-                    Text("Your library is empty", fontSize = 21.sp, fontWeight = FontWeight.Bold)
-                    Spacer(Modifier.height(5.dp))
-                    Text(
-                        "Save a title from its details screen and it will appear here.",
-                        color = AppTextMuted,
-                        fontSize = 13.sp
-                    )
-                }
-            }
-        } else if (gridMode) {
-            LazyVerticalGrid(
-                columns = GridCells.Adaptive(142.dp),
-                modifier = Modifier.fillMaxWidth().weight(1f),
-                contentPadding = PaddingValues(bottom = 28.dp),
-                horizontalArrangement = Arrangement.spacedBy(14.dp),
-                verticalArrangement = Arrangement.spacedBy(18.dp)
-            ) {
-                items(saved, key = { it.key }) { entry ->
-                    LibrarySavedGridCard(entry = entry, isTv = true, onOpen = onOpen)
-                }
-            }
-        } else {
-            LazyColumn(
-                modifier = Modifier.fillMaxWidth().weight(1f),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-                contentPadding = PaddingValues(bottom = 28.dp)
             ) {
                 items(saved, key = { it.key }) { entry ->
                     LibrarySavedListRow(entry = entry, onOpen = onOpen)
@@ -4556,29 +4199,7 @@ private fun SettingsRootScreen(
         }
     }
 
-    if (isTv) {
-        val items = buildList {
-            add(TvSettingsRootItem(Icons.Outlined.CheckCircle, "Tracking", "Local watch progress and Trakt sync", onTracking))
-            add(TvSettingsRootItem(Icons.Outlined.Tv, "Layout", "TV and mobile interface preferences", onLayout))
-            add(TvSettingsRootItem(Icons.Outlined.Source, "Content Manager", "Addons and catalog management", onContentDiscovery))
-            add(TvSettingsRootItem(Icons.Outlined.LibraryAdd, "Downloads", "Download manager preferences", onDownloads))
-            add(TvSettingsRootItem(Icons.Outlined.PlayArrow, "Playback", "Source selection and player behaviour", onPlayback))
-            add(TvSettingsRootItem(Icons.Outlined.Build, "Integrations", "TMDB enrichment and MDBList ratings", onIntegrations))
-            add(TvSettingsRootItem(Icons.Outlined.Refresh, "Updates", "Check, download and install updates", onUpdates))
-            add(TvSettingsRootItem(Icons.Outlined.Info, "About Nustrim", "Version and project information", onAbout))
-            add(TvSettingsRootItem(Icons.Outlined.LibraryAdd, "Backup & Restore", "Backup and restore local data", onLocalData))
-            add(TvSettingsRootItem(Icons.Outlined.Build, "Developer Tools", "Developer mode and diagnostics", onDeveloper))
-            if (developerMode) {
-                add(TvSettingsRootItem(Icons.Outlined.Info, "Diagnostics Log", "Runtime log and troubleshooting", onDiagnostics))
-            }
-        }
-        TvSettingsWorkspace(
-            items = items,
-            firstFocusRequester = firstSettingsFocusRequester,
-            sidebarRequester = sidebarRequester
-        )
-        return
-    }
+
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -4628,147 +4249,6 @@ private fun SettingsRootScreen(
         }
     }
 }
-
-private data class TvSettingsRootItem(
-    val icon: ImageVector,
-    val title: String,
-    val subtitle: String,
-    val onClick: () -> Unit
-)
-
-@Composable
-private fun TvSettingsWorkspace(
-    items: List<TvSettingsRootItem>,
-    firstFocusRequester: FocusRequester,
-    sidebarRequester: FocusRequester?
-) {
-    val tv2Items = items.mapIndexed { index, item ->
-        Tv2SettingsEntry(
-            id = index.toString(),
-            title = item.title,
-            subtitle = item.subtitle
-        )
-    }
-    Tv2SettingsWorkspace(
-        settingsItems = tv2Items,
-        firstFocusRequester = firstFocusRequester,
-        sidebarRequester = sidebarRequester,
-        onOpen = { id ->
-            id.toIntOrNull()
-                ?.let(items::getOrNull)
-                ?.onClick
-                ?.invoke()
-        }
-    )
-    return
-
-
-    var selectedIndex by remember { mutableIntStateOf(0) }
-    val requesters = remember(items.map { it.title }) { List(items.size) { FocusRequester() } }
-    val openRequester = remember { FocusRequester() }
-    val selected = items.getOrNull(selectedIndex) ?: return
-
-    Surface(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 28.dp, vertical = 22.dp),
-        shape = RoundedCornerShape(24.dp),
-        color = AppSurface,
-        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.10f))
-    ) {
-        Row(Modifier.fillMaxSize().padding(18.dp)) {
-            Column(Modifier.width(282.dp).fillMaxHeight()) {
-                Text("Settings", fontSize = 29.sp, fontWeight = FontWeight.Black)
-                Text("Nustrim preferences", color = AppTextMuted, fontSize = 12.sp)
-                Spacer(Modifier.height(16.dp))
-                LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    items(items.size) { index ->
-                        val item = items[index]
-                        var focused by remember(item.title) { mutableStateOf(false) }
-                        Surface(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .then(if (index == 0) Modifier.focusRequester(firstFocusRequester) else Modifier.focusRequester(requesters[index]))
-                                .onFocusChanged {
-                                    focused = it.isFocused
-                                    if (it.isFocused) selectedIndex = index
-                                }
-                                .onPreviewKeyEvent { event ->
-                                    when {
-                                        consumeTvActivateKey(event, item.onClick) -> true
-                                        event.type == KeyEventType.KeyDown && event.key == Key.DirectionLeft -> requestTvFocus(sidebarRequester)
-                                        event.type == KeyEventType.KeyDown && event.key == Key.DirectionRight -> requestTvFocus(openRequester)
-                                        else -> false
-                                    }
-                                }
-                                .clickable(onClick = item.onClick)
-                                .focusable(),
-                            shape = RoundedCornerShape(14.dp),
-                            color = when {
-                                focused -> Color.White
-                                index == selectedIndex -> AppSurface2
-                                else -> Color.Transparent
-                            }
-                        ) {
-                            Row(
-                                Modifier.padding(horizontal = 14.dp, vertical = 11.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(
-                                    item.icon,
-                                    null,
-                                    modifier = Modifier.size(20.dp),
-                                    tint = if (focused) AppBackground else Color.White
-                                )
-                                Spacer(Modifier.width(11.dp))
-                                Text(
-                                    item.title,
-                                    color = if (focused) AppBackground else Color.White,
-                                    fontWeight = if (focused || index == selectedIndex) FontWeight.Bold else FontWeight.Medium,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-            Spacer(Modifier.width(22.dp))
-            Surface(
-                modifier = Modifier.fillMaxHeight().weight(1f),
-                shape = RoundedCornerShape(20.dp),
-                color = AppBackground.copy(alpha = 0.72f),
-                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f))
-            ) {
-                Column(
-                    modifier = Modifier.padding(30.dp),
-                    verticalArrangement = Arrangement.Center
-                ) {
-                    Box(
-                        modifier = Modifier.size(58.dp).background(AppSurface2, RoundedCornerShape(16.dp)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(selected.icon, null, modifier = Modifier.size(30.dp))
-                    }
-                    Spacer(Modifier.height(20.dp))
-                    Text(selected.title, fontSize = 30.sp, fontWeight = FontWeight.Black)
-                    Spacer(Modifier.height(8.dp))
-                    Text(selected.subtitle, color = AppTextMuted, fontSize = 14.sp)
-                    Spacer(Modifier.height(24.dp))
-                    TvSettingsOpenButton(
-                        requester = openRequester,
-                        onMoveLeft = {
-                            val requester = if (selectedIndex == 0) firstFocusRequester else requesters.getOrNull(selectedIndex)
-                            requestTvFocus(requester)
-                        },
-                        onClick = selected.onClick
-                    )
-                }
-            }
-        }
-    }
-}
-
 @Composable
 private fun TvSettingsOpenButton(
     requester: FocusRequester,
@@ -7124,33 +6604,7 @@ private fun DetailScreen(
         if (error.isNotBlank()) item { DiagnosticBanner(error, error = true) }
 
         // M10 Stage 3: TV keeps episodes near the hero and uses a horizontal, D-pad-first rail.
-        if (isTv && detailed.episodes.isNotEmpty()) {
-            item {
-                TvEpisodesSection(
-                    seasons = seasons,
-                    selectedSeason = selectedSeason,
-                    episodes = visibleEpisodes,
-                    selectedEpisodeId = selectedEpisode?.id,
-                    resumeEpisodeId = resumeEntry?.episodeId.orEmpty(),
-                    resumeProgressFraction = resumeEntry?.progressFraction ?: 0f,
-                    resumePositionMs = resumeEntry?.positionMs ?: 0L,
-                    seasonFocusRequesters = seasonFocusRequesters,
-                    episodeFocusRequesters = episodeFocusRequesters,
-                    onSeasonFocused = { season -> rememberDetailFocus("season:$season") },
-                    onEpisodeFocused = { episode -> rememberDetailFocus("episode:${episode.id}") },
-                    onSeasonSelected = { season ->
-                        selectedSeason = season
-                        selectedEpisode = detailed.episodes.firstOrNull { it.season == season }
-                        rememberDetailFocus("season:$season")
-                    },
-                    onEpisodeClick = { episode ->
-                        selectedEpisode = episode
-                        rememberDetailFocus("episode:${episode.id}")
-                        if (!loadingStreams) resolveAndPlay(episode)
-                    }
-                )
-            }
-        }
+
 
         item {
             RichDetailsSections(
@@ -7474,22 +6928,7 @@ private fun StreamSourcePicker(
     onRefresh: () -> Unit,
     onSelect: (StreamSource) -> Unit
 ) {
-    if (rememberIsTv()) {
-        Tv2StreamSourcePicker(
-            title = title,
-            item = item,
-            episode = episode,
-            resumePositionMs = resumePositionMs,
-            streams = streams,
-            providerProgress = providerProgress,
-            loading = loading,
-            progress = progress,
-            error = error,
-            onDismiss = onDismiss,
-            onRefresh = onRefresh,
-            onSelect = onSelect
-        )
-    } else {
+
         MobileStreamSourcePicker(
             title = title,
             item = item,
@@ -7504,7 +6943,7 @@ private fun StreamSourcePicker(
             onRefresh = onRefresh,
             onSelect = onSelect
         )
-    }
+
 }
 
 private fun streamSourceStableKey(source: StreamSource): String =
@@ -8447,27 +7886,7 @@ private fun DetailsHero(
     onTrailer: (() -> Unit)? = null,
     onToggleSaved: () -> Unit
 ) {
-    if (isTv) {
-        Tv2DetailsHero(
-            item = item,
-            logoUrl = logoUrl,
-            primaryLabel = primaryLabel,
-            playbackHint = playbackHint,
-            loading = loading,
-            saved = saved,
-            canSave = canSave,
-            primaryFocusRequester = primaryFocusRequester,
-            saveFocusRequester = saveFocusRequester,
-            trailerFocusRequester = trailerFocusRequester,
-            onPrimaryFocused = onPrimaryFocused,
-            onSaveFocused = onSaveFocused,
-            onTrailerFocused = onTrailerFocused,
-            onPrimary = onPrimary,
-            onTrailer = onTrailer,
-            onToggleSaved = onToggleSaved
-        )
-        return
-    }
+
 
 
     val backdrop = item.backgroundUrl.ifBlank { item.posterUrl }
@@ -8761,95 +8180,6 @@ private fun TvDetailIconAction(
                 tint = if (focused) Color(0xFF16171A) else if (selected) Color.White else Color(0xFFE7E8EC),
                 modifier = Modifier.size(21.dp)
             )
-        }
-    }
-}
-
-@Composable
-private fun TvEpisodesSection(
-    seasons: List<Int>,
-    selectedSeason: Int?,
-    episodes: List<MediaEpisode>,
-    selectedEpisodeId: String?,
-    resumeEpisodeId: String,
-    resumeProgressFraction: Float,
-    resumePositionMs: Long,
-    seasonFocusRequesters: MutableMap<Int, FocusRequester>,
-    episodeFocusRequesters: MutableMap<String, FocusRequester>,
-    onSeasonFocused: (Int) -> Unit,
-    onEpisodeFocused: (MediaEpisode) -> Unit,
-    onSeasonSelected: (Int) -> Unit,
-    onEpisodeClick: (MediaEpisode) -> Unit
-) {
-    Tv2DetailsEpisodes(
-        seasons = seasons,
-        selectedSeason = selectedSeason,
-        episodes = episodes,
-        selectedEpisodeId = selectedEpisodeId,
-        resumeEpisodeId = resumeEpisodeId,
-        resumeProgressFraction = resumeProgressFraction,
-        resumePositionMs = resumePositionMs,
-        seasonFocusRequesters = seasonFocusRequesters,
-        episodeFocusRequesters = episodeFocusRequesters,
-        onSeasonFocused = onSeasonFocused,
-        onEpisodeFocused = onEpisodeFocused,
-        onSeasonSelected = onSeasonSelected,
-        onEpisodeClick = onEpisodeClick
-    )
-    return
-
-
-    Column(Modifier.fillMaxWidth()) {
-        Text(
-            "Episodes",
-            modifier = Modifier.padding(horizontal = 34.dp),
-            fontSize = 22.sp,
-            fontWeight = FontWeight.Bold
-        )
-
-        if (seasons.isNotEmpty()) {
-            Spacer(Modifier.height(10.dp))
-            LazyRow(
-                contentPadding = PaddingValues(horizontal = 34.dp, vertical = 3.dp),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                items(seasons, key = { it }) { season ->
-                    val requester = remember(season) {
-                        seasonFocusRequesters.getOrPut(season) { FocusRequester() }
-                    }
-                    TvSeasonPill(
-                        label = seasonLabel(season),
-                        selected = selectedSeason == season,
-                        focusRequester = requester,
-                        onFocused = { onSeasonFocused(season) },
-                        onClick = { onSeasonSelected(season) }
-                    )
-                }
-            }
-        }
-
-        Spacer(Modifier.height(9.dp))
-        LazyRow(
-            modifier = Modifier.fillMaxWidth(),
-            contentPadding = PaddingValues(start = 34.dp, end = 40.dp, top = 6.dp, bottom = 14.dp),
-            horizontalArrangement = Arrangement.spacedBy(14.dp)
-        ) {
-            items(episodes, key = { it.id }) { episode ->
-                val requester = remember(episode.id) {
-                    episodeFocusRequesters.getOrPut(episode.id) { FocusRequester() }
-                }
-                val upRequester = selectedSeason?.let(seasonFocusRequesters::get)
-                TvEpisodeCard(
-                    episode = episode,
-                    selected = selectedEpisodeId == episode.id,
-                    progressFraction = if (resumeEpisodeId == episode.id) resumeProgressFraction else 0f,
-                    resumePositionMs = if (resumeEpisodeId == episode.id) resumePositionMs else 0L,
-                    focusRequester = requester,
-                    upFocusRequester = upRequester,
-                    onFocused = { onEpisodeFocused(episode) },
-                    onClick = { onEpisodeClick(episode) }
-                )
-            }
         }
     }
 }
@@ -10013,85 +9343,7 @@ private fun PlayerScreen(
             )
         }
 
-        if (isTv) {
-  Tv2PlayerControls(
-      visible = controlsVisible &&
-          !subtitlePanelVisible &&
-          !audioPanelVisible &&
-          !sourcePanelVisible &&
-          !episodePanelVisible,
-      title = playingTitle,
-      providerLabel = listOf(
-          playingSource.providerName.ifBlank { playingSource.name },
-          playingSource.type.uppercase()
-      ).filter { it.isNotBlank() }.joinToString("  •  "),
-      isPlaying = isPlaying,
-      isBuffering = isBuffering,
-      positionMs = if (scrubbing) scrubPositionMs else positionMs,
-      durationMs = durationMs,
-      primaryFocusRequester = tvPlayFocusRequester,
-      controlFocusRequesters = playerControlRequesters,
-      hasEpisodes = request.item.episodes.isNotEmpty(),
-      resizeLabel = resizeLabels[resizeIndex],
-      speedLabel = speeds[speedIndex].let { value ->
-          if (value == 1f) "1x" else "${value}x"
-      },
-      onBack = {
-          persistProgress()
-          onBack()
-      },
-      onPlayPause = {
-          if (player.isPlaying) player.pause() else player.play()
-          controlsVisible = false
-      },
-      onSeekBy = { delta ->
-          seekBy(delta)
-          controlsVisible = true
-      },
-      onResize = {
-          resizeIndex = (resizeIndex + 1) % resizeModes.size
-          controlsVisible = true
-      },
-      onSpeed = {
-          speedIndex = (speedIndex + 1) % speeds.size
-          player.setPlaybackSpeed(speeds[speedIndex])
-          controlsVisible = true
-      },
-      onSubtitles = {
-          subtitlePanelVisible = true
-          controlsVisible = true
-      },
-      onAudio = {
-          audioPanelVisible = true
-          controlsVisible = true
-      },
-      onSources = {
-          pendingEpisode = playingEpisode
-          sourceChoices = availableSources
-          sourceProviderProgress = availableSources
-              .groupBy { it.providerName.ifBlank { "Other" } }
-              .map { (name, providerSources) ->
-                  StreamProviderProgress(
-                      id = "existing:$name",
-                      name = name,
-                      loading = false,
-                      hasSources = providerSources.any { it.playable && it.url.isNotBlank() }
-                  )
-              }
-          sourceError = ""
-          sourceProgress = "${availableSources.size} source(s)"
-          sourceLoading = false
-          sourcePanelVisible = true
-      },
-      onEpisodes = {
-          episodePanelVisible = true
-          controlsVisible = true
-      },
-      onActivity = {
-          controlsActivityToken += 1
-      }
-  )
-        } else {
+
         AnimatedVisibility(
             visible = controlsVisible && !subtitlePanelVisible && !audioPanelVisible && !sourcePanelVisible && !episodePanelVisible,
             modifier = Modifier.fillMaxSize(),
@@ -10418,7 +9670,7 @@ private fun PlayerScreen(
         }
         }
 
-        }
+
         if (playerError.isNotBlank()) {
             SectionSurface(
                 modifier = Modifier.align(Alignment.Center).widthIn(max = 520.dp).padding(18.dp)
