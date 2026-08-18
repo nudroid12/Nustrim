@@ -1,0 +1,1319 @@
+name: Nustrim M11 TV2 Stage 6 Workspaces
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: nustrim-m11-tv2-stage6-workspaces
+  cancel-in-progress: false
+
+env:
+  TV2_VERSION: "0.17.0-tv2-rc6"
+
+jobs:
+  patch:
+    name: Patch, verify and commit TV2 Workspaces
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Synchronise with origin main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          git checkout -B main origin/main
+          git reset --hard origin/main
+          echo "Checked out $(git rev-parse HEAD)"
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle 9.5.0
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "9.5.0"
+
+      - name: Prepare diagnose
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/nustrim-tv2-stage6-diagnose"
+          {
+            echo "NUSTRIM TV2 STAGE 6 WORKSPACES DIAGNOSE"
+            echo "sha=$(git rev-parse HEAD)"
+            echo
+            cat .nustrim-tv2 2>/dev/null || true
+            grep -m1 'versionName' app/build.gradle.kts 2>/dev/null || true
+          } > "$RUNNER_TEMP/nustrim-tv2-stage6-diagnose/preflight.txt"
+
+      - name: Verify Stage 5 baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIAG="$RUNNER_TEMP/nustrim-tv2-stage6-diagnose/preflight.txt"
+          APP="app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt"
+
+          fail() {
+            echo "::error::$1"
+            echo "FAIL: $1" >> "$DIAG"
+            exit 1
+          }
+
+          stage="$(awk -F= '$1=="stage"{value=substr($0,index($0,"=")+1);gsub(/\r/,"",value);gsub(/^[[:space:]]+|[[:space:]]+$/,"",value);print value;exit}' .nustrim-tv2)"
+          case "$stage" in
+            5|6) ;;
+            *) fail "TV2 marker stage is '${stage:-missing}', expected completed Stage 5." ;;
+          esac
+
+          [[ -f "$APP" ]] || fail "Missing NustrimApp.kt."
+          [[ -f app/src/main/java/app/nudroidlabs/nustrim/tv2/player/Tv2Player.kt ]] || fail "Stage 5 Player is missing."
+
+          grep -q 'private fun TvSearchScreenContent(' "$APP" || fail "TV Search hook missing."
+          grep -q 'private fun TvLibraryScreenContent(' "$APP" || fail "TV Library hook missing."
+          grep -q 'private fun TvSettingsWorkspace(' "$APP" || fail "TV Settings hook missing."
+
+          if grep -R -n -E 'NuBrowse|NuBrowseApp|app\.nubrowse' app/src/main app/build.gradle.kts 2>/dev/null | tee -a "$DIAG"; then
+            fail "NuBrowse contamination detected."
+          fi
+
+          echo "PASS: Stage 5 baseline and workspace hooks" >> "$DIAG"
+
+      - name: Create TV2 Search Library Settings workspaces
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$RUNNER_TEMP/nustrim-tv2-stage6-diagnose/create-workspaces.log") 2>&1
+          mkdir -p app/src/main/java/app/nudroidlabs/nustrim/tv2/workspace
+          cat > app/src/main/java/app/nudroidlabs/nustrim/tv2/workspace/Tv2Workspaces.kt <<'KOTLIN'
+          package app.nudroidlabs.nustrim.tv2.workspace
+          
+          import androidx.compose.animation.core.animateFloatAsState
+          import androidx.compose.animation.core.tween
+          import androidx.compose.foundation.BorderStroke
+          import androidx.compose.foundation.background
+          import androidx.compose.foundation.clickable
+          import androidx.compose.foundation.focusable
+          import androidx.compose.foundation.layout.Arrangement
+          import androidx.compose.foundation.layout.Box
+          import androidx.compose.foundation.layout.Column
+          import androidx.compose.foundation.layout.PaddingValues
+          import androidx.compose.foundation.layout.Row
+          import androidx.compose.foundation.layout.Spacer
+          import androidx.compose.foundation.layout.aspectRatio
+          import androidx.compose.foundation.layout.fillMaxHeight
+          import androidx.compose.foundation.layout.fillMaxSize
+          import androidx.compose.foundation.layout.fillMaxWidth
+          import androidx.compose.foundation.layout.height
+          import androidx.compose.foundation.layout.padding
+          import androidx.compose.foundation.layout.size
+          import androidx.compose.foundation.layout.width
+          import androidx.compose.foundation.layout.widthIn
+          import androidx.compose.foundation.lazy.LazyColumn
+          import androidx.compose.foundation.lazy.LazyRow
+          import androidx.compose.foundation.lazy.items
+          import androidx.compose.foundation.lazy.grid.GridCells
+          import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+          import androidx.compose.foundation.lazy.grid.items
+          import androidx.compose.foundation.shape.RoundedCornerShape
+          import androidx.compose.foundation.text.KeyboardActions
+          import androidx.compose.foundation.text.KeyboardOptions
+          import androidx.compose.material.icons.Icons
+          import androidx.compose.material.icons.outlined.KeyboardArrowRight
+          import androidx.compose.material.icons.outlined.LibraryAdd
+          import androidx.compose.material.icons.outlined.Search
+          import androidx.compose.material.icons.outlined.Settings
+          import androidx.compose.material3.CircularProgressIndicator
+          import androidx.compose.material3.Icon
+          import androidx.compose.material3.OutlinedTextField
+          import androidx.compose.material3.Surface
+          import androidx.compose.material3.Text
+          import androidx.compose.runtime.Composable
+          import androidx.compose.runtime.getValue
+          import androidx.compose.runtime.mutableIntStateOf
+          import androidx.compose.runtime.mutableStateOf
+          import androidx.compose.runtime.remember
+          import androidx.compose.runtime.setValue
+          import androidx.compose.ui.Alignment
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.focus.FocusRequester
+          import androidx.compose.ui.focus.focusRequester
+          import androidx.compose.ui.focus.onFocusChanged
+          import androidx.compose.ui.graphics.Brush
+          import androidx.compose.ui.graphics.Color
+          import androidx.compose.ui.graphics.graphicsLayer
+          import androidx.compose.ui.input.key.Key
+          import androidx.compose.ui.input.key.KeyEventType
+          import androidx.compose.ui.input.key.key
+          import androidx.compose.ui.input.key.onPreviewKeyEvent
+          import androidx.compose.ui.input.key.type
+          import androidx.compose.ui.layout.ContentScale
+          import androidx.compose.ui.text.font.FontWeight
+          import androidx.compose.ui.text.input.ImeAction
+          import androidx.compose.ui.text.style.TextOverflow
+          import androidx.compose.ui.unit.dp
+          import androidx.compose.ui.unit.sp
+          import app.nudroidlabs.nustrim.core.library.LocalMediaEntry
+          import coil3.compose.AsyncImage
+          
+          private object Tv2WorkspaceColors {
+              val Background = Color(0xFF090A0D)
+              val Surface = Color(0xFF15171C)
+              val Raised = Color(0xFF1E2128)
+              val Text = Color(0xFFF5F6F8)
+              val Muted = Color(0xFFADB1BB)
+              val FocusText = Color(0xFF17191E)
+          }
+          
+          data class Tv2MediaTile(
+              val key: String,
+              val title: String,
+              val posterUrl: String,
+              val backgroundUrl: String,
+              val releaseInfo: String
+          )
+          
+          data class Tv2SettingsEntry(
+              val id: String,
+              val title: String,
+              val subtitle: String
+          )
+          
+          @Composable
+          fun Tv2SearchWorkspace(
+              query: String,
+              onQueryChanged: (String) -> Unit,
+              onSearch: () -> Unit,
+              searchFocusRequester: FocusRequester,
+              contentFocusRequester: FocusRequester,
+              sidebarRequester: FocusRequester?,
+              searched: Boolean,
+              loading: Boolean,
+              discoverLoading: Boolean,
+              results: List<Tv2MediaTile>,
+              discover: List<Tv2MediaTile>,
+              filteredDiscover: List<Tv2MediaTile>,
+              typeFilter: String,
+              catalogFilter: String,
+              genreFilter: String,
+              onTypeFilter: () -> Unit,
+              onCatalogFilter: () -> Unit,
+              onGenreFilter: () -> Unit,
+              onOpen: (String) -> Unit,
+              diagnostics: String?
+          ) {
+              Column(
+                  modifier = Modifier
+                      .fillMaxSize()
+                      .background(Tv2WorkspaceColors.Background)
+                      .padding(top = 22.dp)
+              ) {
+                  Row(
+                      modifier = Modifier.fillMaxWidth().padding(horizontal = 38.dp),
+                      verticalAlignment = Alignment.Bottom
+                  ) {
+                      Column(Modifier.weight(1f)) {
+                          Text(
+                              "Search",
+                              color = Tv2WorkspaceColors.Text,
+                              fontSize = 33.sp,
+                              fontWeight = FontWeight.Black
+                          )
+                          Text(
+                              if (searched) "Results from your enabled addons" else "Find something to watch",
+                              color = Tv2WorkspaceColors.Muted,
+                              fontSize = 13.sp
+                          )
+                      }
+                      Text(
+                          if (searched) "${results.size} RESULT${if (results.size == 1) "" else "S"}" else "DISCOVER",
+                          color = Tv2WorkspaceColors.Muted,
+                          fontSize = 11.sp,
+                          fontWeight = FontWeight.Bold
+                      )
+                  }
+          
+                  Spacer(Modifier.height(15.dp))
+          
+                  OutlinedTextField(
+                      value = query,
+                      onValueChange = onQueryChanged,
+                      modifier = Modifier
+                          .fillMaxWidth()
+                          .padding(horizontal = 38.dp)
+                          .focusRequester(searchFocusRequester)
+                          .onPreviewKeyEvent { event ->
+                              when {
+                                  event.type == KeyEventType.KeyDown && event.key == Key.DirectionLeft ->
+                                      tv2RequestFocus(sidebarRequester)
+                                  event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown ->
+                                      tv2RequestFocus(contentFocusRequester)
+                                  else -> false
+                              }
+                          },
+                      placeholder = { Text("Search movies, series, anime...") },
+                      leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null) },
+                      shape = RoundedCornerShape(18.dp),
+                      singleLine = true,
+                      keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                      keyboardActions = KeyboardActions(onSearch = { onSearch() })
+                  )
+          
+                  if (!searched) {
+                      Spacer(Modifier.height(12.dp))
+                      LazyRow(
+                          contentPadding = PaddingValues(horizontal = 38.dp),
+                          horizontalArrangement = Arrangement.spacedBy(9.dp)
+                      ) {
+                          item { Tv2FilterPill(typeFilter, onTypeFilter) }
+                          item { Tv2FilterPill(catalogFilter, onCatalogFilter) }
+                          item { Tv2FilterPill(genreFilter, onGenreFilter) }
+                      }
+                  }
+          
+                  Spacer(Modifier.height(13.dp))
+          
+                  Box(Modifier.fillMaxWidth().weight(1f)) {
+                      when {
+                          loading -> Tv2WorkspaceState(
+                              iconSearch = true,
+                              title = "Searching...",
+                              subtitle = "Checking enabled sources",
+                              loading = true
+                          )
+                          searched && results.isEmpty() -> Tv2WorkspaceState(
+                              iconSearch = true,
+                              title = "No results",
+                              subtitle = "No enabled searchable addon returned a match."
+                          )
+                          searched -> Tv2MediaGrid(
+                              entries = results,
+                              firstFocusRequester = contentFocusRequester,
+                              sidebarRequester = sidebarRequester,
+                              onOpen = onOpen
+                          )
+                          discoverLoading -> Tv2WorkspaceState(
+                              iconSearch = true,
+                              title = "Loading Discover...",
+                              subtitle = "Building your catalog",
+                              loading = true
+                          )
+                          discover.isEmpty() -> Tv2WorkspaceState(
+                              iconSearch = true,
+                              title = "Discover is empty",
+                              subtitle = "Enable a catalog addon to populate Discover."
+                          )
+                          filteredDiscover.isEmpty() -> Tv2WorkspaceState(
+                              iconSearch = true,
+                              title = "No Discover matches",
+                              subtitle = "Try another type, catalog or genre."
+                          )
+                          else -> Tv2MediaGrid(
+                              entries = filteredDiscover,
+                              firstFocusRequester = contentFocusRequester,
+                              sidebarRequester = sidebarRequester,
+                              onOpen = onOpen
+                          )
+                      }
+                  }
+          
+                  diagnostics?.let {
+                      Text(
+                          it,
+                          color = Color(0xFFFFB4AB),
+                          fontSize = 11.sp,
+                          modifier = Modifier.padding(horizontal = 38.dp, vertical = 8.dp)
+                      )
+                  }
+              }
+          }
+          
+          @Composable
+          fun Tv2LibraryWorkspace(
+              saved: List<LocalMediaEntry>,
+              gridMode: Boolean,
+              onGridMode: (Boolean) -> Unit,
+              primaryFocusRequester: FocusRequester,
+              sidebarRequester: FocusRequester?,
+              onOpen: (LocalMediaEntry) -> Unit
+          ) {
+              Column(
+                  modifier = Modifier
+                      .fillMaxSize()
+                      .background(Tv2WorkspaceColors.Background)
+                      .padding(start = 38.dp, end = 38.dp, top = 22.dp)
+              ) {
+                  Row(
+                      modifier = Modifier.fillMaxWidth(),
+                      verticalAlignment = Alignment.Bottom
+                  ) {
+                      Column(Modifier.weight(1f)) {
+                          Text(
+                              "Library",
+                              color = Tv2WorkspaceColors.Text,
+                              fontSize = 33.sp,
+                              fontWeight = FontWeight.Black
+                          )
+                          Text(
+                              if (saved.isEmpty()) "Your saved titles"
+                              else "${saved.size} saved title${if (saved.size == 1) "" else "s"}",
+                              color = Tv2WorkspaceColors.Muted,
+                              fontSize = 13.sp
+                          )
+                      }
+                      Text(
+                          "LOCAL",
+                          color = Tv2WorkspaceColors.Muted,
+                          fontSize = 11.sp,
+                          fontWeight = FontWeight.Bold
+                      )
+                  }
+          
+                  Spacer(Modifier.height(16.dp))
+          
+                  Row(
+                      modifier = Modifier.fillMaxWidth(),
+                      verticalAlignment = Alignment.CenterVertically,
+                      horizontalArrangement = Arrangement.spacedBy(9.dp)
+                  ) {
+                      Tv2LibraryControl(
+                          label = "Saved",
+                          selected = true,
+                          requester = primaryFocusRequester,
+                          onMoveLeft = { tv2RequestFocus(sidebarRequester) },
+                          onClick = {}
+                      )
+                      Spacer(Modifier.weight(1f))
+                      Tv2LibraryControl("Grid", gridMode, null, null) { onGridMode(true) }
+                      Tv2LibraryControl("List", !gridMode, null, null) { onGridMode(false) }
+                  }
+          
+                  Spacer(Modifier.height(18.dp))
+          
+                  when {
+                      saved.isEmpty() -> Tv2WorkspaceState(
+                          iconSearch = false,
+                          title = "Your library is empty",
+                          subtitle = "Save a title from its details screen and it will appear here."
+                      )
+                      gridMode -> LazyVerticalGrid(
+                          columns = GridCells.Adaptive(148.dp),
+                          modifier = Modifier.fillMaxWidth().weight(1f),
+                          contentPadding = PaddingValues(bottom = 30.dp),
+                          horizontalArrangement = Arrangement.spacedBy(15.dp),
+                          verticalArrangement = Arrangement.spacedBy(19.dp)
+                      ) {
+                          items(saved, key = { it.key }) { entry ->
+                              Tv2LibraryPoster(entry) { onOpen(entry) }
+                          }
+                      }
+                      else -> LazyColumn(
+                          modifier = Modifier.fillMaxWidth().weight(1f),
+                          verticalArrangement = Arrangement.spacedBy(9.dp),
+                          contentPadding = PaddingValues(bottom = 30.dp)
+                      ) {
+                          items(saved, key = { it.key }) { entry ->
+                              Tv2LibraryRow(entry) { onOpen(entry) }
+                          }
+                      }
+                  }
+              }
+          }
+          
+          @Composable
+          fun Tv2SettingsWorkspace(
+              settingsItems: List<Tv2SettingsEntry>,
+              firstFocusRequester: FocusRequester,
+              sidebarRequester: FocusRequester?,
+              onOpen: (String) -> Unit
+          ) {
+              var selectedIndex by remember(settingsItems.map { it.id }) { mutableIntStateOf(0) }
+              val requesters = remember(settingsItems.map { it.id }) {
+                  List(settingsItems.size) { FocusRequester() }
+              }
+              val selected = settingsItems.getOrNull(selectedIndex)
+          
+              Row(
+                  modifier = Modifier
+                      .fillMaxSize()
+                      .background(Tv2WorkspaceColors.Background)
+                      .padding(horizontal = 34.dp, vertical = 24.dp)
+              ) {
+                  Column(Modifier.width(355.dp).fillMaxHeight()) {
+                      Text(
+                          "Settings",
+                          color = Tv2WorkspaceColors.Text,
+                          fontSize = 33.sp,
+                          fontWeight = FontWeight.Black
+                      )
+                      Text(
+                          "Nustrim preferences and integrations",
+                          color = Tv2WorkspaceColors.Muted,
+                          fontSize = 12.sp
+                      )
+          
+                      Spacer(Modifier.height(17.dp))
+          
+                      LazyColumn(
+                          verticalArrangement = Arrangement.spacedBy(7.dp),
+                          contentPadding = PaddingValues(bottom = 24.dp)
+                      ) {
+                          items(settingsItems.size, key = { settingsItems[it].id }) { index ->
+                              val entry = settingsItems[index]
+                              var focused by remember(entry.id) { mutableStateOf(false) }
+          
+                              Surface(
+                                  modifier = Modifier
+                                      .fillMaxWidth()
+                                      .then(
+                                          if (index == 0) Modifier.focusRequester(firstFocusRequester)
+                                          else Modifier.focusRequester(requesters[index])
+                                      )
+                                      .onFocusChanged {
+                                          focused = it.isFocused
+                                          if (it.isFocused) selectedIndex = index
+                                      }
+                                      .onPreviewKeyEvent { event ->
+                                          when {
+                                              tv2Activate(event) { onOpen(entry.id) } -> true
+                                              event.type == KeyEventType.KeyDown && event.key == Key.DirectionLeft ->
+                                                  tv2RequestFocus(sidebarRequester)
+                                              else -> false
+                                          }
+                                      }
+                                      .clickable { onOpen(entry.id) }
+                                      .focusable(),
+                                  shape = RoundedCornerShape(14.dp),
+                                  color = if (focused) Color.White else Tv2WorkspaceColors.Surface,
+                                  border = BorderStroke(
+                                      if (focused) 2.dp else 1.dp,
+                                      if (focused) Color.White else Color.White.copy(alpha = 0.07f)
+                                  )
+                              ) {
+                                  Row(
+                                      modifier = Modifier.padding(horizontal = 15.dp, vertical = 12.dp),
+                                      verticalAlignment = Alignment.CenterVertically
+                                  ) {
+                                      Text(
+                                          entry.title,
+                                          modifier = Modifier.weight(1f),
+                                          color = if (focused) Tv2WorkspaceColors.FocusText else Tv2WorkspaceColors.Text,
+                                          fontSize = 14.sp,
+                                          fontWeight = if (focused) FontWeight.Bold else FontWeight.SemiBold,
+                                          maxLines = 1,
+                                          overflow = TextOverflow.Ellipsis
+                                      )
+                                      Icon(
+                                          Icons.Outlined.KeyboardArrowRight,
+                                          contentDescription = null,
+                                          tint = if (focused) Tv2WorkspaceColors.FocusText else Tv2WorkspaceColors.Muted,
+                                          modifier = Modifier.size(18.dp)
+                                      )
+                                  }
+                              }
+                          }
+                      }
+                  }
+          
+                  Spacer(Modifier.width(28.dp))
+          
+                  Surface(
+                      modifier = Modifier.fillMaxHeight().weight(1f),
+                      shape = RoundedCornerShape(24.dp),
+                      color = Tv2WorkspaceColors.Surface,
+                      border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f))
+                  ) {
+                      Box(
+                          modifier = Modifier
+                              .fillMaxSize()
+                              .background(
+                                  Brush.linearGradient(
+                                      listOf(Tv2WorkspaceColors.Raised, Tv2WorkspaceColors.Surface)
+                                  )
+                              )
+                              .padding(38.dp)
+                      ) {
+                          if (selected != null) {
+                              Column(
+                                  modifier = Modifier.align(Alignment.CenterStart).widthIn(max = 520.dp)
+                              ) {
+                                  Icon(
+                                      Icons.Outlined.Settings,
+                                      contentDescription = null,
+                                      tint = Color.White.copy(alpha = 0.72f),
+                                      modifier = Modifier.size(42.dp)
+                                  )
+                                  Spacer(Modifier.height(18.dp))
+                                  Text(
+                                      selected.title,
+                                      color = Tv2WorkspaceColors.Text,
+                                      fontSize = 30.sp,
+                                      fontWeight = FontWeight.Black
+                                  )
+                                  Spacer(Modifier.height(8.dp))
+                                  Text(
+                                      selected.subtitle,
+                                      color = Tv2WorkspaceColors.Muted,
+                                      fontSize = 15.sp,
+                                      lineHeight = 21.sp
+                                  )
+                                  Spacer(Modifier.height(18.dp))
+                                  Text(
+                                      "Press OK to open",
+                                      color = Tv2WorkspaceColors.Text.copy(alpha = 0.76f),
+                                      fontSize = 12.sp,
+                                      fontWeight = FontWeight.Bold
+                                  )
+                              }
+                          }
+                      }
+                  }
+              }
+          }
+          
+          @Composable
+          private fun Tv2FilterPill(label: String, onClick: () -> Unit) {
+              var focused by remember(label) { mutableStateOf(false) }
+              Surface(
+                  modifier = Modifier
+                      .onFocusChanged { focused = it.isFocused }
+                      .onPreviewKeyEvent { event -> tv2Activate(event, onClick) }
+                      .clickable(onClick = onClick)
+                      .focusable(),
+                  shape = RoundedCornerShape(18.dp),
+                  color = if (focused) Color.White else Tv2WorkspaceColors.Surface,
+                  border = BorderStroke(
+                      if (focused) 2.dp else 1.dp,
+                      if (focused) Color.White else Color.White.copy(alpha = 0.09f)
+                  )
+              ) {
+                  Row(
+                      modifier = Modifier.padding(horizontal = 15.dp, vertical = 8.dp),
+                      verticalAlignment = Alignment.CenterVertically
+                  ) {
+                      Text(
+                          label,
+                          color = if (focused) Tv2WorkspaceColors.FocusText else Tv2WorkspaceColors.Text,
+                          fontSize = 12.sp,
+                          fontWeight = if (focused) FontWeight.Bold else FontWeight.Medium
+                      )
+                      Spacer(Modifier.width(6.dp))
+                      Text(
+                          "⌄",
+                          color = if (focused) Tv2WorkspaceColors.FocusText else Tv2WorkspaceColors.Muted
+                      )
+                  }
+              }
+          }
+          
+          @Composable
+          private fun Tv2MediaGrid(
+              entries: List<Tv2MediaTile>,
+              firstFocusRequester: FocusRequester,
+              sidebarRequester: FocusRequester?,
+              onOpen: (String) -> Unit
+          ) {
+              LazyVerticalGrid(
+                  columns = GridCells.Adaptive(148.dp),
+                  modifier = Modifier.fillMaxSize(),
+                  contentPadding = PaddingValues(start = 38.dp, end = 38.dp, top = 8.dp, bottom = 30.dp),
+                  horizontalArrangement = Arrangement.spacedBy(15.dp),
+                  verticalArrangement = Arrangement.spacedBy(19.dp)
+              ) {
+                  items(entries, key = { it.key }) { entry ->
+                      val first = entry.key == entries.firstOrNull()?.key
+                      Tv2PosterTile(
+                          entry = entry,
+                          requester = if (first) firstFocusRequester else null,
+                          onMoveLeft = if (first) ({ tv2RequestFocus(sidebarRequester) }) else null,
+                          onClick = { onOpen(entry.key) }
+                      )
+                  }
+              }
+          }
+          
+          @Composable
+          private fun Tv2PosterTile(
+              entry: Tv2MediaTile,
+              requester: FocusRequester?,
+              onMoveLeft: (() -> Boolean)?,
+              onClick: () -> Unit
+          ) {
+              var focused by remember(entry.key) { mutableStateOf(false) }
+              val scale by animateFloatAsState(
+                  targetValue = if (focused) 1.045f else 1f,
+                  animationSpec = tween(140),
+                  label = "tv2-workspace-poster-scale"
+              )
+          
+              Column(
+                  modifier = Modifier
+                      .width(148.dp)
+                      .graphicsLayer {
+                          scaleX = scale
+                          scaleY = scale
+                      }
+                      .then(requester?.let { Modifier.focusRequester(it) } ?: Modifier)
+                      .onFocusChanged { focused = it.isFocused }
+                      .onPreviewKeyEvent { event ->
+                          when {
+                              tv2Activate(event, onClick) -> true
+                              event.type == KeyEventType.KeyDown &&
+                                  event.key == Key.DirectionLeft &&
+                                  onMoveLeft != null -> onMoveLeft()
+                              else -> false
+                          }
+                      }
+                      .clickable(onClick = onClick)
+                      .focusable()
+              ) {
+                  Surface(
+                      modifier = Modifier.fillMaxWidth().aspectRatio(2f / 3f),
+                      shape = RoundedCornerShape(12.dp),
+                      color = Tv2WorkspaceColors.Raised,
+                      border = if (focused) BorderStroke(2.dp, Color.White)
+                      else BorderStroke(1.dp, Color.White.copy(alpha = 0.05f))
+                  ) {
+                      Tv2Artwork(entry.posterUrl, entry.title, Modifier.fillMaxSize())
+                  }
+          
+                  Spacer(Modifier.height(8.dp))
+                  Text(
+                      entry.title,
+                      color = Tv2WorkspaceColors.Text,
+                      fontSize = 12.sp,
+                      fontWeight = if (focused) FontWeight.Bold else FontWeight.Medium,
+                      maxLines = 1,
+                      overflow = TextOverflow.Ellipsis
+                  )
+                  if (entry.releaseInfo.isNotBlank()) {
+                      Text(
+                          entry.releaseInfo,
+                          color = Tv2WorkspaceColors.Muted,
+                          fontSize = 10.sp,
+                          maxLines = 1,
+                          overflow = TextOverflow.Ellipsis
+                      )
+                  }
+              }
+          }
+          
+          @Composable
+          private fun Tv2LibraryControl(
+              label: String,
+              selected: Boolean,
+              requester: FocusRequester?,
+              onMoveLeft: (() -> Boolean)?,
+              onClick: () -> Unit
+          ) {
+              var focused by remember(label) { mutableStateOf(false) }
+              Surface(
+                  modifier = Modifier
+                      .then(requester?.let { Modifier.focusRequester(it) } ?: Modifier)
+                      .onFocusChanged { focused = it.isFocused }
+                      .onPreviewKeyEvent { event ->
+                          when {
+                              tv2Activate(event, onClick) -> true
+                              event.type == KeyEventType.KeyDown &&
+                                  event.key == Key.DirectionLeft &&
+                                  onMoveLeft != null -> onMoveLeft()
+                              else -> false
+                          }
+                      }
+                      .clickable(onClick = onClick)
+                      .focusable(),
+                  shape = RoundedCornerShape(18.dp),
+                  color = when {
+                      focused -> Color.White
+                      selected -> Color.White.copy(alpha = 0.13f)
+                      else -> Tv2WorkspaceColors.Surface
+                  },
+                  border = BorderStroke(
+                      if (focused) 2.dp else 1.dp,
+                      if (focused) Color.White else Color.White.copy(alpha = 0.08f)
+                  )
+              ) {
+                  Text(
+                      label,
+                      modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                      color = if (focused) Tv2WorkspaceColors.FocusText else Tv2WorkspaceColors.Text,
+                      fontSize = 12.sp,
+                      fontWeight = if (focused || selected) FontWeight.Bold else FontWeight.Medium
+                  )
+              }
+          }
+          
+          @Composable
+          private fun Tv2LibraryPoster(entry: LocalMediaEntry, onClick: () -> Unit) {
+              Tv2PosterTile(
+                  entry = Tv2MediaTile(
+                      key = entry.key,
+                      title = entry.title,
+                      posterUrl = entry.posterUrl,
+                      backgroundUrl = entry.backgroundUrl,
+                      releaseInfo = entry.releaseInfo
+                  ),
+                  requester = null,
+                  onMoveLeft = null,
+                  onClick = onClick
+              )
+          }
+          
+          @Composable
+          private fun Tv2LibraryRow(entry: LocalMediaEntry, onClick: () -> Unit) {
+              var focused by remember(entry.key) { mutableStateOf(false) }
+              Surface(
+                  modifier = Modifier
+                      .fillMaxWidth()
+                      .onFocusChanged { focused = it.isFocused }
+                      .onPreviewKeyEvent { event -> tv2Activate(event, onClick) }
+                      .clickable(onClick = onClick)
+                      .focusable(),
+                  shape = RoundedCornerShape(14.dp),
+                  color = if (focused) Color.White else Tv2WorkspaceColors.Surface,
+                  border = BorderStroke(
+                      if (focused) 2.dp else 1.dp,
+                      if (focused) Color.White else Color.White.copy(alpha = 0.06f)
+                  )
+              ) {
+                  Row(
+                      modifier = Modifier.padding(10.dp),
+                      verticalAlignment = Alignment.CenterVertically
+                  ) {
+                      Surface(
+                          modifier = Modifier.width(84.dp).aspectRatio(16f / 9f),
+                          shape = RoundedCornerShape(9.dp),
+                          color = Tv2WorkspaceColors.Raised
+                      ) {
+                          Tv2Artwork(
+                              entry.backgroundUrl.ifBlank { entry.posterUrl },
+                              entry.title,
+                              Modifier.fillMaxSize()
+                          )
+                      }
+                      Spacer(Modifier.width(13.dp))
+                      Column(Modifier.weight(1f)) {
+                          Text(
+                              entry.title,
+                              color = if (focused) Tv2WorkspaceColors.FocusText else Tv2WorkspaceColors.Text,
+                              fontSize = 14.sp,
+                              fontWeight = FontWeight.Bold,
+                              maxLines = 1,
+                              overflow = TextOverflow.Ellipsis
+                          )
+                          if (entry.releaseInfo.isNotBlank()) {
+                              Text(
+                                  entry.releaseInfo,
+                                  color = if (focused) Color(0xFF60656E) else Tv2WorkspaceColors.Muted,
+                                  fontSize = 11.sp
+                              )
+                          }
+                      }
+                      Icon(
+                          Icons.Outlined.KeyboardArrowRight,
+                          contentDescription = null,
+                          tint = if (focused) Tv2WorkspaceColors.FocusText else Tv2WorkspaceColors.Muted
+                      )
+                  }
+              }
+          }
+          
+          @Composable
+          private fun Tv2WorkspaceState(
+              iconSearch: Boolean,
+              title: String,
+              subtitle: String,
+              loading: Boolean = false
+          ) {
+              Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                  Column(
+                      horizontalAlignment = Alignment.CenterHorizontally,
+                      verticalArrangement = Arrangement.spacedBy(10.dp)
+                  ) {
+                      if (loading) {
+                          CircularProgressIndicator(
+                              modifier = Modifier.size(32.dp),
+                              strokeWidth = 2.dp,
+                              color = Color.White
+                          )
+                      } else {
+                          Icon(
+                              if (iconSearch) Icons.Outlined.Search else Icons.Outlined.LibraryAdd,
+                              contentDescription = null,
+                              tint = Tv2WorkspaceColors.Muted,
+                              modifier = Modifier.size(44.dp)
+                          )
+                      }
+                      Text(
+                          title,
+                          color = Tv2WorkspaceColors.Text,
+                          fontSize = 21.sp,
+                          fontWeight = FontWeight.Bold
+                      )
+                      Text(subtitle, color = Tv2WorkspaceColors.Muted, fontSize = 13.sp)
+                  }
+              }
+          }
+          
+          @Composable
+          private fun Tv2Artwork(url: String, title: String, modifier: Modifier) {
+              if (url.isBlank()) {
+                  Box(
+                      modifier = modifier.background(
+                          Brush.linearGradient(
+                              listOf(Tv2WorkspaceColors.Raised, Tv2WorkspaceColors.Surface)
+                          )
+                      ),
+                      contentAlignment = Alignment.Center
+                  ) {
+                      Text(
+                          title.take(1).uppercase().ifBlank { "N" },
+                          color = Tv2WorkspaceColors.Muted,
+                          fontSize = 28.sp,
+                          fontWeight = FontWeight.Black
+                      )
+                  }
+              } else {
+                  AsyncImage(
+                      model = url,
+                      contentDescription = title,
+                      modifier = modifier,
+                      contentScale = ContentScale.Crop
+                  )
+              }
+          }
+          
+          private fun tv2Activate(
+              event: androidx.compose.ui.input.key.KeyEvent,
+              onClick: () -> Unit
+          ): Boolean {
+              val activate = event.key == Key.DirectionCenter || event.key == Key.Enter
+              if (!activate) return false
+              if (event.type == KeyEventType.KeyUp) onClick()
+              return true
+          }
+          
+          private fun tv2RequestFocus(requester: FocusRequester?): Boolean {
+              if (requester == null) return false
+              return runCatching {
+                  requester.requestFocus()
+                  true
+              }.getOrDefault(false)
+          }
+          KOTLIN
+
+      - name: Wire TV only workspaces
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' 2>&1 | tee "$RUNNER_TEMP/nustrim-tv2-stage6-diagnose/wire.log"
+          from pathlib import Path
+          
+          path = Path("app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt")
+          text = path.read_text(encoding="utf-8")
+          
+          required_imports = [
+              "import app.nudroidlabs.nustrim.tv2.workspace.Tv2LibraryWorkspace\n",
+              "import app.nudroidlabs.nustrim.tv2.workspace.Tv2MediaTile\n",
+              "import app.nudroidlabs.nustrim.tv2.workspace.Tv2SearchWorkspace\n",
+              "import app.nudroidlabs.nustrim.tv2.workspace.Tv2SettingsEntry\n",
+              "import app.nudroidlabs.nustrim.tv2.workspace.Tv2SettingsWorkspace\n",
+          ]
+          
+          lines = text.splitlines(keepends=True)
+          import_indices = [index for index, line in enumerate(lines) if line.startswith("import ")]
+          if not import_indices:
+              raise SystemExit("No Kotlin import block found.")
+          
+          missing = [item for item in required_imports if item not in text]
+          if missing:
+              last_import = import_indices[-1]
+              lines[last_import + 1:last_import + 1] = missing
+              text = "".join(lines)
+          
+          search_start = text.find("@Composable\nprivate fun TvSearchScreenContent(")
+          if search_start < 0:
+              raise SystemExit("TvSearchScreenContent not found.")
+          search_end = text.find("\n@Composable\nprivate fun TvSearchFilterPill(", search_start)
+          if search_end < 0:
+              raise SystemExit("TvSearchScreenContent end anchor not found.")
+          if "Tv2SearchWorkspace(" not in text[search_start:search_end]:
+              body = text.find(") {", search_start, search_end)
+              if body < 0:
+                  raise SystemExit("TvSearchScreenContent body not found.")
+              insert_at = body + 3
+              delegation = """
+              val tv2Results = results.map { entry ->
+                  Tv2MediaTile(
+                      key = discoverEntryKey(entry),
+                      title = entry.item.title,
+                      posterUrl = entry.item.posterUrl,
+                      backgroundUrl = entry.item.backgroundUrl,
+                      releaseInfo = entry.item.releaseInfo
+                  )
+              }
+              val tv2Discover = discover.map { entry ->
+                  Tv2MediaTile(
+                      key = discoverEntryKey(entry),
+                      title = entry.item.title,
+                      posterUrl = entry.item.posterUrl,
+                      backgroundUrl = entry.item.backgroundUrl,
+                      releaseInfo = entry.item.releaseInfo
+                  )
+              }
+              val tv2FilteredDiscover = filteredDiscover.map { entry ->
+                  Tv2MediaTile(
+                      key = discoverEntryKey(entry),
+                      title = entry.item.title,
+                      posterUrl = entry.item.posterUrl,
+                      backgroundUrl = entry.item.backgroundUrl,
+                      releaseInfo = entry.item.releaseInfo
+                  )
+              }
+              Tv2SearchWorkspace(
+                  query = query,
+                  onQueryChanged = onQueryChanged,
+                  onSearch = onSearch,
+                  searchFocusRequester = searchFocusRequester,
+                  contentFocusRequester = contentFocusRequester,
+                  sidebarRequester = sidebarRequester,
+                  searched = searched,
+                  loading = loading,
+                  discoverLoading = discoverLoading,
+                  results = tv2Results,
+                  discover = tv2Discover,
+                  filteredDiscover = tv2FilteredDiscover,
+                  typeFilter = typeFilter,
+                  catalogFilter = catalogFilter,
+                  genreFilter = genreFilter,
+                  onTypeFilter = onTypeFilter,
+                  onCatalogFilter = onCatalogFilter,
+                  onGenreFilter = onGenreFilter,
+                  onOpen = { key ->
+                      (results + filteredDiscover)
+                          .firstOrNull { discoverEntryKey(it) == key }
+                          ?.let(onOpen)
+                  },
+                  diagnostics = diagnostics
+              )
+              return
+          
+          """
+              text = text[:insert_at] + delegation + text[insert_at:]
+          
+          library_start = text.find("@Composable\nprivate fun TvLibraryScreenContent(")
+          if library_start < 0:
+              raise SystemExit("TvLibraryScreenContent not found.")
+          library_end = text.find("\n@Composable\nprivate fun TvLibraryControl(", library_start)
+          if library_end < 0:
+              raise SystemExit("TvLibraryScreenContent end anchor not found.")
+          if "Tv2LibraryWorkspace(" not in text[library_start:library_end]:
+              body = text.find(") {", library_start, library_end)
+              if body < 0:
+                  raise SystemExit("TvLibraryScreenContent body not found.")
+              insert_at = body + 3
+              delegation = """
+              Tv2LibraryWorkspace(
+                  saved = saved,
+                  gridMode = gridMode,
+                  onGridMode = onGridMode,
+                  primaryFocusRequester = primaryFocusRequester,
+                  sidebarRequester = sidebarRequester,
+                  onOpen = onOpen
+              )
+              return
+          
+          """
+              text = text[:insert_at] + delegation + text[insert_at:]
+          
+          settings_start = text.find("@Composable\nprivate fun TvSettingsWorkspace(")
+          if settings_start < 0:
+              raise SystemExit("TvSettingsWorkspace not found.")
+          settings_end = text.find("\n@Composable\nprivate fun ", settings_start + 20)
+          if settings_end < 0:
+              raise SystemExit("TvSettingsWorkspace end anchor not found.")
+          if "Tv2SettingsWorkspace(" not in text[settings_start:settings_end]:
+              body = text.find(") {", settings_start, settings_end)
+              if body < 0:
+                  raise SystemExit("TvSettingsWorkspace body not found.")
+              insert_at = body + 3
+              delegation = """
+              val tv2Items = items.mapIndexed { index, item ->
+                  Tv2SettingsEntry(
+                      id = index.toString(),
+                      title = item.title,
+                      subtitle = item.subtitle
+                  )
+              }
+              Tv2SettingsWorkspace(
+                  settingsItems = tv2Items,
+                  firstFocusRequester = firstFocusRequester,
+                  sidebarRequester = sidebarRequester,
+                  onOpen = { id ->
+                      id.toIntOrNull()
+                          ?.let(items::getOrNull)
+                          ?.onClick
+                          ?.invoke()
+                  }
+              )
+              return
+          
+          """
+              text = text[:insert_at] + delegation + text[insert_at:]
+          
+          path.write_text(text, encoding="utf-8")
+          print(f"TV2 imports added: {len(missing)}")
+          print("TV Search workspace delegation: OK")
+          print("TV Library workspace delegation: OK")
+          print("TV Settings root workspace delegation: OK")
+          print("Mobile Search/Library/Settings branches preserved: YES")
+          PY
+          wire_code=${PIPESTATUS[0]}
+          if [[ "$wire_code" -ne 0 ]]; then
+            echo "::error::TV2 Stage 6 workspace wiring failed."
+            exit "$wire_code"
+          fi
+
+      - name: Advance Stage 6 metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' 2>&1 | tee "$RUNNER_TEMP/nustrim-tv2-stage6-diagnose/metadata.log"
+          from pathlib import Path
+          import os, re
+
+          target = os.environ["TV2_VERSION"]
+          gradle_path = Path("app/build.gradle.kts")
+          gradle = gradle_path.read_text(encoding="utf-8")
+
+          code_match = re.search(r'versionCode\s*=\s*(\d+)', gradle)
+          name_match = re.search(r'versionName\s*=\s*"([^"]+)"', gradle)
+          if not code_match or not name_match:
+              raise SystemExit("Unable to resolve app version.")
+
+          current_code = int(code_match.group(1))
+          current_name = name_match.group(1)
+          next_code = current_code if current_name == target else current_code + 1
+
+          gradle = re.sub(r'versionCode\s*=\s*\d+', f'versionCode = {next_code}', gradle, count=1)
+          gradle = re.sub(r'versionName\s*=\s*"[^"]+"', f'versionName = "{target}"', gradle, count=1)
+          gradle_path.write_text(gradle, encoding="utf-8")
+          Path(".nustrim-version").write_text(target + "\n", encoding="utf-8")
+
+          marker = Path(".nustrim-tv2")
+          lines = marker.read_text(encoding="utf-8").splitlines()
+          output = []
+          found = False
+          for line in lines:
+              if line.strip().startswith("stage="):
+                  output.append("stage=6")
+                  found = True
+              else:
+                  output.append(line.rstrip("\r"))
+          if not found:
+              output.append("stage=6")
+          marker.write_text("\n".join(output) + "\n", encoding="utf-8")
+
+          print(f"versionName: {current_name} -> {target}")
+          print(f"versionCode: {current_code} -> {next_code}")
+          print("TV2 marker advanced to stage=6")
+          PY
+
+      - name: Audit TV2 Stage 6
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIAG="$RUNNER_TEMP/nustrim-tv2-stage6-diagnose/audit.txt"
+          APP="app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt"
+          WORKSPACE="app/src/main/java/app/nudroidlabs/nustrim/tv2/workspace/Tv2Workspaces.kt"
+
+          fail() {
+            echo "::error::$1"
+            echo "FAIL: $1" >> "$DIAG"
+            exit 1
+          }
+
+          [[ -f "$WORKSPACE" ]] || fail "Tv2Workspaces.kt missing."
+          grep -q 'fun Tv2SearchWorkspace' "$WORKSPACE" || fail "TV2 Search implementation missing."
+          grep -q 'fun Tv2LibraryWorkspace' "$WORKSPACE" || fail "TV2 Library implementation missing."
+          grep -q 'fun Tv2SettingsWorkspace' "$WORKSPACE" || fail "TV2 Settings implementation missing."
+          grep -q 'Tv2SearchWorkspace(' "$APP" || fail "TV2 Search not wired."
+          grep -q 'Tv2LibraryWorkspace(' "$APP" || fail "TV2 Library not wired."
+          grep -q 'Tv2SettingsWorkspace(' "$APP" || fail "TV2 Settings not wired."
+
+          grep -q 'PageHeader(title = "Search", subtitle = "Search and discover", isTv = false)' "$APP" || fail "Mobile Search branch removed."
+          grep -q 'LibrarySavedGridCard(entry = entry, isTv = false' "$APP" || fail "Mobile Library branch removed."
+          grep -q 'SettingsNavigationRow(' "$APP" || fail "Mobile Settings branch removed."
+
+          grep -q '^stage=6$' .nustrim-tv2 || fail "Marker not stage 6."
+          grep -q "versionName = \"${TV2_VERSION}\"" app/build.gradle.kts || fail "Version mismatch."
+          grep -q "^${TV2_VERSION}$" .nustrim-version || fail ".nustrim-version mismatch."
+
+          if grep -R -n 'com\.nuvio' app/src/main/java/app/nudroidlabs/nustrim/tv2; then
+            fail "Forbidden Nuvio package import."
+          fi
+
+          if grep -R -n -E 'NuBrowse|NuBrowseApp|app\.nubrowse' app/src/main app/build.gradle.kts 2>/dev/null; then
+            fail "NuBrowse contamination detected."
+          fi
+
+          git diff --check || fail "git diff --check failed."
+
+          {
+            echo "PASS: Stage 6 structural audit"
+            echo
+            git status --short
+            echo
+            git diff --stat
+          } > "$DIAG"
+          cat "$DIAG"
+          git diff > "$RUNNER_TEMP/nustrim-tv2-stage6-diagnose/stage6.patch"
+
+      - name: Compile TV2 Stage 6
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          gradle --no-daemon --build-cache \
+            :app:compileDebugKotlin \
+            --stacktrace \
+            --console=plain \
+            2>&1 | tee "$RUNNER_TEMP/nustrim-tv2-stage6-diagnose/compile.log"
+          code=${PIPESTATUS[0]}
+          set -e
+          if [[ "$code" -ne 0 ]]; then
+            echo "::error::TV2 Stage 6 Kotlin compile failed."
+            exit "$code"
+          fi
+
+      - name: Commit and push Stage 6
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$RUNNER_TEMP/nustrim-tv2-stage6-diagnose/push.log") 2>&1
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add \
+            app/src/main/java/app/nudroidlabs/nustrim/tv2/workspace/Tv2Workspaces.kt \
+            app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt \
+            app/build.gradle.kts \
+            .nustrim-tv2 \
+            .nustrim-version
+
+          if git diff --cached --quiet; then
+            echo "Stage 6 already applied."
+          else
+            git diff --cached --check
+            git commit -m "feat(tv2): build Stage 6 search library settings workspaces"
+            git fetch --no-tags origin main
+            if ! git merge-base --is-ancestor origin/main HEAD; then
+              git rebase origin/main
+            fi
+
+            set +e
+            git push origin HEAD:main
+            code=$?
+            set -e
+            if [[ "$code" -ne 0 ]]; then
+              git fetch --no-tags origin main
+              if ! git merge-base --is-ancestor origin/main HEAD; then
+                git rebase origin/main
+              fi
+              git push origin HEAD:main
+            fi
+          fi
+
+          echo "Push completed successfully."
+
+      - name: Dispatch signed updater build
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          exec > >(tee "$RUNNER_TEMP/nustrim-tv2-stage6-diagnose/dispatch.log") 2>&1
+
+          gh workflow run build.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            -f publish_release=true
+
+          echo "Build Nustrim dispatched with publish_release=true."
+
+      - name: Print compact failure summary
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          DIR="$RUNNER_TEMP/nustrim-tv2-stage6-diagnose"
+
+          echo
+          echo "========== Nustrim TV2 Stage 6 Workspaces Summary =========="
+          echo "Result: FAILED"
+          echo "SHA: $(git rev-parse HEAD 2>/dev/null || echo unknown)"
+          echo "TV2 marker:"
+          cat .nustrim-tv2 2>/dev/null | sed 's/^/  /' || true
+          echo "Version:"
+          grep -m1 'versionName' app/build.gradle.kts 2>/dev/null | sed 's/^[[:space:]]*/  /' || true
+
+          for file in preflight.txt create-workspaces.log wire.log metadata.log audit.txt push.log dispatch.log; do
+            if [[ -f "$DIR/$file" ]]; then
+              echo
+              echo "[$file]"
+              tail -n 40 "$DIR/$file" || true
+            fi
+          done
+
+          if [[ -f "$DIR/compile.log" ]]; then
+            echo
+            echo "[compile result]"
+            grep -E 'BUILD SUCCESSFUL|BUILD FAILED|(^|[[:space:]])(e:|error:|FAILURE:|Caused by:|Execution failed for task|What went wrong:)' \
+              "$DIR/compile.log" | tail -n 60 || true
+          fi
+
+          echo "============================================================="
+
+      - name: Upload Stage 6 diagnose
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nustrim-m11-tv2-stage6-workspaces-diagnose
+          path: ${{ runner.temp }}/nustrim-tv2-stage6-diagnose
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Summary
+        if: success()
+        shell: bash
+        run: |
+          {
+            echo "## Nustrim M11 TV2 Stage 6 Workspaces"
+            echo
+            echo "- Added isolated tv2/workspace presentation layer."
+            echo "- TV Search now uses the TV2 Search and Discover workspace."
+            echo "- TV Library now uses the TV2 saved-content workspace."
+            echo "- TV Settings root now uses the TV2 settings workspace."
+            echo "- Search source loading, filtering and result logic remain unchanged."
+            echo "- Settings sub-pages and their existing logic remain unchanged."
+            echo "- LocalMediaStore remains unchanged."
+            echo "- Mobile Search, Library and Settings remain unchanged."
+            echo "- TV2 marker advanced to stage=6."
+            echo "- Version advanced to ${TV2_VERSION}."
+            echo "- Kotlin compile passed before commit."
+            echo "- Build Nustrim dispatched with publish_release=true."
+          } >> "$GITHUB_STEP_SUMMARY"
