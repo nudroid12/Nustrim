@@ -493,7 +493,7 @@ fun NustrimApp() {
     val preferences = remember(context) { UiPreferences(context) }
     val sourceStore = remember(context) { InstalledSourceStore(context) }
     val sourceEngine = remember(context) { SourceEngine(context) }
-    var interfaceMode by remember { mutableStateOf(preferences.interfaceMode) }
+    var interfaceMode by remember { mutableStateOf<InterfaceMode?>(InterfaceMode.MOBILE) }
     var developerMode by remember { mutableStateOf(preferences.developerMode) }
     var remoteTestEnabled by remember {
         mutableStateOf(preferences.developerMode && preferences.remoteTestEnabled)
@@ -502,11 +502,8 @@ fun NustrimApp() {
     val activity = context.findActivity()
 
     fun switchInterfaceMode(selected: InterfaceMode) {
-        if (interfaceMode == selected) return
-        preferences.interfaceMode = selected
-        interfaceMode = selected
-        // A mode change replaces the navigation shell. Returning to Home prevents
-        // stale TV focus or Settings sub-page state leaking into the other shell.
+        preferences.interfaceMode = InterfaceMode.MOBILE
+        interfaceMode = InterfaceMode.MOBILE
         screen = Screen.Main(MainSection.HOME)
     }
 
@@ -832,108 +829,48 @@ private fun MainShell(
     onSection: (MainSection) -> Unit,
     content: @Composable (Boolean, Int) -> Unit
 ) {
-    val isTv = rememberIsTv()
-    val physicalTv = isTv && rememberIsPhysicalTv()
-    val activity = LocalContext.current.findActivity()
-    LaunchedEffect(isTv, physicalTv) {
-        if (isTv) {
-            NustrimDiagnostics.log(
-                "TV_ENV",
-                "physicalTv=$physicalTv reducedMotion=$physicalTv"
-            )
-        }
-    }
-
-    BackHandler(enabled = selected != MainSection.HOME) {
-        onSection(MainSection.HOME)
-    }
-
-    if (isTv) {
-    NustrimTv2Shell(
-        selectedId = selected.name.lowercase(Locale.ROOT),
-        onSelect = { destinationId ->
-            MainSection.entries
-                .firstOrNull {
-                    it.name.equals(destinationId, ignoreCase = true)
-                }
-                ?.let(onSection)
-        }
-    ) { contentFocusRequestToken, selectedRailRequester ->
-        CompositionLocalProvider(
-            LocalTvSidebarFocusRequester provides selectedRailRequester
-        ) {
-            content(true, contentFocusRequestToken)
-        }
-    }
-
-    // Keep the existing developer remote-test overlay outside TV2.
-    // It is a development tool, not part of the TV2 design layer.
-    if (remoteTestActive) {
-        val blockerInteraction = remember { MutableInteractionSource() }
-        Box(modifier = Modifier.fillMaxSize()) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.08f))
-                    .focusProperties { canFocus = false }
-                    .clickable(
-                        interactionSource = blockerInteraction,
-                        indication = null
-                    ) { }
-            )
-            TvTestRemote(
-                activity = activity,
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(18.dp),
-                onClose = onRemoteTestClose
-            )
-        }
-    }
-    } else {
-        Scaffold(
-            containerColor = AppBackground,
-            bottomBar = {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .navigationBarsPadding()
-                        .background(
-                            Brush.verticalGradient(
-                                listOf(Color.Transparent, AppBackground.copy(alpha = 0.98f))
-                            )
-                        )
-                        .padding(horizontal = 18.dp, vertical = 10.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Surface(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(34.dp),
-                        color = Color(0xFF24262B),
-                        tonalElevation = 8.dp
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp),
-                            horizontalArrangement = Arrangement.SpaceEvenly,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            MainSection.entries.forEach { destination ->
-                                MobileNavItem(
-                                    destination = destination,
-                                    selected = destination == selected,
-                                    onClick = { onSection(destination) }
+    Scaffold(
+                containerColor = AppBackground,
+                bottomBar = {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .navigationBarsPadding()
+                            .background(
+                                Brush.verticalGradient(
+                                    listOf(Color.Transparent, AppBackground.copy(alpha = 0.98f))
                                 )
+                            )
+                            .padding(horizontal = 18.dp, vertical = 10.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(34.dp),
+                            color = Color(0xFF24262B),
+                            tonalElevation = 8.dp
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp),
+                                horizontalArrangement = Arrangement.SpaceEvenly,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                MainSection.entries.forEach { destination ->
+                                    MobileNavItem(
+                                        destination = destination,
+                                        selected = destination == selected,
+                                        onClick = { onSection(destination) }
+                                    )
+                                }
                             }
                         }
                     }
                 }
+            ) { padding ->
+                Box(Modifier.fillMaxSize().padding(padding)) { content(false, 0) }
             }
-        ) { padding ->
-            Box(Modifier.fillMaxSize().padding(padding)) { content(false, 0) }
-        }
-    }
-
 }
+
 private fun dispatchTvTestKey(activity: Activity?, keyCode: Int) {
     if (activity == null) return
     activity.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, keyCode))

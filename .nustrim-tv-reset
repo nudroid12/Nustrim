@@ -1,0 +1,7 @@
+generation=3
+stage=0A
+runtime=mobile-only
+legacy-tv-source=quarantined
+tv2-delete=pending-stage0B
+mobile=protected
+updater=protected
