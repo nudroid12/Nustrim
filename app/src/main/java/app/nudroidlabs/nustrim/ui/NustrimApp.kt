@@ -116,6 +116,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -491,7 +492,12 @@ fun NustrimApp() {
     var screen: Screen by remember { mutableStateOf(Screen.Main(MainSection.HOME)) }
     val activity = context.findActivity()
 
+    var tvModeSessionActive by rememberSaveable {
+        mutableStateOf(preferences.interfaceMode == InterfaceMode.TV)
+    }
+
     fun switchInterfaceMode(selected: InterfaceMode) {
+        tvModeSessionActive = selected == InterfaceMode.TV
         preferences.interfaceMode = InterfaceMode.MOBILE
         interfaceMode = InterfaceMode.MOBILE
         screen = Screen.Main(MainSection.HOME)
@@ -733,7 +739,7 @@ fun NustrimApp() {
                 }
             }
             val physicalTvDevice = rememberIsPhysicalTv()
-            if (interfaceMode == InterfaceMode.TV) {
+            if (tvModeSessionActive || interfaceMode == InterfaceMode.TV) {
                 TvApp(
                     onExit = {
                         if (physicalTvDevice) {
