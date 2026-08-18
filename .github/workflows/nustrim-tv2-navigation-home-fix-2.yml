@@ -1,0 +1,555 @@
+name: Nustrim TV2 Navigation Home Fix 2
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: nustrim-tv2-navigation-home-fix-2
+  cancel-in-progress: false
+
+env:
+  TV2_VERSION: "0.17.0-tv2-rc9"
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Sync current main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          git checkout -B main origin/main
+          git reset --hard origin/main
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "9.5.0"
+
+      - name: Capture exact baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/nustrim-nav-home-fix2"
+          mkdir -p "$DIR"
+          SHELL="app/src/main/java/app/nudroidlabs/nustrim/tv2/shell/NustrimTv2Shell.kt"
+          APP="app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt"
+
+          test -f "$SHELL"
+          test -f "$APP"
+          grep -q 'fun NustrimTv2Shell(' "$SHELL"
+          grep -q 'private fun Tv2RailItem(' "$SHELL"
+          grep -q 'private fun HomeScreen(' "$APP"
+          grep -q 'private fun MainShell(' "$APP"
+
+          cp "$SHELL" "$DIR/NustrimTv2Shell.before.kt"
+
+          {
+            echo "NUSTRIM TV2 NAVIGATION + HOME FIX 2"
+            echo "sha=$(git rev-parse HEAD)"
+            cat .nustrim-tv2 2>/dev/null || true
+            grep -m1 'versionName' app/build.gradle.kts 2>/dev/null || true
+            echo
+            echo "[sidebar]"
+            grep -n -E 'moveToContent|BackHandler|contentFocusRequestToken|onMoveRight|selected ->|focused ->|if \(!expanded\)' "$SHELL" || true
+            echo
+            echo "[exit confirmation]"
+            grep -n -E 'exitRequested|Exit Nustrim' "$APP" || true
+            echo
+            echo "[home loading]"
+            grep -n -E 'continueWatching\.isNotEmpty|home-continue|Loading catalogs|var loading' "$APP" | head -n 60 || true
+          } > "$DIR/preflight.txt"
+
+      - name: Patch TV2 focus and Back flow
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' 2>&1 | tee "$RUNNER_TEMP/nustrim-nav-home-fix2/shell-patch.log"
+          from pathlib import Path
+          import re
+          
+          path = Path("app/src/main/java/app/nudroidlabs/nustrim/tv2/shell/NustrimTv2Shell.kt")
+          text = path.read_text(encoding="utf-8")
+          
+          package_line = "package app.nudroidlabs.nustrim.tv2.shell\n\n"
+          extra_imports = [
+              "import android.app.Activity\n",
+              "import android.content.Context\n",
+              "import android.content.ContextWrapper\n",
+              "import androidx.compose.ui.platform.LocalContext\n",
+              "import androidx.compose.ui.platform.LocalFocusManager\n",
+          ]
+          if package_line not in text:
+              raise SystemExit("TV2 shell package header not found")
+          missing = [item for item in extra_imports if item not in text]
+          if missing:
+              text = text.replace(package_line, package_line + "".join(missing), 1)
+          
+          helper = (
+              "private tailrec fun Context.findTv2Activity(): Activity? = when (this) {\n"
+              "    is Activity -> this\n"
+              "    is ContextWrapper -> baseContext.findTv2Activity()\n"
+              "    else -> null\n"
+              "}\n\n"
+          )
+          if "findTv2Activity()" not in text:
+              marker = "/**\n * TV2 root shell."
+              if marker not in text:
+                  raise SystemExit("TV2 shell root marker not found")
+              text = text.replace(marker, helper + marker, 1)
+          
+          requesters_anchor = (
+              "    val requesters = remember {\n"
+              "        Tv2Destination.entries.associateWith { FocusRequester() }\n"
+              "    }\n"
+          )
+          if "val focusManager = LocalFocusManager.current" not in text:
+              if requesters_anchor not in text:
+                  raise SystemExit("TV2 requester map anchor not found")
+              text = text.replace(
+                  requesters_anchor,
+                  requesters_anchor
+                  + "    val focusManager = LocalFocusManager.current\n"
+                  + "    val activity = LocalContext.current.findTv2Activity()\n",
+                  1,
+              )
+          
+          move_pattern = re.compile(
+              r'(?ms)    fun moveToContent\(\) \{\s*'
+              r'railExpanded = false\s*'
+              r'(?:focusManager\.clearFocus\(force = true\)\s*)?'
+              r'contentFocusRequestToken \+= 1\s*'
+              r'\}'
+          )
+          move_replacement = (
+              "    fun moveToContent() {\n"
+              "        railExpanded = false\n"
+              "        focusManager.clearFocus(force = true)\n"
+              "        contentFocusRequestToken += 1\n"
+              "    }"
+          )
+          text, move_count = move_pattern.subn(move_replacement, text, count=1)
+          if move_count != 1:
+              raise SystemExit("moveToContent function not found")
+          
+          back_pattern = re.compile(
+              r'(?ms)    BackHandler(?:\(enabled\s*=\s*railExpanded\))?\s*\{.*?\}\s*(?=\n    Box\()'
+          )
+          back_replacement = (
+              "    BackHandler {\n"
+              "        if (railExpanded) {\n"
+              "            activity?.finishAndRemoveTask() ?: activity?.finish()\n"
+              "        } else {\n"
+              "            railExpanded = true\n"
+              "            requesters.getValue(selected).requestFocus()\n"
+              "        }\n"
+              "    }\n"
+          )
+          text, back_count = back_pattern.subn(back_replacement, text, count=1)
+          if back_count != 1:
+              raise SystemExit("TV2 root BackHandler block not found")
+          
+          rail_color_pattern = re.compile(
+              r'(?ms)        color = when \{\s*'
+              r'selected -> androidx\.compose\.ui\.graphics\.Color\.White\s*'
+              r'focused -> [^\n]+\s*'
+              r'else -> androidx\.compose\.ui\.graphics\.Color\.Transparent\s*'
+              r'\}'
+          )
+          rail_color_replacement = (
+              "        color = if (selected) {\n"
+              "            androidx.compose.ui.graphics.Color.White\n"
+              "        } else {\n"
+              "            androidx.compose.ui.graphics.Color.Transparent\n"
+              "        }"
+          )
+          text, color_count = rail_color_pattern.subn(rail_color_replacement, text, count=1)
+          if color_count != 1 and "color = if (selected)" not in text:
+              raise SystemExit("Tv2RailItem color block not found")
+          
+          checks = {
+              "focus release": "focusManager.clearFocus(force = true)" in text,
+              "content token": "contentFocusRequestToken += 1" in text,
+              "Back opens rail": "requesters.getValue(selected).requestFocus()" in text,
+              "Back exits app": "finishAndRemoveTask()" in text,
+              "transparent rail focus": "color = if (selected)" in text,
+              "selected marker remains white": "androidx.compose.ui.graphics.Color.White" in text,
+              "Right handoff remains": "onMoveRight()" in text and "moveToContent()" in text,
+              "brand remains collapse-safe": "if (!expanded) return" in text,
+          }
+          failed = [name for name, ok in checks.items() if not ok]
+          if failed:
+              raise SystemExit("TV2 shell contract failed: " + ", ".join(failed))
+          
+          path.write_text(text, encoding="utf-8")
+          for name in checks:
+              print("PASS:", name)
+          PY
+          code=${PIPESTATUS[0]}
+          if [[ "$code" -ne 0 ]]; then exit "$code"; fi
+
+      - name: Patch exit and Home initial loading
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' 2>&1 | tee "$RUNNER_TEMP/nustrim-nav-home-fix2/app-patch.log"
+          from pathlib import Path
+          import re
+          
+          path = Path("app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt")
+          text = path.read_text(encoding="utf-8")
+          
+          def matching_brace(source: str, open_index: int) -> int:
+              depth = 0
+              in_string = False
+              escape = False
+              for index in range(open_index, len(source)):
+                  ch = source[index]
+                  if in_string:
+                      if escape:
+                          escape = False
+                      elif ch == "\\":
+                          escape = True
+                      elif ch == '"':
+                          in_string = False
+                      continue
+                  if ch == '"':
+                      in_string = True
+                      continue
+                  if ch == "{":
+                      depth += 1
+                  elif ch == "}":
+                      depth -= 1
+                      if depth == 0:
+                          return index + 1
+              raise SystemExit("Unbalanced Kotlin brace")
+          
+          def function_bounds(source: str, name: str):
+              match = re.search(rf'\bfun\s+{re.escape(name)}\s*\(', source)
+              if not match:
+                  raise SystemExit(f"Function {name} not found")
+              opening = source.find("{", match.end())
+              if opening < 0:
+                  raise SystemExit(f"Function {name} body not found")
+              return match.start(), matching_brace(source, opening)
+          
+          main_start, main_end = function_bounds(text, "MainShell")
+          main = text[main_start:main_end]
+          
+          main = re.sub(
+              r'(?m)^\s*var\s+exitRequested\s+by\s+remember\s*\{\s*mutableStateOf\(false\)\s*\}\s*\n',
+              '',
+              main,
+              count=1,
+          )
+          
+          while True:
+              found = False
+              for match in list(re.finditer(r'\bBackHandler\b', main)):
+                  opening = main.find("{", match.end())
+                  if opening < 0:
+                      continue
+                  end = matching_brace(main, opening)
+                  block = main[match.start():end]
+                  if "exitRequested" in block:
+                      start = match.start()
+                      while start > 0 and main[start - 1] in " \t":
+                          start -= 1
+                      if start > 0 and main[start - 1] == "\n":
+                          start -= 1
+                      main = main[:start] + main[end:]
+                      found = True
+                      break
+              if not found:
+                  break
+          
+          exit_if = re.search(r'if\s*\(\s*exitRequested\s*\)\s*\{', main)
+          if exit_if:
+              opening = main.find("{", exit_if.start())
+              end = matching_brace(main, opening)
+              start = exit_if.start()
+              while start > 0 and main[start - 1] in " \t":
+                  start -= 1
+              if start > 0 and main[start - 1] == "\n":
+                  start -= 1
+              main = main[:start] + main[end:]
+          
+          if "Exit Nustrim?" in main or "exitRequested" in main:
+              raise SystemExit("Old exit confirmation still exists in MainShell")
+          
+          text = text[:main_start] + main + text[main_end:]
+          
+          home_start, home_end = function_bounds(text, "HomeScreen")
+          home = text[home_start:home_end]
+          
+          if "!loading && continueWatching.isNotEmpty()" not in home:
+              home, count = re.subn(
+                  r'if\s*\(\s*continueWatching\.isNotEmpty\(\)\s*\)',
+                  'if (!loading && continueWatching.isNotEmpty())',
+                  home,
+                  count=1,
+              )
+              if count != 1:
+                  raise SystemExit("Home Continue Watching loading guard not found")
+          
+          if 'item(key = "home-continue"' not in home:
+              raise SystemExit("Home Continue Watching row not found")
+          if "!loading && continueWatching.isNotEmpty()" not in home:
+              raise SystemExit("Home Continue Watching loading guard missing after patch")
+          if '"Loading catalogs..."' not in home:
+              raise SystemExit("Home initial catalog loading state missing")
+          
+          text = text[:home_start] + home + text[home_end:]
+          path.write_text(text, encoding="utf-8")
+          
+          print("PASS: exit confirmation removed from MainShell")
+          print("PASS: Home Continue Watching waits for initial catalog load")
+          PY
+          code=${PIPESTATUS[0]}
+          if [[ "$code" -ne 0 ]]; then exit "$code"; fi
+
+      - name: Safe repo cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/nustrim-nav-home-fix2"
+          echo "SAFE REPO CLEANUP" > "$DIR/cleanup.log"
+
+          while IFS= read -r file; do
+            case "$file" in
+              app/src/*|.github/workflows/*)
+                ;;
+              *.tmp|*.bak|*.orig|*.rej|*.patch|*.log|*-diagnose.zip)
+                rm -f -- "$file"
+                echo "REMOVED: $file" >> "$DIR/cleanup.log"
+                ;;
+            esac
+          done < <(git ls-files)
+
+          echo "GUARD: app/src not deleted by cleanup" >> "$DIR/cleanup.log"
+          echo "GUARD: workflow YAML preserved" >> "$DIR/cleanup.log"
+          cat "$DIR/cleanup.log"
+
+      - name: Advance RC9 metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' 2>&1 | tee "$RUNNER_TEMP/nustrim-nav-home-fix2/metadata.log"
+          from pathlib import Path
+          import os
+          import re
+          
+          target = os.environ["TV2_VERSION"]
+          gradle_path = Path("app/build.gradle.kts")
+          gradle = gradle_path.read_text(encoding="utf-8")
+          
+          code_match = re.search(r'versionCode\s*=\s*(\d+)', gradle)
+          name_match = re.search(r'versionName\s*=\s*"([^"]+)"', gradle)
+          if not code_match or not name_match:
+              raise SystemExit("Version metadata missing")
+          
+          old_code = int(code_match.group(1))
+          old_name = name_match.group(1)
+          new_code = old_code if old_name == target else old_code + 1
+          
+          gradle = re.sub(r'versionCode\s*=\s*\d+', f'versionCode = {new_code}', gradle, count=1)
+          gradle = re.sub(r'versionName\s*=\s*"[^"]+"', f'versionName = "{target}"', gradle, count=1)
+          gradle_path.write_text(gradle, encoding="utf-8")
+          Path(".nustrim-version").write_text(target + "\n", encoding="utf-8")
+          
+          marker = Path(".nustrim-tv2")
+          lines = marker.read_text(encoding="utf-8").splitlines()
+          output = []
+          seen = False
+          for line in lines:
+              if line.startswith("stage="):
+                  output.append("stage=9")
+                  seen = True
+              else:
+                  output.append(line)
+          if not seen:
+              output.append("stage=9")
+          marker.write_text("\n".join(output) + "\n", encoding="utf-8")
+          
+          print(f"versionName: {old_name} -> {target}")
+          print(f"versionCode: {old_code} -> {new_code}")
+          print("stage=9")
+          PY
+
+      - name: Structural audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/nustrim-nav-home-fix2"
+          SHELL="app/src/main/java/app/nudroidlabs/nustrim/tv2/shell/NustrimTv2Shell.kt"
+          APP="app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt"
+
+          cp "$SHELL" "$DIR/NustrimTv2Shell.after.kt"
+
+          grep -q 'color = if (selected)' "$SHELL"
+          grep -q 'focusManager.clearFocus(force = true)' "$SHELL"
+          grep -q 'contentFocusRequestToken += 1' "$SHELL"
+          grep -q 'onMoveRight()' "$SHELL"
+          grep -q 'activity?.finishAndRemoveTask()' "$SHELL"
+          grep -q 'requesters.getValue(selected).requestFocus()' "$SHELL"
+
+          grep -q 'if (!expanded) return' "$SHELL"
+          ! grep -q 'HorizontalDivider' "$SHELL"
+          ! grep -q 'BorderStroke(1.dp, Tv2Colors.railBorder)' "$SHELL"
+
+          ! grep -q 'Exit Nustrim?' "$APP"
+          ! grep -q 'exitRequested' "$APP"
+
+          grep -q '!loading && continueWatching.isNotEmpty()' "$APP"
+          grep -q 'Loading catalogs...' "$APP"
+          grep -q 'focusRequestToken' "$APP"
+
+          if grep -R -n -E 'NuBrowse|NuBrowseApp|app\.nubrowse' app/src/main app/build.gradle.kts 2>/dev/null; then
+            echo "::error::NuBrowse runtime contamination detected."
+            exit 1
+          fi
+
+          if grep -R -n '^import androidx\.compose\.foundation\.layout\.weight$' app/src/main/java/app/nudroidlabs/nustrim/tv2 2>/dev/null; then
+            echo "::error::Forbidden direct Compose weight import detected."
+            exit 1
+          fi
+
+          git diff --check
+
+          {
+            echo "PASS: sidebar focus highlight transparent"
+            echo "PASS: collapse clears sidebar focus"
+            echo "PASS: D-pad Right hands focus to page"
+            echo "PASS: Back from content opens sidebar"
+            echo "PASS: Back from expanded sidebar exits directly"
+            echo "PASS: exit confirmation removed"
+            echo "PASS: Continue Watching waits for initial catalog load"
+            echo "PASS: previous R5 sidebar fixes preserved"
+            echo
+            git status --short
+            git diff --stat
+          } > "$DIR/audit.txt"
+
+          cat "$DIR/audit.txt"
+          git diff > "$DIR/nav-home-fix2.patch"
+
+      - name: Compile Kotlin
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          gradle --no-daemon --build-cache \
+            :app:compileDebugKotlin \
+            --stacktrace \
+            --console=plain \
+            2>&1 | tee "$RUNNER_TEMP/nustrim-nav-home-fix2/compile.log"
+          code=${PIPESTATUS[0]}
+          set -e
+          if [[ "$code" -ne 0 ]]; then exit "$code"; fi
+
+      - name: Assemble debug
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          gradle --no-daemon --build-cache \
+            :app:assembleDebug \
+            --stacktrace \
+            --console=plain \
+            2>&1 | tee "$RUNNER_TEMP/nustrim-nav-home-fix2/assemble.log"
+          code=${PIPESTATUS[0]}
+          set -e
+          if [[ "$code" -ne 0 ]]; then exit "$code"; fi
+
+      - name: Commit and push
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$RUNNER_TEMP/nustrim-nav-home-fix2/push.log") 2>&1
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+          git diff --cached --check
+
+          if git diff --cached --quiet; then
+            echo "Nothing to commit."
+          else
+            git commit -m "fix(tv2): harden sidebar focus back flow and home loading"
+            git fetch --no-tags origin main
+            if ! git merge-base --is-ancestor origin/main HEAD; then
+              git rebase origin/main
+            fi
+            git push origin HEAD:main
+          fi
+
+      - name: Dispatch signed updater
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run build.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            -f publish_release=true \
+            2>&1 | tee "$RUNNER_TEMP/nustrim-nav-home-fix2/dispatch.log"
+
+      - name: Compact failure summary
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          DIR="$RUNNER_TEMP/nustrim-nav-home-fix2"
+
+          echo "========== Nustrim TV2 Navigation Home Fix 2 Summary =========="
+          echo "Result: FAILED"
+          echo "SHA: $(git rev-parse HEAD 2>/dev/null || echo unknown)"
+          cat .nustrim-tv2 2>/dev/null || true
+          grep -m1 'versionName' app/build.gradle.kts 2>/dev/null || true
+
+          for file in preflight.txt shell-patch.log app-patch.log cleanup.log metadata.log audit.txt push.log dispatch.log; do
+            if [[ -f "$DIR/$file" ]]; then
+              echo
+              echo "[$file]"
+              tail -n 75 "$DIR/$file" || true
+            fi
+          done
+
+          for file in compile.log assemble.log; do
+            if [[ -f "$DIR/$file" ]]; then
+              echo
+              echo "[$file result]"
+              grep -E 'BUILD SUCCESSFUL|BUILD FAILED|(^|[[:space:]])(e:|error:|FAILURE:|Caused by:|Execution failed for task|What went wrong:)' \
+                "$DIR/$file" | tail -n 85 || true
+            fi
+          done
+
+      - name: Upload diagnose
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nustrim-tv2-navigation-home-fix-2-diagnose
+          path: ${{ runner.temp }}/nustrim-nav-home-fix2
+          if-no-files-found: ignore
+          retention-days: 7
