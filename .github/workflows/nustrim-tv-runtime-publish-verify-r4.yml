@@ -1,0 +1,320 @@
+name: Nustrim TV Runtime Publish Verify R4
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: nustrim-tv-runtime-publish-verify-r4
+  cancel-in-progress: false
+
+env:
+  TARGET_VERSION: "0.21.2-tv-route-r4"
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Sync exact main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          git checkout -B main origin/main
+          git reset --hard origin/main
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "9.5.0"
+
+      - name: Runtime source truth audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/tv-r4"
+          mkdir -p "$DIR"
+
+          APP="app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt"
+          PREFS="app/src/main/java/app/nudroidlabs/nustrim/ui/UiPreferences.kt"
+
+          test -f "$APP"
+          test -f "$PREFS"
+          test -f app/src/main/java/app/nudroidlabs/nustrim/tv/TvApp.kt
+          test -f app/src/main/java/app/nudroidlabs/nustrim/tv/shell/TvShell.kt
+          test -f .github/workflows/build.yml
+          test -d app/src/main/java/app/nudroidlabs/nustrim/core/update
+
+          grep -q 'import app.nudroidlabs.nustrim.tv.TvApp' "$APP"
+          grep -q 'if (interfaceMode == InterfaceMode.TV)' "$APP"
+          grep -q 'TvApp(' "$APP"
+          grep -q 'switchInterfaceMode(InterfaceMode.MOBILE)' "$APP"
+          grep -q 'putString(KEY_INTERFACE_MODE, value.name).commit()' "$PREFS"
+
+          if grep -q 'interfaceMode == InterfaceMode.TV && !physicalTvDevice' "$APP"; then
+            echo "::error::Legacy TV canvas route still active."
+            exit 1
+          fi
+
+          if grep -q 'TvReferenceCanvas { screenContent() }' "$APP"; then
+            echo "::error::Legacy TvReferenceCanvas route still active."
+            exit 1
+          fi
+
+          {
+            echo "TV R4 SOURCE TRUTH"
+            echo "=================="
+            echo "sha=$(git rev-parse HEAD)"
+            grep -m1 'versionCode' app/build.gradle.kts || true
+            grep -m1 'versionName' app/build.gradle.kts || true
+            echo
+            echo "[route]"
+            grep -n -E 'TvApp\(|interfaceMode == InterfaceMode.TV|switchInterfaceMode\(InterfaceMode.MOBILE\)' "$APP" | head -n 80 || true
+            echo
+            echo "[preference]"
+            grep -n -A12 -B3 'var interfaceMode' "$PREFS" | head -n 40 || true
+          } > "$DIR/source-truth.txt"
+
+          cat "$DIR/source-truth.txt"
+
+      - name: Force unmistakable R4 version
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import re
+          
+          target = os.environ["TARGET_VERSION"]
+          path = Path("app/build.gradle.kts")
+          text = path.read_text(encoding="utf-8")
+          
+          cm = re.search(r'versionCode\s*=\s*(\d+)', text)
+          nm = re.search(r'versionName\s*=\s*"([^"]+)"', text)
+          if not cm or not nm:
+              raise SystemExit("version metadata missing")
+          
+          old_code = int(cm.group(1))
+          old_name = nm.group(1)
+          new_code = old_code if old_name == target else old_code + 1
+          
+          text = re.sub(
+              r'versionCode\s*=\s*\d+',
+              f'versionCode = {new_code}',
+              text,
+              count=1,
+          )
+          text = re.sub(
+              r'versionName\s*=\s*"[^"]+"',
+              f'versionName = "{target}"',
+              text,
+              count=1,
+          )
+          path.write_text(text, encoding="utf-8")
+          
+          print(f"versionName: {old_name} -> {target}")
+          print(f"versionCode: {old_code} -> {new_code}")
+          PY
+
+      - name: Compile R4
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          gradle --no-daemon --build-cache             :app:compileDebugKotlin             --stacktrace --console=plain             2>&1 | tee "$RUNNER_TEMP/tv-r4/compile.log"
+          code=${PIPESTATUS[0]}
+          set -e
+          if [[ "$code" -ne 0 ]]; then exit "$code"; fi
+
+      - name: Assemble R4
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle --no-daemon --build-cache             :app:assembleDebug             --stacktrace --console=plain             2>&1 | tee "$RUNNER_TEMP/tv-r4/assemble.log"
+
+      - name: Commit R4 version
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$RUNNER_TEMP/tv-r4/push.log") 2>&1
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add app/build.gradle.kts
+          git diff --cached --check
+
+          if ! git diff --cached --quiet; then
+            git commit -m "chore(tv): publish verified runtime R4"
+            git fetch --no-tags origin main
+            git rebase origin/main
+            git push origin HEAD:main
+          fi
+
+          git fetch --no-tags origin main
+          PUBLISHED_SHA="$(git rev-parse origin/main)"
+          echo "PUBLISHED_SHA=$PUBLISHED_SHA" >> "$GITHUB_ENV"
+          echo "Published source SHA: $PUBLISHED_SHA"
+
+      - name: Dispatch signed updater build
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/tv-r4"
+
+          BEFORE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "dispatch_time=$BEFORE" | tee "$DIR/dispatch.txt"
+
+          gh workflow run build.yml             --repo "$GITHUB_REPOSITORY"             --ref main             -f publish_release=true
+
+          sleep 8
+
+          RUN_ID=""
+          for attempt in $(seq 1 20); do
+            RUN_ID="$(
+              gh run list                 --repo "$GITHUB_REPOSITORY"                 --workflow build.yml                 --branch main                 --event workflow_dispatch                 --limit 20                 --json databaseId,headSha,createdAt,status                 --jq '.[] | select(.headSha == env.PUBLISHED_SHA) | .databaseId'                 | head -n1
+            )"
+
+            if [[ -n "$RUN_ID" ]]; then
+              break
+            fi
+
+            sleep 5
+          done
+
+          if [[ -z "$RUN_ID" ]]; then
+            echo "::error::Could not identify signed build run for SHA $PUBLISHED_SHA"
+            exit 1
+          fi
+
+          echo "signed_build_run_id=$RUN_ID" | tee -a "$DIR/dispatch.txt"
+          echo "SIGNED_RUN_ID=$RUN_ID" >> "$GITHUB_ENV"
+
+      - name: Wait for signed updater build
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/tv-r4"
+
+          gh run watch "$SIGNED_RUN_ID"             --repo "$GITHUB_REPOSITORY"             --exit-status             2>&1 | tee "$DIR/signed-build-watch.log"
+
+      - name: Verify published update manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/tv-r4"
+          MANIFEST="$DIR/update.json"
+
+          for attempt in $(seq 1 24); do
+            if curl               --fail               --location               --silent               --show-error               --header 'Cache-Control: no-cache'               "https://github.com/$GITHUB_REPOSITORY/releases/latest/download/update.json?ts=$(date +%s)"               --output "$MANIFEST"; then
+              if grep -q "\"versionName\":\"$TARGET_VERSION\"" "$MANIFEST" ||                  grep -q "\"versionName\": \"$TARGET_VERSION\"" "$MANIFEST"; then
+                break
+              fi
+            fi
+
+            sleep 5
+          done
+
+          test -s "$MANIFEST"
+          export MANIFEST_FILE="$MANIFEST"
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          import os
+          
+          target = os.environ["TARGET_VERSION"]
+          manifest = json.loads(Path(os.environ["MANIFEST_FILE"]).read_text(encoding="utf-8"))
+          
+          actual = manifest.get("versionName")
+          code = manifest.get("versionCode")
+          apk = manifest.get("apkUrl")
+          sha = manifest.get("sha256")
+          
+          if actual != target:
+              raise SystemExit(f"Published updater version mismatch: expected {target}, got {actual}")
+          if not isinstance(code, int) or code <= 0:
+              raise SystemExit(f"Invalid published versionCode: {code}")
+          if not isinstance(apk, str) or not apk:
+              raise SystemExit("Published apkUrl missing")
+          if not isinstance(sha, str) or len(sha) < 32:
+              raise SystemExit("Published sha256 missing/invalid")
+          
+          print("PASS: published versionName =", actual)
+          print("PASS: published versionCode =", code)
+          print("PASS: apkUrl present")
+          print("PASS: sha256 present")
+          PY
+
+          cat "$MANIFEST" | tee "$DIR/published-update.json"
+
+      - name: R4 success proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/tv-r4"
+
+          {
+            echo "TV R4 VERIFIED"
+            echo "=============="
+            echo "source_sha=$PUBLISHED_SHA"
+            echo "signed_run_id=$SIGNED_RUN_ID"
+            echo "target_version=$TARGET_VERSION"
+            echo "published_manifest=verified"
+            echo
+            echo "This workflow only succeeds after the signed updater build"
+            echo "finishes successfully and update.json exposes TARGET_VERSION."
+          } | tee "$DIR/success-proof.txt"
+
+      - name: Compact failure summary
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          DIR="$RUNNER_TEMP/tv-r4"
+          echo "========== TV Runtime Publish Verify R4 =========="
+          echo "Result: FAILED"
+          for file in source-truth.txt push.log dispatch.txt signed-build-watch.log published-update.json; do
+            if [[ -f "$DIR/$file" ]]; then
+              echo
+              echo "[$file]"
+              tail -n 180 "$DIR/$file" || true
+            fi
+          done
+          for file in compile.log assemble.log; do
+            if [[ -f "$DIR/$file" ]]; then
+              echo
+              echo "[$file result]"
+              grep -E                 'BUILD SUCCESSFUL|BUILD FAILED|(^|[[:space:]])(e:|error:|FAILURE:|Caused by:|Execution failed for task|What went wrong:)'                 "$DIR/$file" | tail -n 200 || true
+            fi
+          done
+
+      - name: Upload diagnose
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nustrim-tv-runtime-publish-verify-r4-diagnose
+          path: ${{ runner.temp }}/tv-r4
+          if-no-files-found: ignore
+          retention-days: 7
