@@ -1,0 +1,580 @@
+name: Nustrim TV2 Sidebar Fix 1 R4
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: nustrim-tv2-sidebar-fix-1-r4
+  cancel-in-progress: false
+
+env:
+  TV2_VERSION: "0.17.0-tv2-rc8"
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Sync main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          git checkout -B main origin/main
+          git reset --hard origin/main
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "9.5.0"
+
+      - name: Snapshot exact sidebar source
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/nustrim-sidebar-r4"
+          mkdir -p "$DIR"
+          cp app/src/main/java/app/nudroidlabs/nustrim/tv2/shell/NustrimTv2Shell.kt "$DIR/NustrimTv2Shell.before.kt"
+          {
+            echo "NUSTRIM TV2 SIDEBAR FIX 1 R4"
+            echo "sha=$(git rev-parse HEAD)"
+            cat .nustrim-tv2 2>/dev/null || true
+            grep -m1 'versionName' app/build.gradle.kts 2>/dev/null || true
+            echo
+            grep -n -E 'text *= *"N"|val fill|Tv2Colors\.Focus|Tv2Colors\.Selection|onPreviewKeyEvent|fun Tv2RailItem|fun NustrimTv2Shell' \
+              app/src/main/java/app/nudroidlabs/nustrim/tv2/shell/NustrimTv2Shell.kt || true
+          } > "$DIR/preflight.txt"
+
+          test -f app/src/main/java/app/nudroidlabs/nustrim/tv2/shell/NustrimTv2Shell.kt
+          test -f app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt
+          grep -q 'fun NustrimTv2Shell(' app/src/main/java/app/nudroidlabs/nustrim/tv2/shell/NustrimTv2Shell.kt
+          grep -q 'fun Tv2RailItem(' app/src/main/java/app/nudroidlabs/nustrim/tv2/shell/NustrimTv2Shell.kt
+          grep -q 'fun MainShell(' app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt
+
+      - name: Patch sidebar
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' 2>&1 | tee "$RUNNER_TEMP/nustrim-sidebar-r4/patch.log"
+          from pathlib import Path
+          import re
+          
+          shell_path = Path("app/src/main/java/app/nudroidlabs/nustrim/tv2/shell/NustrimTv2Shell.kt")
+          app_path = Path("app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt")
+          shell = shell_path.read_text(encoding="utf-8")
+          app = app_path.read_text(encoding="utf-8")
+          
+          def find_function(text: str, name: str):
+              m = re.search(rf'\bfun\s+{re.escape(name)}\s*\(', text)
+              if not m:
+                  raise SystemExit(f"Function {name} not found")
+              brace = text.find("{", m.end())
+              if brace < 0:
+                  raise SystemExit(f"Function {name} body not found")
+              depth = 0
+              in_string = False
+              escape = False
+              for i in range(brace, len(text)):
+                  ch = text[i]
+                  if in_string:
+                      if escape:
+                          escape = False
+                      elif ch == "\\":
+                          escape = True
+                      elif ch == '"':
+                          in_string = False
+                      continue
+                  if ch == '"':
+                      in_string = True
+                      continue
+                  if ch == "{":
+                      depth += 1
+                  elif ch == "}":
+                      depth -= 1
+                      if depth == 0:
+                          return m.start(), i + 1
+              raise SystemExit(f"Function {name} closing brace not found")
+          
+          # Patch NustrimTv2Shell inline brand and rail call.
+          s0, s1 = find_function(shell, "NustrimTv2Shell")
+          root = shell[s0:s1]
+          
+          # Hide the collapsed N logo without assuming a separate brand component.
+          root, n_logo = re.subn(
+              r'text\s*=\s*"N"\s*,',
+              'text = if (railExpanded) "N" else "",',
+              root,
+              count=1,
+          )
+          if n_logo != 1 and 'text = if (railExpanded) "N" else ""' not in root:
+              raise SystemExit('Inline N logo text not found')
+          
+          # Replace transparent expansion gradient with a stable solid rail background.
+          root = re.sub(
+              r'(?ms)\.background\(\s*Brush\.horizontalGradient\(.*?Color\.Transparent.*?\)\s*\)',
+              '.background(Tv2Colors.Rail)',
+              root,
+              count=1,
+          )
+          
+          # Add onMoveRight callback to shell signature.
+          header_end = root.find("{")
+          header = root[:header_end]
+          if "onMoveRight:" not in header:
+              header, count = re.subn(
+                  r'(onDestinationSelected\s*:\s*\(String\)\s*->\s*Unit\s*,)',
+                  r'\1\n    onMoveRight: () -> Unit,',
+                  header,
+                  count=1,
+              )
+              if count != 1:
+                  raise SystemExit("Unable to add onMoveRight to NustrimTv2Shell")
+              root = header + root[header_end:]
+          
+          # Add callback to Tv2RailItem call.
+          if "onMoveRight = onMoveRight" not in root:
+              root, count = re.subn(
+                  r'(Tv2RailItem\(\s*.*?expanded\s*=\s*railExpanded\s*,)',
+                  r'\1\n                            onMoveRight = onMoveRight,',
+                  root,
+                  count=1,
+                  flags=re.S,
+              )
+              if count != 1:
+                  raise SystemExit("Unable to wire onMoveRight into Tv2RailItem call")
+          
+          shell = shell[:s0] + root + shell[s1:]
+          
+          # Patch Tv2RailItem itself.
+          r0, r1 = find_function(shell, "Tv2RailItem")
+          rail = shell[r0:r1]
+          
+          header_end = rail.find("{")
+          header = rail[:header_end]
+          if "onMoveRight:" not in header:
+              header, count = re.subn(
+                  r'(expanded\s*:\s*Boolean\s*,)',
+                  r'\1\n    onMoveRight: () -> Unit,',
+                  header,
+                  count=1,
+              )
+              if count != 1:
+                  raise SystemExit("Unable to add onMoveRight to Tv2RailItem")
+              rail = header + rail[header_end:]
+          
+          # Remove scale declaration and modifier.
+          rail = re.sub(
+              r'(?ms)^\s*val\s+scale\s+by\s+animateFloatAsState\(.*?label\s*=\s*"tv2-rail-item-scale"\s*\)\s*',
+              '',
+              rail,
+              count=1,
+          )
+          rail = re.sub(r'(?m)^\s*\.scale\(scale\)\s*$', '', rail, count=1)
+          
+          # Remove thin focused border.
+          rail = re.sub(
+              r'(?ms)\s*\.then\(\s*if\s*\(focused\)\s*Modifier\.border\(.*?FocusStroke.*?\)\s*else\s*Modifier\s*\)',
+              '',
+              rail,
+              count=1,
+          )
+          
+          # Change semantic branches line-by-line instead of parsing the when block.
+          rail, selected_count = re.subn(
+              r'(?m)^(\s*)selected\s*->\s*Tv2Colors\.Selection\s*$',
+              r'\1selected -> Color.White',
+              rail,
+              count=1,
+          )
+          rail, focused_count = re.subn(
+              r'(?m)^(\s*)focused\s*->\s*Tv2Colors\.Focus\s*$',
+              r'\1focused -> Color.White.copy(alpha = 0.10f)',
+              rail,
+              count=1,
+          )
+          
+          # Some snapshots may order focused before selected or use trailing commas.
+          if selected_count == 0:
+              rail, selected_count = re.subn(
+                  r'(?m)^(\s*)selected\s*->\s*Tv2Colors\.Selection\s*,?\s*$',
+                  r'\1selected -> Color.White',
+                  rail,
+                  count=1,
+              )
+          if focused_count == 0:
+              rail, focused_count = re.subn(
+                  r'(?m)^(\s*)focused\s*->\s*Tv2Colors\.Focus\s*,?\s*$',
+                  r'\1focused -> Color.White.copy(alpha = 0.10f)',
+                  rail,
+                  count=1,
+              )
+          
+          if selected_count != 1 and "selected -> Color.White" not in rail:
+              raise SystemExit("Selected marker branch not found")
+          if focused_count != 1 and "focused -> Color.White.copy(alpha = 0.10f)" not in rail:
+              raise SystemExit("Focused marker branch not found")
+          
+          # Selected marker is white, so selected icon/text should be dark.
+          rail = re.sub(
+              r'tint\s*=\s*if\s*\(selected\s*\|\|\s*focused\)\s*Tv2Colors\.ContentPrimary\s*else\s*Tv2Colors\.ContentSecondary\s*,',
+              'tint = when {\n'
+              '                selected -> Tv2Colors.Background\n'
+              '                focused -> Tv2Colors.ContentPrimary\n'
+              '                else -> Tv2Colors.ContentSecondary\n'
+              '            },',
+              rail,
+              count=1,
+          )
+          rail = re.sub(
+              r'color\s*=\s*if\s*\(selected\s*\|\|\s*focused\)\s*Tv2Colors\.ContentPrimary\s*else\s*Tv2Colors\.ContentSecondary\s*,',
+              'color = when {\n'
+              '                    selected -> Tv2Colors.Background\n'
+              '                    focused -> Tv2Colors.ContentPrimary\n'
+              '                    else -> Tv2Colors.ContentSecondary\n'
+              '                },',
+              rail,
+              count=1,
+          )
+          rail = re.sub(
+              r'fontWeight\s*=\s*if\s*\(selected\)\s*FontWeight\.SemiBold\s*else\s*FontWeight\.Medium\s*,',
+              'fontWeight = if (selected || focused) FontWeight.SemiBold else FontWeight.Medium,',
+              rail,
+              count=1,
+          )
+          
+          # Replace existing OK handler with Right + OK handler.
+          if "Key.DirectionRight" not in rail:
+              key_start = rail.find(".onPreviewKeyEvent")
+              if key_start < 0:
+                  raise SystemExit("Tv2RailItem key handler not found")
+              brace = rail.find("{", key_start)
+              depth = 0
+              in_string = False
+              escape = False
+              key_end = None
+              for i in range(brace, len(rail)):
+                  ch = rail[i]
+                  if in_string:
+                      if escape:
+                          escape = False
+                      elif ch == "\\":
+                          escape = True
+                      elif ch == '"':
+                          in_string = False
+                      continue
+                  if ch == '"':
+                      in_string = True
+                      continue
+                  if ch == "{":
+                      depth += 1
+                  elif ch == "}":
+                      depth -= 1
+                      if depth == 0:
+                          key_end = i + 1
+                          break
+              if key_end is None:
+                  raise SystemExit("Tv2RailItem key handler end not found")
+          
+              replacement = (
+                  ".onPreviewKeyEvent { event ->\n"
+                  "                when {\n"
+                  "                    event.type == KeyEventType.KeyDown && event.key == Key.DirectionRight -> {\n"
+                  "                        onMoveRight()\n"
+                  "                        true\n"
+                  "                    }\n"
+                  "                    (event.key == Key.DirectionCenter || event.key == Key.Enter) &&\n"
+                  "                        event.type == KeyEventType.KeyDown -> {\n"
+                  "                        onClick()\n"
+                  "                        true\n"
+                  "                    }\n"
+                  "                    else -> false\n"
+                  "                }\n"
+                  "            }"
+              )
+              rail = rail[:key_start] + replacement + rail[key_end:]
+          
+          shell = shell[:r0] + rail + shell[r1:]
+          
+          # Patch MainShell with a page-content focus token.
+          m0, m1 = find_function(app, "MainShell")
+          main = app[m0:m1]
+          
+          if "tvContentFocusToken" not in main:
+              state_match = re.search(r'(?m)^(\s*var\s+tv2RailExpanded\s+by\s+remember.*)$', main)
+              if not state_match:
+                  raise SystemExit("tv2RailExpanded state not found in MainShell")
+              line = state_match.group(1)
+              main = main[:state_match.start()] + line + \
+                  "\n    var tvContentFocusToken by remember { mutableIntStateOf(0) }" + \
+                  main[state_match.end():]
+          
+          call_start = main.find("NustrimTv2Shell(")
+          if call_start < 0:
+              raise SystemExit("NustrimTv2Shell call not found in MainShell")
+          
+          if "onMoveRight = {" not in main[call_start:]:
+              dest = re.search(
+                  r'(?ms)onDestinationSelected\s*=\s*\{\s*key\s*->.*?\n\s*\}',
+                  main[call_start:],
+              )
+              if not dest:
+                  raise SystemExit("onDestinationSelected callback not found")
+              abs_start = call_start + dest.start()
+              abs_end = call_start + dest.end()
+              old = main[abs_start:abs_end]
+              new = old + (
+                  ",\n        onMoveRight = {\n"
+                  "            tv2RailExpanded = false\n"
+                  "            tvContentFocusToken += 1\n"
+                  "        }"
+              )
+              main = main[:abs_start] + new + main[abs_end:]
+          
+          main = re.sub(
+              r'content\(\s*true\s*(?:,\s*[A-Za-z0-9_]+)?\s*\)',
+              'content(true, tvContentFocusToken)',
+              main,
+              count=1,
+          )
+          
+          if "content(true, tvContentFocusToken)" not in main:
+              raise SystemExit("Page-content focus token was not passed")
+          
+          app = app[:m0] + main + app[m1:]
+          
+          # Remove imports only if now unused.
+          for symbol, import_line in (
+              ("animateFloatAsState", "import androidx.compose.animation.core.animateFloatAsState\n"),
+              (".border(", "import androidx.compose.foundation.border\n"),
+              (".scale(", "import androidx.compose.ui.draw.scale\n"),
+              ("Brush.", "import androidx.compose.ui.graphics.Brush\n"),
+          ):
+              body_without_import = shell.replace(import_line, "")
+              if symbol not in body_without_import:
+                  shell = shell.replace(import_line, "")
+          
+          checks = {
+              "collapsed N hidden": 'text = if (railExpanded) "N" else ""' in shell,
+              "selected marker white": "selected -> Color.White" in shell,
+              "focused item soft": "focused -> Color.White.copy(alpha = 0.10f)" in shell,
+              "right key": "Key.DirectionRight" in shell,
+              "rail handoff": "onMoveRight = onMoveRight" in shell,
+              "main focus token": "tvContentFocusToken += 1" in app,
+              "content receives token": "content(true, tvContentFocusToken)" in app,
+          }
+          failed = [name for name, ok in checks.items() if not ok]
+          if failed:
+              raise SystemExit("Contract failure: " + ", ".join(failed))
+          
+          if ".scale(scale)" in shell:
+              raise SystemExit("Scale modifier still exists")
+          
+          shell_path.write_text(shell, encoding="utf-8")
+          app_path.write_text(app, encoding="utf-8")
+          
+          for name in checks:
+              print("PASS:", name)
+          PY
+          code=${PIPESTATUS[0]}
+          if [[ "$code" -ne 0 ]]; then exit "$code"; fi
+
+      - name: Safe repo cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/nustrim-sidebar-r4"
+          echo "SAFE CLEANUP" > "$DIR/cleanup.log"
+
+          # Delete only tracked temp/merge leftovers. Never app source or workflow YAML.
+          while IFS= read -r file; do
+            case "$file" in
+              *.tmp|*.bak|*.orig|*.rej)
+                rm -f "$file"
+                echo "REMOVED: $file" >> "$DIR/cleanup.log"
+                ;;
+            esac
+          done < <(git ls-files)
+
+          echo "GUARD: app/src source files preserved" >> "$DIR/cleanup.log"
+          echo "GUARD: .github/workflows preserved" >> "$DIR/cleanup.log"
+          cat "$DIR/cleanup.log"
+
+      - name: Advance RC8 metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' 2>&1 | tee "$RUNNER_TEMP/nustrim-sidebar-r4/metadata.log"
+          from pathlib import Path
+          import os, re
+          target = os.environ["TV2_VERSION"]
+          p = Path("app/build.gradle.kts")
+          t = p.read_text(encoding="utf-8")
+          cm = re.search(r'versionCode\s*=\s*(\d+)', t)
+          nm = re.search(r'versionName\s*=\s*"([^"]+)"', t)
+          if not cm or not nm:
+              raise SystemExit("Version metadata missing")
+          old_code = int(cm.group(1))
+          old_name = nm.group(1)
+          new_code = old_code if old_name == target else old_code + 1
+          t = re.sub(r'versionCode\s*=\s*\d+', f'versionCode = {new_code}', t, count=1)
+          t = re.sub(r'versionName\s*=\s*"[^"]+"', f'versionName = "{target}"', t, count=1)
+          p.write_text(t, encoding="utf-8")
+          Path(".nustrim-version").write_text(target + "\n", encoding="utf-8")
+          m = Path(".nustrim-tv2")
+          lines = m.read_text(encoding="utf-8").splitlines()
+          seen = False
+          out = []
+          for line in lines:
+              if line.startswith("stage="):
+                  out.append("stage=8")
+                  seen = True
+              else:
+                  out.append(line)
+          if not seen:
+              out.append("stage=8")
+          m.write_text("\n".join(out) + "\n", encoding="utf-8")
+          print(f"versionName: {old_name} -> {target}")
+          print(f"versionCode: {old_code} -> {new_code}")
+          print("stage=8")
+          PY
+
+      - name: Audit patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/nustrim-sidebar-r4"
+          SHELL="app/src/main/java/app/nudroidlabs/nustrim/tv2/shell/NustrimTv2Shell.kt"
+          APP="app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt"
+
+          cp "$SHELL" "$DIR/NustrimTv2Shell.after.kt"
+
+          grep -q 'text = if (railExpanded) "N" else ""' "$SHELL"
+          grep -q 'selected -> Color.White' "$SHELL"
+          grep -q 'focused -> Color.White.copy(alpha = 0.10f)' "$SHELL"
+          grep -q 'Key.DirectionRight' "$SHELL"
+          grep -q 'onMoveRight = onMoveRight' "$SHELL"
+          grep -q 'tvContentFocusToken += 1' "$APP"
+          grep -q 'content(true, tvContentFocusToken)' "$APP"
+          ! grep -q '\.scale(scale)' "$SHELL"
+
+          if grep -R -n -E 'NuBrowse|NuBrowseApp|app\.nubrowse' app/src/main app/build.gradle.kts 2>/dev/null; then
+            echo "::error::NuBrowse runtime contamination detected."
+            exit 1
+          fi
+
+          git diff --check
+
+          {
+            echo "PASS: sidebar R4 structural audit"
+            git status --short
+            git diff --stat
+          } > "$DIR/audit.txt"
+          cat "$DIR/audit.txt"
+          git diff > "$DIR/sidebar-r4.patch"
+
+      - name: Compile Kotlin
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          gradle --no-daemon --build-cache :app:compileDebugKotlin --stacktrace --console=plain \
+            2>&1 | tee "$RUNNER_TEMP/nustrim-sidebar-r4/compile.log"
+          code=${PIPESTATUS[0]}
+          set -e
+          if [[ "$code" -ne 0 ]]; then exit "$code"; fi
+
+      - name: Assemble debug
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          gradle --no-daemon --build-cache :app:assembleDebug --stacktrace --console=plain \
+            2>&1 | tee "$RUNNER_TEMP/nustrim-sidebar-r4/assemble.log"
+          code=${PIPESTATUS[0]}
+          set -e
+          if [[ "$code" -ne 0 ]]; then exit "$code"; fi
+
+      - name: Commit and push
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$RUNNER_TEMP/nustrim-sidebar-r4/push.log") 2>&1
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+          git diff --cached --check
+          if git diff --cached --quiet; then
+            echo "Nothing to commit."
+          else
+            git commit -m "fix(tv2): correct sidebar behavior"
+            git fetch --no-tags origin main
+            if ! git merge-base --is-ancestor origin/main HEAD; then
+              git rebase origin/main
+            fi
+            git push origin HEAD:main
+          fi
+
+      - name: Dispatch signed updater
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run build.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            -f publish_release=true \
+            2>&1 | tee "$RUNNER_TEMP/nustrim-sidebar-r4/dispatch.log"
+
+      - name: Compact failure summary
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          DIR="$RUNNER_TEMP/nustrim-sidebar-r4"
+          echo "========== Nustrim TV2 Sidebar Fix 1 R4 Summary =========="
+          echo "Result: FAILED"
+          cat .nustrim-tv2 2>/dev/null || true
+          grep -m1 'versionName' app/build.gradle.kts 2>/dev/null || true
+          for file in preflight.txt patch.log cleanup.log metadata.log audit.txt push.log dispatch.log; do
+            if [[ -f "$DIR/$file" ]]; then
+              echo
+              echo "[$file]"
+              tail -n 60 "$DIR/$file"
+            fi
+          done
+          for file in compile.log assemble.log; do
+            if [[ -f "$DIR/$file" ]]; then
+              echo
+              echo "[$file result]"
+              grep -E 'BUILD SUCCESSFUL|BUILD FAILED|(^|[[:space:]])(e:|error:|FAILURE:|Caused by:|Execution failed for task|What went wrong:)' \
+                "$DIR/$file" | tail -n 70 || true
+            fi
+          done
+
+      - name: Upload diagnose
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nustrim-tv2-sidebar-fix-1-r4-diagnose
+          path: ${{ runner.temp }}/nustrim-sidebar-r4
+          if-no-files-found: ignore
+          retention-days: 7
