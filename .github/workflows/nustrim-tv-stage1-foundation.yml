@@ -1,0 +1,400 @@
+name: Nustrim TV Stage 1 Foundation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: nustrim-tv-stage1-foundation
+  cancel-in-progress: false
+
+env:
+  STAGE_VERSION: "0.19.0-tv-stage1"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Sync exact main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          git checkout -B main origin/main
+          git reset --hard origin/main
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "9.5.0"
+
+      - name: Protect Mobile and updater baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/nustrim-tv-stage1"
+          mkdir -p "$DIR"
+
+          APP="app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt"
+          test -f "$APP"
+          test -f .github/workflows/build.yml
+          test -d app/src/main/java/app/nudroidlabs/nustrim/core/update
+
+          sha256sum .github/workflows/build.yml > "$DIR/build.before"
+          find app/src/main/java/app/nudroidlabs/nustrim/core/update -type f -print0             | sort -z | xargs -0 sha256sum > "$DIR/updater.before"
+
+          cp "$APP" "$DIR/NustrimApp.before.kt"
+
+          {
+            echo "TV STAGE 1 PREFLIGHT"
+            echo "===================="
+            echo "sha=$(git rev-parse HEAD)"
+            grep -m1 'versionName' app/build.gradle.kts || true
+            echo
+            echo "[legacy TV]"
+            grep -n -E 'tv2|NustrimTv2|Tv2[A-Za-z0-9_]*' "$APP" | head -n 80 || true
+            echo
+            echo "[routing anchors]"
+            grep -n -E 'InterfaceMode\.TV|switchInterfaceMode|MobileNavItem\(|AppUpdater\(context\)' "$APP" | head -n 80 || true
+          } > "$DIR/preflight.txt"
+
+          if grep -q -E 'app\.nudroidlabs\.nustrim\.tv2\.|NustrimTv2' "$APP"; then
+            echo "::error::Legacy TV2 presentation reference still exists."
+            exit 1
+          fi
+
+      - name: Create fresh TV foundation files
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          FILES = {'app/src/main/java/app/nudroidlabs/nustrim/tv/TvApp.kt': 'package app.nudroidlabs.nustrim.tv\n\nimport androidx.compose.runtime.Composable\nimport app.nudroidlabs.nustrim.tv.shell.TvShell\nimport app.nudroidlabs.nustrim.tv.theme.NustrimTvTheme\n\n@Composable\nfun TvApp(\n    onExit: () -> Unit\n) {\n    NustrimTvTheme {\n        TvShell(onExit = onExit)\n    }\n}\n', 'app/src/main/java/app/nudroidlabs/nustrim/tv/navigation/TvDestination.kt': 'package app.nudroidlabs.nustrim.tv.navigation\n\nimport androidx.compose.material.icons.Icons\nimport androidx.compose.material.icons.outlined.Home\nimport androidx.compose.material.icons.outlined.LibraryAdd\nimport androidx.compose.material.icons.outlined.Search\nimport androidx.compose.material.icons.outlined.Settings\nimport androidx.compose.ui.graphics.vector.ImageVector\n\nenum class TvDestination(\n    val label: String,\n    val icon: ImageVector\n) {\n    HOME("Home", Icons.Outlined.Home),\n    SEARCH("Search", Icons.Outlined.Search),\n    LIBRARY("Library", Icons.Outlined.LibraryAdd),\n    SETTINGS("Settings", Icons.Outlined.Settings)\n}\n', 'app/src/main/java/app/nudroidlabs/nustrim/tv/theme/TvTheme.kt': 'package app.nudroidlabs.nustrim.tv.theme\n\nimport androidx.compose.material3.MaterialTheme\nimport androidx.compose.material3.darkColorScheme\nimport androidx.compose.runtime.Composable\nimport androidx.compose.ui.graphics.Color\n\nobject TvColors {\n    val Background = Color(0xFF090A0C)\n    val BackgroundElevated = Color(0xFF111317)\n    val Surface = Color(0xFF181A1F)\n    val SurfaceVariant = Color(0xFF22252B)\n    val TextPrimary = Color(0xFFF3F3F5)\n    val TextSecondary = Color(0xFF9A9DA6)\n    val FocusBackground = Color(0xFF30333A)\n    val FocusRing = Color(0xFFE9E9EC)\n    val Accent = Color(0xFF7B6CF6)\n}\n\nprivate val TvColorScheme = darkColorScheme(\n    primary = TvColors.Accent,\n    onPrimary = Color.White,\n    background = TvColors.Background,\n    onBackground = TvColors.TextPrimary,\n    surface = TvColors.Surface,\n    onSurface = TvColors.TextPrimary,\n    surfaceVariant = TvColors.SurfaceVariant,\n    onSurfaceVariant = TvColors.TextSecondary,\n    outline = Color(0xFF34373E)\n)\n\n@Composable\nfun NustrimTvTheme(content: @Composable () -> Unit) {\n    MaterialTheme(\n        colorScheme = TvColorScheme,\n        content = content\n    )\n}\n', 'app/src/main/java/app/nudroidlabs/nustrim/tv/shell/TvShell.kt': 'package app.nudroidlabs.nustrim.tv.shell\n\nimport androidx.activity.compose.BackHandler\nimport androidx.compose.animation.animateColorAsState\nimport androidx.compose.animation.core.animateDpAsState\nimport androidx.compose.foundation.BorderStroke\nimport androidx.compose.foundation.background\nimport androidx.compose.foundation.clickable\nimport androidx.compose.foundation.focusable\nimport androidx.compose.foundation.layout.Arrangement\nimport androidx.compose.foundation.layout.Box\nimport androidx.compose.foundation.layout.Column\nimport androidx.compose.foundation.layout.Row\nimport androidx.compose.foundation.layout.Spacer\nimport androidx.compose.foundation.layout.fillMaxHeight\nimport androidx.compose.foundation.layout.fillMaxSize\nimport androidx.compose.foundation.layout.fillMaxWidth\nimport androidx.compose.foundation.layout.height\nimport androidx.compose.foundation.layout.padding\nimport androidx.compose.foundation.layout.size\nimport androidx.compose.foundation.layout.width\nimport androidx.compose.foundation.shape.RoundedCornerShape\nimport androidx.compose.material3.Icon\nimport androidx.compose.material3.MaterialTheme\nimport androidx.compose.material3.Surface\nimport androidx.compose.material3.Text\nimport androidx.compose.runtime.Composable\nimport androidx.compose.runtime.LaunchedEffect\nimport androidx.compose.runtime.getValue\nimport androidx.compose.runtime.mutableStateOf\nimport androidx.compose.runtime.remember\nimport androidx.compose.runtime.setValue\nimport androidx.compose.ui.Alignment\nimport androidx.compose.ui.Modifier\nimport androidx.compose.ui.focus.FocusRequester\nimport androidx.compose.ui.focus.focusRequester\nimport androidx.compose.ui.focus.onFocusChanged\nimport androidx.compose.ui.input.key.Key\nimport androidx.compose.ui.input.key.KeyEventType\nimport androidx.compose.ui.input.key.key\nimport androidx.compose.ui.input.key.onPreviewKeyEvent\nimport androidx.compose.ui.input.key.type\nimport androidx.compose.ui.text.font.FontWeight\nimport androidx.compose.ui.unit.dp\nimport androidx.compose.ui.unit.sp\nimport app.nudroidlabs.nustrim.tv.navigation.TvDestination\nimport app.nudroidlabs.nustrim.tv.theme.TvColors\n\n@Composable\nfun TvShell(\n    onExit: () -> Unit\n) {\n    var selected by remember { mutableStateOf(TvDestination.HOME) }\n    var sidebarExpanded by remember { mutableStateOf(true) }\n\n    val sidebarRequesters = remember {\n        TvDestination.entries.associateWith { FocusRequester() }\n    }\n    val contentRequester = remember { FocusRequester() }\n\n    fun focusSidebar() {\n        sidebarExpanded = true\n        sidebarRequesters.getValue(selected).requestFocus()\n    }\n\n    fun focusContent() {\n        sidebarExpanded = false\n        contentRequester.requestFocus()\n    }\n\n    LaunchedEffect(Unit) {\n        sidebarRequesters.getValue(selected).requestFocus()\n    }\n\n    BackHandler {\n        if (sidebarExpanded) onExit() else focusSidebar()\n    }\n\n    Row(\n        modifier = Modifier\n            .fillMaxSize()\n            .background(TvColors.Background)\n    ) {\n        TvSidebar(\n            selected = selected,\n            expanded = sidebarExpanded,\n            requesters = sidebarRequesters,\n            onSelected = { destination ->\n                selected = destination\n                sidebarExpanded = true\n            },\n            onMoveRight = { focusContent() }\n        )\n\n        TvStagePlaceholder(\n            destination = selected,\n            focusRequester = contentRequester,\n            onMoveLeft = { focusSidebar() },\n            modifier = Modifier\n                .fillMaxHeight()\n                .fillMaxWidth()\n        )\n    }\n}\n\n@Composable\nprivate fun TvSidebar(\n    selected: TvDestination,\n    expanded: Boolean,\n    requesters: Map<TvDestination, FocusRequester>,\n    onSelected: (TvDestination) -> Unit,\n    onMoveRight: () -> Unit\n) {\n    val width by animateDpAsState(\n        targetValue = if (expanded) 236.dp else 78.dp,\n        label = "tvSidebarWidth"\n    )\n\n    Column(\n        modifier = Modifier\n            .width(width)\n            .fillMaxHeight()\n            .background(TvColors.BackgroundElevated)\n            .padding(horizontal = 12.dp, vertical = 28.dp),\n        verticalArrangement = Arrangement.spacedBy(10.dp)\n    ) {\n        if (expanded) {\n            Text(\n                text = "NUSTRIM",\n                style = MaterialTheme.typography.titleLarge,\n                fontWeight = FontWeight.Bold,\n                color = TvColors.TextPrimary,\n                modifier = Modifier.padding(horizontal = 12.dp)\n            )\n            Spacer(Modifier.height(18.dp))\n        } else {\n            Spacer(Modifier.height(46.dp))\n        }\n\n        TvDestination.entries.forEach { destination ->\n            TvSidebarItem(\n                destination = destination,\n                selected = destination == selected,\n                expanded = expanded,\n                focusRequester = requesters.getValue(destination),\n                onSelected = { onSelected(destination) },\n                onMoveRight = onMoveRight\n            )\n        }\n    }\n}\n\n@Composable\nprivate fun TvSidebarItem(\n    destination: TvDestination,\n    selected: Boolean,\n    expanded: Boolean,\n    focusRequester: FocusRequester,\n    onSelected: () -> Unit,\n    onMoveRight: () -> Unit\n) {\n    var focused by remember { mutableStateOf(false) }\n\n    val background by animateColorAsState(\n        targetValue = if (focused || selected) {\n            TvColors.FocusBackground\n        } else {\n            androidx.compose.ui.graphics.Color.Transparent\n        },\n        label = "tvSidebarItemBackground"\n    )\n\n    val ring by animateColorAsState(\n        targetValue = if (focused) {\n            TvColors.FocusRing\n        } else {\n            androidx.compose.ui.graphics.Color.Transparent\n        },\n        label = "tvSidebarItemRing"\n    )\n\n    Surface(\n        modifier = Modifier\n            .fillMaxWidth()\n            .height(52.dp)\n            .focusRequester(focusRequester)\n            .onFocusChanged { state -> focused = state.hasFocus }\n            .onPreviewKeyEvent { event ->\n                if (\n                    event.type == KeyEventType.KeyDown &&\n                    event.key == Key.DirectionRight\n                ) {\n                    onMoveRight()\n                    true\n                } else {\n                    false\n                }\n            }\n            .clickable(onClick = onSelected)\n            .focusable(),\n        shape = RoundedCornerShape(12.dp),\n        color = background,\n        border = BorderStroke(1.dp, ring)\n    ) {\n        Row(\n            modifier = Modifier\n                .fillMaxSize()\n                .padding(horizontal = 14.dp),\n            verticalAlignment = Alignment.CenterVertically,\n            horizontalArrangement = Arrangement.spacedBy(14.dp)\n        ) {\n            Box(\n                modifier = Modifier\n                    .size(30.dp)\n                    .background(\n                        TvColors.SurfaceVariant,\n                        RoundedCornerShape(9.dp)\n                    ),\n                contentAlignment = Alignment.Center\n            ) {\n                Icon(\n                    imageVector = destination.icon,\n                    contentDescription = destination.label,\n                    tint = TvColors.TextPrimary,\n                    modifier = Modifier.size(18.dp)\n                )\n            }\n\n            if (expanded) {\n                Text(\n                    text = destination.label,\n                    color = if (focused || selected) {\n                        TvColors.TextPrimary\n                    } else {\n                        TvColors.TextSecondary\n                    },\n                    fontWeight = if (selected) {\n                        FontWeight.SemiBold\n                    } else {\n                        FontWeight.Normal\n                    },\n                    fontSize = 16.sp\n                )\n            }\n        }\n    }\n}\n\n@Composable\nprivate fun TvStagePlaceholder(\n    destination: TvDestination,\n    focusRequester: FocusRequester,\n    onMoveLeft: () -> Unit,\n    modifier: Modifier = Modifier\n) {\n    Box(\n        modifier = modifier.padding(horizontal = 42.dp, vertical = 34.dp),\n        contentAlignment = Alignment.TopStart\n    ) {\n        Surface(\n            modifier = Modifier\n                .fillMaxWidth()\n                .focusRequester(focusRequester)\n                .onPreviewKeyEvent { event ->\n                    if (\n                        event.type == KeyEventType.KeyDown &&\n                        event.key == Key.DirectionLeft\n                    ) {\n                        onMoveLeft()\n                        true\n                    } else {\n                        false\n                    }\n                }\n                .focusable(),\n            shape = RoundedCornerShape(18.dp),\n            color = TvColors.Surface.copy(alpha = 0.86f),\n            border = BorderStroke(\n                1.dp,\n                TvColors.FocusRing.copy(alpha = 0.18f)\n            )\n        ) {\n            Column(\n                modifier = Modifier.padding(\n                    horizontal = 34.dp,\n                    vertical = 30.dp\n                ),\n                verticalArrangement = Arrangement.spacedBy(8.dp)\n            ) {\n                Text(\n                    text = destination.label,\n                    style = MaterialTheme.typography.headlineMedium,\n                    fontWeight = FontWeight.SemiBold,\n                    color = TvColors.TextPrimary\n                )\n                Text(\n                    text = "TV foundation ready. Content will be connected in the next stage.",\n                    color = TvColors.TextSecondary,\n                    fontSize = 15.sp\n                )\n            }\n        }\n    }\n}\n'}
+
+          for raw_path, content in FILES.items():
+              path = Path(raw_path)
+              path.parent.mkdir(parents=True, exist_ok=True)
+              path.write_text(content, encoding='utf-8')
+              print('WRITE:', path)
+          PY
+
+      - name: Integrate TV route into root app
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' 2>&1 | tee "$RUNNER_TEMP/nustrim-tv-stage1/root-patch.log"
+          from pathlib import Path
+          import re
+
+          APP = Path("app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt")
+          text = APP.read_text(encoding="utf-8")
+
+          if "app.nudroidlabs.nustrim.tv2." in text or "NustrimTv2" in text:
+              raise SystemExit("Legacy TV2 reference still exists in NustrimApp.kt.")
+
+          required = [
+              "InterfaceMode.TV",
+              "InterfaceMode.MOBILE",
+              "fun switchInterfaceMode",
+              "val activity = context.findActivity()",
+          ]
+          missing = [token for token in required if token not in text]
+          if missing:
+              raise SystemExit("Required compatibility anchor missing: " + ", ".join(missing))
+
+          import_line = "import app.nudroidlabs.nustrim.tv.TvApp\n"
+          if import_line not in text:
+              package_end = text.find("\n", text.find("package "))
+              if package_end < 0:
+                  raise SystemExit("Package declaration missing")
+              text = text[:package_end + 1] + "\n" + import_line + text[package_end + 1:]
+
+          if "TvApp(" not in text:
+              marker = "Surface(modifier = Modifier.fillMaxSize(), color = AppBackground) {"
+              positions = [m.start() for m in re.finditer(re.escape(marker), text)]
+              app_start = text.find("fun NustrimApp()")
+              activity_fun = text.find("private tailrec fun Context.findActivity", app_start)
+              candidates = [p for p in positions if app_start < p < activity_fun]
+              if not candidates:
+                  raise SystemExit("No root Surface found inside NustrimApp")
+              start = candidates[-1]
+
+              brace = text.find("{", start)
+              depth = 0
+              i = brace
+              in_string = False
+              escape = False
+              while i < len(text):
+                  ch = text[i]
+                  if in_string:
+                      if escape:
+                          escape = False
+                      elif ch == "\\":
+                          escape = True
+                      elif ch == '"':
+                          in_string = False
+                      i += 1
+                      continue
+                  if ch == '"':
+                      in_string = True
+                  elif ch == "{":
+                      depth += 1
+                  elif ch == "}":
+                      depth -= 1
+                      if depth == 0:
+                          end = i + 1
+                          break
+                  i += 1
+              else:
+                  raise SystemExit("Root Surface block unbalanced")
+
+              mobile_surface = text[start:end]
+              indented_mobile = "\n".join(
+                  ("                " + line) if line else line
+                  for line in mobile_surface.splitlines()
+              )
+
+              route = (
+                  "if (interfaceMode == InterfaceMode.TV) {\n"
+                  "                TvApp(\n"
+                  "                    onExit = {\n"
+                  "                        if (physicalTvDevice) {\n"
+                  "                            activity?.finish()\n"
+                  "                        } else {\n"
+                  "                            switchInterfaceMode(InterfaceMode.MOBILE)\n"
+                  "                        }\n"
+                  "                    }\n"
+                  "                )\n"
+                  "            } else {\n"
+                  + indented_mobile +
+                  "\n            }"
+              )
+              text = text[:start] + route + text[end:]
+
+          checks = {
+              "TvApp import": "import app.nudroidlabs.nustrim.tv.TvApp" in text,
+              "TV route": "if (interfaceMode == InterfaceMode.TV)" in text,
+              "Mobile fallback": "switchInterfaceMode(InterfaceMode.MOBILE)" in text,
+              "Mobile shell retained": "MobileNavItem(" in text,
+              "Updater retained": "AppUpdater(context)" in text and "UpdateSettingsScreen" in text,
+          }
+          failed = [name for name, ok in checks.items() if not ok]
+          if failed:
+              raise SystemExit("Stage 1 root contract failed: " + ", ".join(failed))
+
+          text = re.sub(r'(?m)^[ \t]+$', '', text)
+          APP.write_text(text, encoding="utf-8")
+
+          for name in checks:
+              print("PASS:", name)
+          PY
+
+      - name: Stage 1 architecture audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/nustrim-tv-stage1"
+          APP="app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt"
+
+          test -f app/src/main/java/app/nudroidlabs/nustrim/tv/TvApp.kt
+          test -f app/src/main/java/app/nudroidlabs/nustrim/tv/navigation/TvDestination.kt
+          test -f app/src/main/java/app/nudroidlabs/nustrim/tv/theme/TvTheme.kt
+          test -f app/src/main/java/app/nudroidlabs/nustrim/tv/shell/TvShell.kt
+
+          test ! -d app/src/main/java/app/nudroidlabs/nustrim/tv2
+          test ! -d app/src/main/java/app/nudroidlabs/nustrim/tv3
+
+          grep -q 'import app.nudroidlabs.nustrim.tv.TvApp' "$APP"
+          grep -q 'if (interfaceMode == InterfaceMode.TV)' "$APP"
+          grep -q 'MobileNavItem(' "$APP"
+          grep -q 'AppUpdater(context)' "$APP"
+          grep -q 'UpdateSettingsScreen' "$APP"
+
+          if grep -R -n -E 'tv2|tv3|NustrimTv2|NustrimTv3|Tv2[A-Za-z0-9_]*|Tv3[A-Za-z0-9_]*'             app/src/main/java/app/nudroidlabs/nustrim/tv             app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt 2>/dev/null; then
+            echo "::error::Old TV generation naming detected."
+            exit 1
+          fi
+
+          if grep -R -n -E 'NuBrowse|NuBrowseApp|app\.nubrowse' app/src/main app/build.gradle.kts 2>/dev/null; then
+            echo "::error::NuBrowse contamination detected."
+            exit 1
+          fi
+
+          git diff --check
+
+          {
+            echo "PASS: fresh tv/ namespace only"
+            echo "PASS: no tv2/tv3 source"
+            echo "PASS: TV route added"
+            echo "PASS: Mobile shell retained"
+            echo "PASS: updater anchors retained"
+            echo
+            git status --short
+            git diff --stat
+          } > "$DIR/audit.txt"
+
+          cat "$DIR/audit.txt"
+          git diff > "$DIR/stage1.patch"
+
+      - name: Verify updater source untouched
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/nustrim-tv-stage1"
+
+          sha256sum .github/workflows/build.yml > "$DIR/build.after"
+          find app/src/main/java/app/nudroidlabs/nustrim/core/update -type f -print0             | sort -z | xargs -0 sha256sum > "$DIR/updater.after"
+
+          cmp "$DIR/build.before" "$DIR/build.after"
+          cmp "$DIR/updater.before" "$DIR/updater.after"
+          echo "PASS: updater/build workflow byte-identical" > "$DIR/updater-protection.txt"
+
+      - name: Compile Stage 1
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          gradle --no-daemon --build-cache             :app:compileDebugKotlin             --stacktrace --console=plain             2>&1 | tee "$RUNNER_TEMP/nustrim-tv-stage1/compile.log"
+          code=${PIPESTATUS[0]}
+          set -e
+          if [[ "$code" -ne 0 ]]; then exit "$code"; fi
+
+      - name: Assemble Stage 1
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          gradle --no-daemon --build-cache             :app:assembleDebug             --stacktrace --console=plain             2>&1 | tee "$RUNNER_TEMP/nustrim-tv-stage1/assemble.log"
+          code=${PIPESTATUS[0]}
+          set -e
+          if [[ "$code" -ne 0 ]]; then exit "$code"; fi
+
+      - name: Advance version
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import re
+
+          target = os.environ["STAGE_VERSION"]
+          path = Path("app/build.gradle.kts")
+          text = path.read_text(encoding="utf-8")
+
+          cm = re.search(r'versionCode\s*=\s*(\d+)', text)
+          nm = re.search(r'versionName\s*=\s*"([^"]+)"', text)
+          if not cm or not nm:
+              raise SystemExit("Version metadata missing")
+
+          old_code = int(cm.group(1))
+          old_name = nm.group(1)
+          new_code = old_code if old_name == target else old_code + 1
+
+          text = re.sub(r'versionCode\s*=\s*\d+', f'versionCode = {new_code}', text, count=1)
+          text = re.sub(r'versionName\s*=\s*"[^"]+"', f'versionName = "{target}"', text, count=1)
+          path.write_text(text, encoding="utf-8")
+
+          Path(".nustrim-tv").write_text(
+              "generation=fresh\n"
+              "stage=1\n"
+              "namespace=tv\n"
+              "reference=NuvioTV\n"
+              "direction=95-percent-experience-target\n",
+              encoding="utf-8",
+          )
+
+          print(f"versionName: {old_name} -> {target}")
+          print(f"versionCode: {old_code} -> {new_code}")
+          PY
+
+      - name: Final assemble after version update
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle --no-daemon --build-cache             :app:assembleDebug             --stacktrace --console=plain             2>&1 | tee "$RUNNER_TEMP/nustrim-tv-stage1/final-assemble.log"
+
+      - name: Commit and push
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$RUNNER_TEMP/nustrim-tv-stage1/push.log") 2>&1
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+          git diff --cached --check
+
+          if git diff --cached --quiet; then
+            echo "TV Stage 1 already applied."
+          else
+            git commit -m "feat(tv): add fresh TV Stage 1 foundation"
+            git fetch --no-tags origin main
+            if ! git merge-base --is-ancestor origin/main HEAD; then
+              git rebase origin/main
+            fi
+            git push origin HEAD:main
+          fi
+
+      - name: Dispatch signed updater build
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run build.yml             --repo "$GITHUB_REPOSITORY"             --ref main             -f publish_release=true             2>&1 | tee "$RUNNER_TEMP/nustrim-tv-stage1/dispatch.log"
+
+      - name: Compact failure summary
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          DIR="$RUNNER_TEMP/nustrim-tv-stage1"
+          echo "========== Nustrim TV Stage 1 =========="
+          echo "Result: FAILED"
+          echo "SHA: $(git rev-parse HEAD 2>/dev/null || echo unknown)"
+          grep -m1 'versionName' app/build.gradle.kts 2>/dev/null || true
+
+          for file in preflight.txt root-patch.log audit.txt updater-protection.txt push.log dispatch.log; do
+            if [[ -f "$DIR/$file" ]]; then
+              echo
+              echo "[$file]"
+              tail -n 120 "$DIR/$file" || true
+            fi
+          done
+
+          for file in compile.log assemble.log final-assemble.log; do
+            if [[ -f "$DIR/$file" ]]; then
+              echo
+              echo "[$file result]"
+              grep -E 'BUILD SUCCESSFUL|BUILD FAILED|(^|[[:space:]])(e:|error:|FAILURE:|Caused by:|Execution failed for task|What went wrong:)'                 "$DIR/$file" | tail -n 150 || true
+            fi
+          done
+
+      - name: Upload diagnose
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nustrim-tv-stage1-diagnose
+          path: ${{ runner.temp }}/nustrim-tv-stage1
+          if-no-files-found: ignore
+          retention-days: 7
