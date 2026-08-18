@@ -210,6 +210,7 @@ import app.nudroidlabs.nustrim.tv2.home.Tv2PosterCard
 import app.nudroidlabs.nustrim.tv2.details.Tv2DetailsEpisodes
 import app.nudroidlabs.nustrim.tv2.details.Tv2DetailsHero
 import app.nudroidlabs.nustrim.tv2.sources.Tv2StreamSourcePicker
+import app.nudroidlabs.nustrim.tv2.player.Tv2PlayerControls
 
 private val AppBackground = Color(0xFF090A0C)
 private val AppSurface = Color(0xFF15171B)
@@ -10012,6 +10013,85 @@ private fun PlayerScreen(
             )
         }
 
+        if (isTv) {
+  Tv2PlayerControls(
+      visible = controlsVisible &&
+          !subtitlePanelVisible &&
+          !audioPanelVisible &&
+          !sourcePanelVisible &&
+          !episodePanelVisible,
+      title = playingTitle,
+      providerLabel = listOf(
+          playingSource.providerName.ifBlank { playingSource.name },
+          playingSource.type.uppercase()
+      ).filter { it.isNotBlank() }.joinToString("  •  "),
+      isPlaying = isPlaying,
+      isBuffering = isBuffering,
+      positionMs = if (scrubbing) scrubPositionMs else positionMs,
+      durationMs = durationMs,
+      primaryFocusRequester = tvPlayFocusRequester,
+      controlFocusRequesters = playerControlRequesters,
+      hasEpisodes = request.item.episodes.isNotEmpty(),
+      resizeLabel = resizeLabels[resizeIndex],
+      speedLabel = speeds[speedIndex].let { value ->
+          if (value == 1f) "1x" else "${value}x"
+      },
+      onBack = {
+          persistProgress()
+          onBack()
+      },
+      onPlayPause = {
+          if (player.isPlaying) player.pause() else player.play()
+          controlsVisible = false
+      },
+      onSeekBy = { delta ->
+          seekBy(delta)
+          controlsVisible = true
+      },
+      onResize = {
+          resizeIndex = (resizeIndex + 1) % resizeModes.size
+          controlsVisible = true
+      },
+      onSpeed = {
+          speedIndex = (speedIndex + 1) % speeds.size
+          player.setPlaybackSpeed(speeds[speedIndex])
+          controlsVisible = true
+      },
+      onSubtitles = {
+          subtitlePanelVisible = true
+          controlsVisible = true
+      },
+      onAudio = {
+          audioPanelVisible = true
+          controlsVisible = true
+      },
+      onSources = {
+          pendingEpisode = playingEpisode
+          sourceChoices = availableSources
+          sourceProviderProgress = availableSources
+              .groupBy { it.providerName.ifBlank { "Other" } }
+              .map { (name, providerSources) ->
+                  StreamProviderProgress(
+                      id = "existing:$name",
+                      name = name,
+                      loading = false,
+                      hasSources = providerSources.any { it.playable && it.url.isNotBlank() }
+                  )
+              }
+          sourceError = ""
+          sourceProgress = "${availableSources.size} source(s)"
+          sourceLoading = false
+          sourcePanelVisible = true
+      },
+      onEpisodes = {
+          episodePanelVisible = true
+          controlsVisible = true
+      },
+      onActivity = {
+          controlsActivityToken += 1
+      }
+  )
+        } else {
         AnimatedVisibility(
             visible = controlsVisible && !subtitlePanelVisible && !audioPanelVisible && !sourcePanelVisible && !episodePanelVisible,
             modifier = Modifier.fillMaxSize(),
@@ -10338,6 +10418,7 @@ private fun PlayerScreen(
         }
         }
 
+        }
         if (playerError.isNotBlank()) {
             SectionSurface(
                 modifier = Modifier.align(Alignment.Center).widthIn(max = 520.dp).padding(18.dp)
