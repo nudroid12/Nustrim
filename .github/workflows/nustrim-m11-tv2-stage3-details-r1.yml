@@ -1,0 +1,1207 @@
+name: Nustrim M11 TV2 Stage 3 Details R1
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nustrim-m11-tv2-stage3-details-r1
+  cancel-in-progress: false
+
+env:
+  TV2_VERSION: "0.17.0-tv2-rc3"
+
+jobs:
+  patch:
+    name: Patch, verify and commit TV2 Details
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Synchronise with origin main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          git checkout -B main origin/main
+          git reset --hard origin/main
+          echo "Checked out $(git rev-parse HEAD)"
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle 9.5.0
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "9.5.0"
+
+      - name: Prepare diagnose
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/nustrim-tv2-stage3-diagnose"
+          {
+            echo "NUSTRIM TV2 STAGE 3 DETAILS DIAGNOSE"
+            echo "===================================="
+            echo "checked_out_sha=$(git rev-parse HEAD)"
+            echo "branch=$(git branch --show-current)"
+            echo
+            echo "[initial marker]"
+            cat .nustrim-tv2 2>/dev/null || true
+            echo
+            echo "[initial version]"
+            grep -m1 'versionName' app/build.gradle.kts 2>/dev/null || true
+          } > "$RUNNER_TEMP/nustrim-tv2-stage3-diagnose/preflight.txt"
+
+      - name: Verify Stage 2 baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIAG="$RUNNER_TEMP/nustrim-tv2-stage3-diagnose/preflight.txt"
+          APP="app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt"
+          HOME="app/src/main/java/app/nudroidlabs/nustrim/tv2/home/Tv2Home.kt"
+
+          fail() {
+            echo "::error::$1"
+            echo "FAIL: $1" >> "$DIAG"
+            exit 1
+          }
+
+          marker_value() {
+            local key="$1"
+            awk -F= -v wanted="$key" '
+              $1 == wanted {
+                value = substr($0, index($0, "=") + 1)
+                gsub(/\r/, "", value)
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+                print value
+                exit
+              }
+            ' .nustrim-tv2
+          }
+
+          [[ -f .nustrim-tv2 ]] || fail "Missing .nustrim-tv2 marker."
+          [[ -f "$APP" ]] || fail "Missing NustrimApp.kt."
+          [[ -f "$HOME" ]] || fail "TV2 Stage 2 Home file is missing."
+
+          stage="$(marker_value stage)"
+          case "$stage" in
+            2|3|home-2)
+              ;;
+            *)
+              fail "TV2 marker stage is '${stage:-missing}', expected completed Stage 2."
+              ;;
+          esac
+
+          grep -q 'private fun DetailScreen(' "$APP" \
+            || fail "DetailScreen entry point is missing."
+          grep -q 'private fun DetailsHero(' "$APP" \
+            || fail "DetailsHero presentation hook is missing."
+          grep -q 'private fun TvEpisodesSection(' "$APP" \
+            || fail "TV episode presentation hook is missing."
+
+          if grep -R -n -E 'NuBrowse|NuBrowseApp|app\.nubrowse' app/src/main app/build.gradle.kts 2>/dev/null | tee -a "$DIAG"; then
+            fail "NuBrowse contamination detected."
+          fi
+
+          echo "PASS: Stage 2 baseline and Detail hooks" >> "$DIAG"
+
+      - name: Create isolated TV2 Details presentation
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$RUNNER_TEMP/nustrim-tv2-stage3-diagnose/create-details.log") 2>&1
+
+          mkdir -p app/src/main/java/app/nudroidlabs/nustrim/tv2/details
+
+          cat > app/src/main/java/app/nudroidlabs/nustrim/tv2/details/Tv2Details.kt <<'KOTLIN'
+          package app.nudroidlabs.nustrim.tv2.details
+
+          import androidx.compose.animation.core.animateFloatAsState
+          import androidx.compose.animation.core.tween
+          import androidx.compose.foundation.BorderStroke
+          import androidx.compose.foundation.background
+          import androidx.compose.foundation.clickable
+          import androidx.compose.foundation.focusable
+          import androidx.compose.foundation.layout.Arrangement
+          import androidx.compose.foundation.layout.Box
+          import androidx.compose.foundation.layout.Column
+          import androidx.compose.foundation.layout.PaddingValues
+          import androidx.compose.foundation.layout.Row
+          import androidx.compose.foundation.layout.Spacer
+          import androidx.compose.foundation.layout.aspectRatio
+          import androidx.compose.foundation.layout.fillMaxHeight
+          import androidx.compose.foundation.layout.fillMaxSize
+          import androidx.compose.foundation.layout.fillMaxWidth
+          import androidx.compose.foundation.layout.height
+          import androidx.compose.foundation.layout.padding
+          import androidx.compose.foundation.layout.size
+          import androidx.compose.foundation.layout.width
+          import androidx.compose.foundation.layout.widthIn
+          import androidx.compose.foundation.lazy.LazyRow
+          import androidx.compose.foundation.lazy.items
+          import androidx.compose.foundation.shape.CircleShape
+          import androidx.compose.foundation.shape.RoundedCornerShape
+          import androidx.compose.material.icons.Icons
+          import androidx.compose.material.icons.outlined.CheckCircle
+          import androidx.compose.material.icons.outlined.LibraryAdd
+          import androidx.compose.material.icons.outlined.PlayArrow
+          import androidx.compose.material3.Icon
+          import androidx.compose.material3.Surface
+          import androidx.compose.material3.Text
+          import androidx.compose.runtime.Composable
+          import androidx.compose.runtime.getValue
+          import androidx.compose.runtime.mutableStateOf
+          import androidx.compose.runtime.remember
+          import androidx.compose.runtime.setValue
+          import androidx.compose.ui.Alignment
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.focus.FocusRequester
+          import androidx.compose.ui.focus.focusProperties
+          import androidx.compose.ui.focus.focusRequester
+          import androidx.compose.ui.focus.onFocusChanged
+          import androidx.compose.ui.graphics.Brush
+          import androidx.compose.ui.graphics.Color
+          import androidx.compose.ui.graphics.graphicsLayer
+          import androidx.compose.ui.input.key.Key
+          import androidx.compose.ui.input.key.KeyEventType
+          import androidx.compose.ui.input.key.key
+          import androidx.compose.ui.input.key.onPreviewKeyEvent
+          import androidx.compose.ui.input.key.type
+          import androidx.compose.ui.layout.ContentScale
+          import androidx.compose.ui.text.font.FontWeight
+          import androidx.compose.ui.text.style.TextOverflow
+          import androidx.compose.ui.unit.dp
+          import androidx.compose.ui.unit.sp
+          import androidx.compose.ui.zIndex
+          import app.nudroidlabs.nustrim.core.model.MediaEpisode
+          import app.nudroidlabs.nustrim.core.model.MediaItem
+          import coil3.compose.AsyncImage
+
+          private object Tv2DetailsColors {
+              val Background = Color(0xFF090A0D)
+              val Surface = Color(0xFF15171C)
+              val SurfaceRaised = Color(0xFF1C1F26)
+              val Text = Color(0xFFF5F6F8)
+              val Muted = Color(0xFFB6BAC4)
+              val Soft = Color(0xFFD8DAE0)
+          }
+
+          @Composable
+          fun Tv2DetailsHero(
+              item: MediaItem,
+              logoUrl: String,
+              primaryLabel: String,
+              playbackHint: String,
+              loading: Boolean,
+              saved: Boolean,
+              canSave: Boolean,
+              primaryFocusRequester: FocusRequester?,
+              saveFocusRequester: FocusRequester?,
+              trailerFocusRequester: FocusRequester?,
+              onPrimaryFocused: () -> Unit,
+              onSaveFocused: () -> Unit,
+              onTrailerFocused: () -> Unit,
+              onPrimary: () -> Unit,
+              onTrailer: (() -> Unit)?,
+              onToggleSaved: () -> Unit
+          ) {
+              val backdrop = item.backgroundUrl.ifBlank { item.posterUrl }
+
+              Box(
+                  modifier = Modifier
+                      .fillMaxWidth()
+                      .height(410.dp)
+                      .background(Tv2DetailsColors.Background)
+              ) {
+                  Tv2DetailsArtwork(
+                      url = backdrop,
+                      title = item.title,
+                      modifier = Modifier.fillMaxSize()
+                  )
+
+                  Box(
+                      Modifier
+                          .fillMaxSize()
+                          .background(
+                              Brush.horizontalGradient(
+                                  colors = listOf(
+                                      Tv2DetailsColors.Background.copy(alpha = 0.99f),
+                                      Tv2DetailsColors.Background.copy(alpha = 0.92f),
+                                      Tv2DetailsColors.Background.copy(alpha = 0.62f),
+                                      Tv2DetailsColors.Background.copy(alpha = 0.15f),
+                                      Color.Transparent
+                                  )
+                              )
+                          )
+                  )
+
+                  Box(
+                      Modifier
+                          .fillMaxSize()
+                          .background(
+                              Brush.verticalGradient(
+                                  colors = listOf(
+                                      Color.Transparent,
+                                      Color.Transparent,
+                                      Tv2DetailsColors.Background.copy(alpha = 0.45f),
+                                      Tv2DetailsColors.Background
+                                  )
+                              )
+                          )
+                  )
+
+                  Column(
+                      modifier = Modifier
+                          .align(Alignment.BottomStart)
+                          .widthIn(max = 670.dp)
+                          .padding(start = 40.dp, end = 28.dp, bottom = 34.dp)
+                  ) {
+                      if (logoUrl.isNotBlank()) {
+                          AsyncImage(
+                              model = logoUrl,
+                              contentDescription = item.title,
+                              modifier = Modifier
+                                  .widthIn(max = 300.dp)
+                                  .height(82.dp),
+                              contentScale = ContentScale.Fit
+                          )
+                      } else {
+                          Text(
+                              text = item.title,
+                              color = Tv2DetailsColors.Text,
+                              fontSize = 36.sp,
+                              lineHeight = 39.sp,
+                              fontWeight = FontWeight.Black,
+                              maxLines = 2,
+                              overflow = TextOverflow.Ellipsis
+                          )
+                      }
+
+                      if (item.releaseInfo.isNotBlank()) {
+                          Spacer(Modifier.height(8.dp))
+                          Text(
+                              text = item.releaseInfo,
+                              color = Tv2DetailsColors.Soft,
+                              fontSize = 13.sp,
+                              fontWeight = FontWeight.SemiBold,
+                              maxLines = 1,
+                              overflow = TextOverflow.Ellipsis
+                          )
+                      }
+
+                      if (item.description.isNotBlank()) {
+                          Spacer(Modifier.height(10.dp))
+                          Text(
+                              text = item.description,
+                              color = Tv2DetailsColors.Muted,
+                              fontSize = 14.sp,
+                              lineHeight = 19.sp,
+                              maxLines = 3,
+                              overflow = TextOverflow.Ellipsis
+                          )
+                      }
+
+                      Spacer(Modifier.height(17.dp))
+                      Row(
+                          horizontalArrangement = Arrangement.spacedBy(10.dp),
+                          verticalAlignment = Alignment.CenterVertically
+                      ) {
+                          Tv2PrimaryAction(
+                              label = if (loading) "Loading..." else primaryLabel,
+                              enabled = !loading,
+                              focusRequester = primaryFocusRequester,
+                              onFocused = onPrimaryFocused,
+                              onClick = onPrimary
+                          )
+
+                          if (onTrailer != null) {
+                              Tv2RoundAction(
+                                  icon = Tv2RoundActionIcon.TRAILER,
+                                  contentDescription = "Trailer",
+                                  selected = false,
+                                  focusRequester = trailerFocusRequester,
+                                  onFocused = onTrailerFocused,
+                                  onClick = onTrailer
+                              )
+                          }
+
+                          if (canSave) {
+                              Tv2RoundAction(
+                                  icon = if (saved) Tv2RoundActionIcon.SAVED else Tv2RoundActionIcon.SAVE,
+                                  contentDescription = if (saved) "Saved" else "Save",
+                                  selected = saved,
+                                  focusRequester = saveFocusRequester,
+                                  onFocused = onSaveFocused,
+                                  onClick = onToggleSaved
+                              )
+                          }
+                      }
+
+                      if (playbackHint.isNotBlank()) {
+                          Spacer(Modifier.height(9.dp))
+                          Text(
+                              text = playbackHint,
+                              color = Tv2DetailsColors.Muted,
+                              fontSize = 12.sp,
+                              maxLines = 1,
+                              overflow = TextOverflow.Ellipsis
+                          )
+                      }
+                  }
+              }
+          }
+
+          @Composable
+          fun Tv2DetailsEpisodes(
+              seasons: List<Int>,
+              selectedSeason: Int?,
+              episodes: List<MediaEpisode>,
+              selectedEpisodeId: String?,
+              resumeEpisodeId: String,
+              resumeProgressFraction: Float,
+              resumePositionMs: Long,
+              seasonFocusRequesters: MutableMap<Int, FocusRequester>,
+              episodeFocusRequesters: MutableMap<String, FocusRequester>,
+              onSeasonFocused: (Int) -> Unit,
+              onEpisodeFocused: (MediaEpisode) -> Unit,
+              onSeasonSelected: (Int) -> Unit,
+              onEpisodeClick: (MediaEpisode) -> Unit
+          ) {
+              Column(
+                  modifier = Modifier
+                      .fillMaxWidth()
+                      .background(Tv2DetailsColors.Background)
+                      .padding(top = 2.dp, bottom = 8.dp)
+              ) {
+                  Row(
+                      modifier = Modifier
+                          .fillMaxWidth()
+                          .padding(horizontal = 40.dp),
+                      verticalAlignment = Alignment.CenterVertically
+                  ) {
+                      Text(
+                          text = "Episodes",
+                          color = Tv2DetailsColors.Text,
+                          fontSize = 22.sp,
+                          fontWeight = FontWeight.Bold
+                      )
+                  }
+
+                  if (seasons.isNotEmpty()) {
+                      Spacer(Modifier.height(11.dp))
+                      LazyRow(
+                          contentPadding = PaddingValues(horizontal = 40.dp, vertical = 3.dp),
+                          horizontalArrangement = Arrangement.spacedBy(9.dp)
+                      ) {
+                          items(seasons, key = { it }) { season ->
+                              val requester = remember(season) {
+                                  seasonFocusRequesters.getOrPut(season) { FocusRequester() }
+                              }
+                              Tv2SeasonChip(
+                                  label = tv2SeasonLabel(season),
+                                  selected = selectedSeason == season,
+                                  focusRequester = requester,
+                                  onFocused = { onSeasonFocused(season) },
+                                  onClick = { onSeasonSelected(season) }
+                              )
+                          }
+                      }
+                  }
+
+                  Spacer(Modifier.height(10.dp))
+                  LazyRow(
+                      modifier = Modifier.fillMaxWidth(),
+                      contentPadding = PaddingValues(
+                          start = 40.dp,
+                          end = 48.dp,
+                          top = 6.dp,
+                          bottom = 16.dp
+                      ),
+                      horizontalArrangement = Arrangement.spacedBy(16.dp)
+                  ) {
+                      items(episodes, key = { it.id }) { episode ->
+                          val requester = remember(episode.id) {
+                              episodeFocusRequesters.getOrPut(episode.id) { FocusRequester() }
+                          }
+                          val upRequester = selectedSeason?.let(seasonFocusRequesters::get)
+
+                          Tv2EpisodeCard(
+                              episode = episode,
+                              selected = selectedEpisodeId == episode.id,
+                              progressFraction = if (resumeEpisodeId == episode.id) {
+                                  resumeProgressFraction
+                              } else {
+                                  0f
+                              },
+                              resumePositionMs = if (resumeEpisodeId == episode.id) {
+                                  resumePositionMs
+                              } else {
+                                  0L
+                              },
+                              focusRequester = requester,
+                              upFocusRequester = upRequester,
+                              onFocused = { onEpisodeFocused(episode) },
+                              onClick = { onEpisodeClick(episode) }
+                          )
+                      }
+                  }
+              }
+          }
+
+          private enum class Tv2RoundActionIcon {
+              TRAILER,
+              SAVE,
+              SAVED
+          }
+
+          @Composable
+          private fun Tv2PrimaryAction(
+              label: String,
+              enabled: Boolean,
+              focusRequester: FocusRequester?,
+              onFocused: () -> Unit,
+              onClick: () -> Unit
+          ) {
+              var focused by remember { mutableStateOf(false) }
+              val scale by animateFloatAsState(
+                  targetValue = if (focused) 1.045f else 1f,
+                  animationSpec = tween(150),
+                  label = "tv2-details-primary-scale"
+              )
+
+              Surface(
+                  modifier = Modifier
+                      .graphicsLayer {
+                          scaleX = scale
+                          scaleY = scale
+                      }
+                      .then(
+                          if (focusRequester != null) {
+                              Modifier.focusRequester(focusRequester)
+                          } else {
+                              Modifier
+                          }
+                      )
+                      .onFocusChanged {
+                          focused = it.isFocused
+                          if (it.isFocused) onFocused()
+                      }
+                      .onPreviewKeyEvent { event ->
+                          tv2ConsumeActivate(event, enabled, onClick)
+                      }
+                      .clickable(enabled = enabled, onClick = onClick)
+                      .focusable(enabled = enabled),
+                  shape = RoundedCornerShape(26.dp),
+                  color = if (enabled) Color.White else Color.White.copy(alpha = 0.46f),
+                  border = if (focused) {
+                      BorderStroke(3.dp, Color.White.copy(alpha = 0.95f))
+                  } else {
+                      null
+                  }
+              ) {
+                  Row(
+                      modifier = Modifier.padding(horizontal = 23.dp, vertical = 11.dp),
+                      horizontalArrangement = Arrangement.spacedBy(7.dp),
+                      verticalAlignment = Alignment.CenterVertically
+                  ) {
+                      Icon(
+                          imageVector = Icons.Outlined.PlayArrow,
+                          contentDescription = null,
+                          tint = Color(0xFF15161A),
+                          modifier = Modifier.size(21.dp)
+                      )
+                      Text(
+                          text = label,
+                          color = Color(0xFF15161A),
+                          fontWeight = FontWeight.Bold,
+                          fontSize = 14.sp
+                      )
+                  }
+              }
+          }
+
+          @Composable
+          private fun Tv2RoundAction(
+              icon: Tv2RoundActionIcon,
+              contentDescription: String,
+              selected: Boolean,
+              focusRequester: FocusRequester?,
+              onFocused: () -> Unit,
+              onClick: () -> Unit
+          ) {
+              var focused by remember { mutableStateOf(false) }
+              val scale by animateFloatAsState(
+                  targetValue = if (focused) 1.08f else 1f,
+                  animationSpec = tween(140),
+                  label = "tv2-details-round-scale"
+              )
+
+              Surface(
+                  modifier = Modifier
+                      .size(46.dp)
+                      .graphicsLayer {
+                          scaleX = scale
+                          scaleY = scale
+                      }
+                      .then(
+                          if (focusRequester != null) {
+                              Modifier.focusRequester(focusRequester)
+                          } else {
+                              Modifier
+                          }
+                      )
+                      .onFocusChanged {
+                          focused = it.isFocused
+                          if (it.isFocused) onFocused()
+                      }
+                      .onPreviewKeyEvent { event ->
+                          tv2ConsumeActivate(event, true, onClick)
+                      }
+                      .clickable(onClick = onClick)
+                      .focusable(),
+                  shape = CircleShape,
+                  color = if (focused) {
+                      Color(0xFFF0F1F4)
+                  } else {
+                      Color.Black.copy(alpha = 0.52f)
+                  },
+                  border = BorderStroke(
+                      width = if (focused) 2.dp else 1.dp,
+                      color = if (focused) Color.White else Color.White.copy(alpha = 0.28f)
+                  )
+              ) {
+                  Box(
+                      modifier = Modifier.fillMaxSize(),
+                      contentAlignment = Alignment.Center
+                  ) {
+                      val imageVector = when (icon) {
+                          Tv2RoundActionIcon.TRAILER -> Icons.Outlined.PlayArrow
+                          Tv2RoundActionIcon.SAVE -> Icons.Outlined.LibraryAdd
+                          Tv2RoundActionIcon.SAVED -> Icons.Outlined.CheckCircle
+                      }
+                      Icon(
+                          imageVector = imageVector,
+                          contentDescription = contentDescription,
+                          tint = when {
+                              focused -> Color(0xFF17181B)
+                              selected -> Color.White
+                              else -> Color(0xFFE8E9ED)
+                          },
+                          modifier = Modifier.size(21.dp)
+                      )
+                  }
+              }
+          }
+
+          @Composable
+          private fun Tv2SeasonChip(
+              label: String,
+              selected: Boolean,
+              focusRequester: FocusRequester,
+              onFocused: () -> Unit,
+              onClick: () -> Unit
+          ) {
+              var focused by remember { mutableStateOf(false) }
+
+              Surface(
+                  modifier = Modifier
+                      .focusRequester(focusRequester)
+                      .onFocusChanged {
+                          focused = it.isFocused
+                          if (it.isFocused) onFocused()
+                      }
+                      .onPreviewKeyEvent { event ->
+                          tv2ConsumeActivate(event, true, onClick)
+                      }
+                      .clickable(onClick = onClick)
+                      .focusable(),
+                  shape = RoundedCornerShape(20.dp),
+                  color = when {
+                      focused -> Color(0xFFF0F1F4)
+                      selected -> Color(0xFF343740)
+                      else -> Tv2DetailsColors.Surface
+                  },
+                  border = when {
+                      focused -> BorderStroke(2.dp, Color.White)
+                      selected -> BorderStroke(1.dp, Color.White.copy(alpha = 0.22f))
+                      else -> null
+                  }
+              ) {
+                  Text(
+                      text = label,
+                      modifier = Modifier.padding(horizontal = 17.dp, vertical = 8.dp),
+                      color = if (focused) Color(0xFF17181B) else Tv2DetailsColors.Text,
+                      fontSize = 13.sp,
+                      fontWeight = if (focused || selected) FontWeight.Bold else FontWeight.Medium
+                  )
+              }
+          }
+
+          @Composable
+          private fun Tv2EpisodeCard(
+              episode: MediaEpisode,
+              selected: Boolean,
+              progressFraction: Float,
+              resumePositionMs: Long,
+              focusRequester: FocusRequester,
+              upFocusRequester: FocusRequester?,
+              onFocused: () -> Unit,
+              onClick: () -> Unit
+          ) {
+              var focused by remember { mutableStateOf(false) }
+              val scale by animateFloatAsState(
+                  targetValue = if (focused) 1.045f else 1f,
+                  animationSpec = tween(155),
+                  label = "tv2-details-episode-scale"
+              )
+
+              Surface(
+                  modifier = Modifier
+                      .width(292.dp)
+                      .graphicsLayer {
+                          scaleX = scale
+                          scaleY = scale
+                      }
+                      .zIndex(if (focused) 1f else 0f)
+                      .focusRequester(focusRequester)
+                      .then(
+                          if (upFocusRequester != null) {
+                              Modifier.focusProperties { up = upFocusRequester }
+                          } else {
+                              Modifier
+                          }
+                      )
+                      .onFocusChanged {
+                          focused = it.isFocused
+                          if (it.isFocused) onFocused()
+                      }
+                      .onPreviewKeyEvent { event ->
+                          tv2ConsumeActivate(event, true, onClick)
+                      }
+                      .clickable(onClick = onClick)
+                      .focusable(),
+                  shape = RoundedCornerShape(13.dp),
+                  color = if (selected) Color(0xFF242730) else Tv2DetailsColors.Surface,
+                  border = when {
+                      focused -> BorderStroke(2.dp, Color.White)
+                      selected -> BorderStroke(1.dp, Color.White.copy(alpha = 0.28f))
+                      else -> BorderStroke(1.dp, Color.White.copy(alpha = 0.07f))
+                  }
+              ) {
+                  Column {
+                      Box(
+                          modifier = Modifier
+                              .fillMaxWidth()
+                              .aspectRatio(16f / 9f)
+                              .background(Tv2DetailsColors.SurfaceRaised)
+                      ) {
+                          Tv2DetailsArtwork(
+                              url = episode.thumbnailUrl,
+                              title = episode.displayTitle,
+                              modifier = Modifier.fillMaxSize()
+                          )
+
+                          if (progressFraction > 0f) {
+                              Box(
+                                  modifier = Modifier
+                                      .align(Alignment.BottomStart)
+                                      .fillMaxWidth()
+                                      .height(4.dp)
+                                      .background(Color.Black.copy(alpha = 0.42f))
+                              ) {
+                                  Box(
+                                      modifier = Modifier
+                                          .fillMaxWidth(progressFraction.coerceIn(0f, 1f))
+                                          .fillMaxHeight()
+                                          .background(Color.White)
+                                  )
+                              }
+                          }
+                      }
+
+                      Column(
+                          modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+                      ) {
+                          Text(
+                              text = episode.displayTitle,
+                              color = Tv2DetailsColors.Text,
+                              fontSize = 14.sp,
+                              fontWeight = FontWeight.Bold,
+                              maxLines = 1,
+                              overflow = TextOverflow.Ellipsis
+                          )
+
+                          when {
+                              resumePositionMs > 0L -> {
+                                  Spacer(Modifier.height(3.dp))
+                                  Text(
+                                      text = "Resume ${tv2FormatPlaybackTime(resumePositionMs)}",
+                                      color = Tv2DetailsColors.Soft,
+                                      fontSize = 11.sp,
+                                      maxLines = 1
+                                  )
+                              }
+
+                              episode.overview.isNotBlank() -> {
+                                  Spacer(Modifier.height(4.dp))
+                                  Text(
+                                      text = episode.overview,
+                                      color = Tv2DetailsColors.Muted,
+                                      fontSize = 11.sp,
+                                      lineHeight = 15.sp,
+                                      maxLines = 2,
+                                      overflow = TextOverflow.Ellipsis
+                                  )
+                              }
+                          }
+                      }
+                  }
+              }
+          }
+
+          @Composable
+          private fun Tv2DetailsArtwork(
+              url: String,
+              title: String,
+              modifier: Modifier
+          ) {
+              if (url.isBlank()) {
+                  Box(
+                      modifier = modifier.background(
+                          Brush.linearGradient(
+                              colors = listOf(
+                                  Tv2DetailsColors.SurfaceRaised,
+                                  Tv2DetailsColors.Surface
+                              )
+                          )
+                      ),
+                      contentAlignment = Alignment.Center
+                  ) {
+                      Text(
+                          text = title.take(1).uppercase().ifBlank { "N" },
+                          color = Tv2DetailsColors.Muted,
+                          fontSize = 30.sp,
+                          fontWeight = FontWeight.Black
+                      )
+                  }
+              } else {
+                  AsyncImage(
+                      model = url,
+                      contentDescription = title,
+                      modifier = modifier,
+                      contentScale = ContentScale.Crop
+                  )
+              }
+          }
+
+          private fun tv2ConsumeActivate(
+              event: androidx.compose.ui.input.key.KeyEvent,
+              enabled: Boolean,
+              onClick: () -> Unit
+          ): Boolean {
+              if (!enabled) return false
+              val activate = event.key == Key.DirectionCenter || event.key == Key.Enter
+              if (!activate) return false
+              if (event.type == KeyEventType.KeyUp) onClick()
+              return true
+          }
+
+          private fun tv2SeasonLabel(season: Int): String =
+              if (season == 0) "Specials" else "Season $season"
+
+          private fun tv2FormatPlaybackTime(positionMs: Long): String {
+              val totalSeconds = (positionMs / 1000L).coerceAtLeast(0L)
+              val hours = totalSeconds / 3600L
+              val minutes = (totalSeconds % 3600L) / 60L
+              val seconds = totalSeconds % 60L
+              return if (hours > 0L) {
+                  "%d:%02d:%02d".format(hours, minutes, seconds)
+              } else {
+                  "%d:%02d".format(minutes, seconds)
+              }
+          }
+          KOTLIN
+
+      - name: Wire TV only Details presentation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' 2>&1 | tee "$RUNNER_TEMP/nustrim-tv2-stage3-diagnose/wire.log"
+          from pathlib import Path
+
+          path = Path("app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt")
+          text = path.read_text(encoding="utf-8")
+
+          required_imports = [
+              "import app.nudroidlabs.nustrim.tv2.details.Tv2DetailsEpisodes\n",
+              "import app.nudroidlabs.nustrim.tv2.details.Tv2DetailsHero\n",
+          ]
+
+          lines = text.splitlines(keepends=True)
+          import_indices = [i for i, line in enumerate(lines) if line.startswith("import ")]
+          if not import_indices:
+              raise SystemExit("No Kotlin import block found.")
+
+          missing = [imp for imp in required_imports if imp not in text]
+          if missing:
+              last_import = import_indices[-1]
+              lines[last_import + 1:last_import + 1] = missing
+              text = "".join(lines)
+
+          hero_marker = "@Composable\nprivate fun DetailsHero("
+          hero_start = text.find(hero_marker)
+          if hero_start < 0:
+              raise SystemExit("DetailsHero function not found.")
+
+          hero_end = text.find("\n@Composable\nprivate fun TvDetailPrimaryAction(", hero_start)
+          if hero_end < 0:
+              raise SystemExit("DetailsHero end anchor not found.")
+
+          hero_segment = text[hero_start:hero_end]
+          if "Tv2DetailsHero(" not in hero_segment:
+              hero_body = text.find(") {", hero_start, hero_end)
+              if hero_body < 0:
+                  raise SystemExit("DetailsHero body start not found.")
+              hero_insert = hero_body + 3
+              delegation = """
+              if (isTv) {
+                  Tv2DetailsHero(
+                      item = item,
+                      logoUrl = logoUrl,
+                      primaryLabel = primaryLabel,
+                      playbackHint = playbackHint,
+                      loading = loading,
+                      saved = saved,
+                      canSave = canSave,
+                      primaryFocusRequester = primaryFocusRequester,
+                      saveFocusRequester = saveFocusRequester,
+                      trailerFocusRequester = trailerFocusRequester,
+                      onPrimaryFocused = onPrimaryFocused,
+                      onSaveFocused = onSaveFocused,
+                      onTrailerFocused = onTrailerFocused,
+                      onPrimary = onPrimary,
+                      onTrailer = onTrailer,
+                      onToggleSaved = onToggleSaved
+                  )
+                  return
+              }
+
+          """
+              text = text[:hero_insert] + delegation + text[hero_insert:]
+
+          episodes_marker = "@Composable\nprivate fun TvEpisodesSection("
+          episodes_start = text.find(episodes_marker)
+          if episodes_start < 0:
+              raise SystemExit("TvEpisodesSection function not found.")
+
+          episodes_end = text.find("\n@Composable\nprivate fun TvSeasonPill(", episodes_start)
+          if episodes_end < 0:
+              raise SystemExit("TvEpisodesSection end anchor not found.")
+
+          episodes_segment = text[episodes_start:episodes_end]
+          if "Tv2DetailsEpisodes(" not in episodes_segment:
+              body = text.find(") {", episodes_start, episodes_end)
+              if body < 0:
+                  raise SystemExit("TvEpisodesSection body start not found.")
+              insertion = body + 3
+              delegation = """
+              Tv2DetailsEpisodes(
+                  seasons = seasons,
+                  selectedSeason = selectedSeason,
+                  episodes = episodes,
+                  selectedEpisodeId = selectedEpisodeId,
+                  resumeEpisodeId = resumeEpisodeId,
+                  resumeProgressFraction = resumeProgressFraction,
+                  resumePositionMs = resumePositionMs,
+                  seasonFocusRequesters = seasonFocusRequesters,
+                  episodeFocusRequesters = episodeFocusRequesters,
+                  onSeasonFocused = onSeasonFocused,
+                  onEpisodeFocused = onEpisodeFocused,
+                  onSeasonSelected = onSeasonSelected,
+                  onEpisodeClick = onEpisodeClick
+              )
+              return
+
+          """
+              text = text[:insertion] + delegation + text[insertion:]
+
+          path.write_text(text, encoding="utf-8")
+          print(f"TV2 imports added: {len(missing)}")
+          print("TV Details hero delegation: OK")
+          print("TV Episodes delegation: OK")
+          print("Mobile Details body preserved: YES")
+          PY
+          code=${PIPESTATUS[0]}
+          if [[ "$code" -ne 0 ]]; then
+            echo "::error::TV2 Details wiring failed."
+            exit "$code"
+          fi
+
+      - name: Advance Stage 3 metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' 2>&1 | tee "$RUNNER_TEMP/nustrim-tv2-stage3-diagnose/metadata.log"
+          from pathlib import Path
+          import os
+          import re
+
+          target = os.environ["TV2_VERSION"]
+
+          gradle_path = Path("app/build.gradle.kts")
+          gradle = gradle_path.read_text(encoding="utf-8")
+          code_match = re.search(r'versionCode\s*=\s*(\d+)', gradle)
+          name_match = re.search(r'versionName\s*=\s*"([^"]+)"', gradle)
+          if not code_match or not name_match:
+              raise SystemExit("Unable to resolve app version metadata.")
+
+          current_code = int(code_match.group(1))
+          current_name = name_match.group(1)
+          next_code = current_code if current_name == target else current_code + 1
+
+          gradle = re.sub(
+              r'versionCode\s*=\s*\d+',
+              f'versionCode = {next_code}',
+              gradle,
+              count=1
+          )
+          gradle = re.sub(
+              r'versionName\s*=\s*"[^"]+"',
+              f'versionName = "{target}"',
+              gradle,
+              count=1
+          )
+          gradle_path.write_text(gradle, encoding="utf-8")
+          Path(".nustrim-version").write_text(target + "\n", encoding="utf-8")
+
+          marker_path = Path(".nustrim-tv2")
+          marker_lines = marker_path.read_text(encoding="utf-8").splitlines()
+          found_stage = False
+          updated = []
+          for line in marker_lines:
+              if line.strip().startswith("stage="):
+                  updated.append("stage=3")
+                  found_stage = True
+              else:
+                  updated.append(line.rstrip("\r"))
+          if not found_stage:
+              updated.append("stage=3")
+          marker_path.write_text("\n".join(updated) + "\n", encoding="utf-8")
+
+          print(f"versionName: {current_name} -> {target}")
+          print(f"versionCode: {current_code} -> {next_code}")
+          print("TV2 marker advanced to stage=3")
+          PY
+          code=${PIPESTATUS[0]}
+          if [[ "$code" -ne 0 ]]; then
+            echo "::error::Stage 3 metadata update failed."
+            exit "$code"
+          fi
+
+      - name: Audit TV2 Stage 3
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIAG="$RUNNER_TEMP/nustrim-tv2-stage3-diagnose/audit.txt"
+          APP="app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt"
+          DETAILS="app/src/main/java/app/nudroidlabs/nustrim/tv2/details/Tv2Details.kt"
+
+          fail() {
+            echo "::error::$1"
+            echo "FAIL: $1" >> "$DIAG"
+            git diff --stat >> "$DIAG" 2>&1 || true
+            exit 1
+          }
+
+          [[ -f "$DETAILS" ]] || fail "Tv2Details.kt was not created."
+          grep -q 'Tv2DetailsHero' "$APP" || fail "TV2 Details hero is not wired."
+          grep -q 'Tv2DetailsEpisodes' "$APP" || fail "TV2 Episodes rail is not wired."
+          grep -q 'fun Tv2DetailsHero' "$DETAILS" || fail "TV2 Details hero implementation is missing."
+          grep -q 'fun Tv2DetailsEpisodes' "$DETAILS" || fail "TV2 Episodes implementation is missing."
+          grep -q 'private fun DetailScreen(' "$APP" || fail "DetailScreen core was removed."
+          grep -q 'if (isTv)' "$APP" || fail "TV isolation branch is missing."
+          grep -q '^stage=3$' .nustrim-tv2 || fail "TV2 marker is not stage=3."
+          grep -q "versionName = \"${TV2_VERSION}\"" app/build.gradle.kts \
+            || fail "Version is not ${TV2_VERSION}."
+          grep -q "^${TV2_VERSION}$" .nustrim-version \
+            || fail ".nustrim-version is not synchronised."
+
+          if grep -R -n 'com\.nuvio' app/src/main/java/app/nudroidlabs/nustrim/tv2; then
+            fail "TV2 contains a forbidden Nuvio package import."
+          fi
+
+          if grep -R -n -E 'NuBrowse|NuBrowseApp|app\.nubrowse' app/src/main app/build.gradle.kts 2>/dev/null; then
+            fail "NuBrowse contamination detected after Stage 3 patch."
+          fi
+
+          git diff --check || fail "git diff --check failed."
+
+          {
+            echo "PASS: Stage 3 structural audit"
+            echo
+            echo "[git status]"
+            git status --short
+            echo
+            echo "[diff stat]"
+            git diff --stat
+          } > "$DIAG"
+
+          git diff > "$RUNNER_TEMP/nustrim-tv2-stage3-diagnose/stage3.patch"
+          cat "$DIAG"
+
+      - name: Compile TV2 Stage 3
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          gradle --no-daemon --build-cache \
+            :app:compileDebugKotlin \
+            --stacktrace \
+            --console=plain \
+            2>&1 | tee "$RUNNER_TEMP/nustrim-tv2-stage3-diagnose/compile.log"
+          code=${PIPESTATUS[0]}
+          set -e
+
+          if [[ "$code" -ne 0 ]]; then
+            echo "::error::TV2 Stage 3 Kotlin compile failed."
+            exit "$code"
+          fi
+
+      - name: Commit and push Stage 3
+        shell: bash
+        run: |
+          set -euo pipefail
+          LOG="$RUNNER_TEMP/nustrim-tv2-stage3-diagnose/push.log"
+          exec > >(tee "$LOG") 2>&1
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add \
+            app/src/main/java/app/nudroidlabs/nustrim/tv2/details/Tv2Details.kt \
+            app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt \
+            app/build.gradle.kts \
+            .nustrim-tv2 \
+            .nustrim-version
+
+          if git diff --cached --quiet; then
+            echo "Stage 3 changes are already present. Nothing to commit."
+            exit 0
+          fi
+
+          echo "[staged diff]"
+          git diff --cached --stat
+          git diff --cached --check
+
+          git commit -m "feat(tv2): build Stage 3 details experience"
+          local_commit="$(git rev-parse HEAD)"
+          echo "Created commit: $local_commit"
+
+          echo "[remote state before push]"
+          git fetch --no-tags origin main
+          remote_main="$(git rev-parse origin/main)"
+          echo "origin/main: $remote_main"
+
+          if ! git merge-base --is-ancestor "$remote_main" HEAD; then
+            echo "origin/main advanced during this run. Rebasing Stage 3 commit."
+            git rebase origin/main
+            echo "Rebased commit: $(git rev-parse HEAD)"
+          fi
+
+          set +e
+          git push origin HEAD:main
+          push_code=$?
+          set -e
+
+          if [[ "$push_code" -ne 0 ]]; then
+            echo "First push failed. Refreshing origin/main and retrying one safe rebase."
+            git fetch --no-tags origin main
+
+            if ! git merge-base --is-ancestor origin/main HEAD; then
+              git rebase origin/main
+            fi
+
+            git push origin HEAD:main
+          fi
+
+          echo "Push completed successfully."
+
+      - name: Print compact failure summary
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          DIR="$RUNNER_TEMP/nustrim-tv2-stage3-diagnose"
+
+          echo
+          echo "========== Nustrim TV2 Stage 3 Details Summary =========="
+          echo "Result: FAILED"
+          echo "SHA: $(git rev-parse HEAD 2>/dev/null || echo unknown)"
+          echo "TV2 marker:"
+          cat .nustrim-tv2 2>/dev/null | sed 's/^/  /' || true
+          echo "Version:"
+          grep -m1 'versionName' app/build.gradle.kts 2>/dev/null | sed 's/^[[:space:]]*/  /' || true
+
+          for file in preflight.txt wire.log metadata.log audit.txt push.log; do
+            if [[ -f "$DIR/$file" ]]; then
+              echo
+              echo "[$file]"
+              grep -E 'FAIL:|error|Error|not found|missing|Unable|failed|PASS:|delegation|preserved' \
+                "$DIR/$file" | tail -n 30 || tail -n 12 "$DIR/$file"
+            fi
+          done
+
+          if [[ -f "$DIR/compile.log" ]]; then
+            echo
+            echo "[compile result]"
+            grep -E 'BUILD SUCCESSFUL|BUILD FAILED|(^|[[:space:]])(e:|error:|FAILURE:|Caused by:|Execution failed for task|What went wrong:)' \
+              "$DIR/compile.log" | tail -n 45 || true
+          fi
+
+          if [[ -f "$DIR/push.log" ]]; then
+            echo
+            echo "[commit/push result]"
+            tail -n 45 "$DIR/push.log" || true
+          fi
+
+          echo "=========================================================="
+          echo
+
+      - name: Upload Stage 3 diagnose
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nustrim-m11-tv2-stage3-details-diagnose
+          path: ${{ runner.temp }}/nustrim-tv2-stage3-diagnose
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Summary
+        if: success()
+        shell: bash
+        run: |
+          {
+            echo "## Nustrim M11 TV2 Stage 3 Details R1"
+            echo
+            echo "- Added isolated tv2/details presentation layer."
+            echo "- TV Details hero now uses the TV2 cinematic composition."
+            echo "- TV season and episode rail now uses the TV2 remote-first presentation."
+            echo "- Existing DetailScreen state, source resolver, TMDB/MDBList, library and resume logic remain intact."
+            echo "- Existing source picker and playback hand-off remain intact."
+            echo "- Mobile Details presentation remains on the existing implementation."
+            echo "- TV2 marker advanced to stage=3."
+            echo "- Version advanced to ${TV2_VERSION}."
+            echo "- Kotlin compilation passed before commit."
+          } >> "$GITHUB_STEP_SUMMARY"
