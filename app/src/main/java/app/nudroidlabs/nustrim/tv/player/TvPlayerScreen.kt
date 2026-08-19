@@ -1,5 +1,6 @@
 package app.nudroidlabs.nustrim.tv.player
 
+import android.net.Uri
 import android.view.ViewGroup
 import androidx.activity.compose.BackHandler
 import androidx.annotation.OptIn
@@ -15,6 +16,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Surface
@@ -32,6 +35,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
@@ -50,6 +54,8 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.TrackSelectionOverride
+import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
@@ -59,9 +65,25 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import app.nudroidlabs.nustrim.core.model.StreamSource
 import app.nudroidlabs.nustrim.tv.theme.TvColors
+import app.nudroidlabs.nustrim.ui.SubtitleDisplayMode
+import app.nudroidlabs.nustrim.ui.UiPreferences
 import kotlinx.coroutines.delay
 import kotlin.math.max
 import kotlin.math.min
+import java.util.Locale
+
+private enum class TvPlayerTrackPanel {
+    AUDIO,
+    SUBTITLES
+}
+
+private data class TvPlayerTrackOption(
+    val group: Tracks.Group,
+    val trackIndex: Int,
+    val label: String,
+    val language: String,
+    val selected: Boolean
+)
 
 @OptIn(UnstableApi::class)
 @Composable
@@ -73,6 +95,7 @@ fun TvPlayerScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val preferences = remember(context) { UiPreferences(context) }
     val focusRequester = remember(stream.url) { FocusRequester() }
 
     val player = remember(context, stream.url, stream.headers) {
@@ -103,6 +126,44 @@ fun TvPlayerScreen(
     var positionMs by remember(stream.url) { mutableLongStateOf(0L) }
     var durationMs by remember(stream.url) { mutableLongStateOf(0L) }
     var bufferedMs by remember(stream.url) { mutableLongStateOf(0L) }
+    var trackPanel by remember(stream.url) {
+        mutableStateOf<TvPlayerTrackPanel?>(null)
+    }
+    var audioTracks by remember(stream.url) {
+        mutableStateOf<List<TvPlayerTrackOption>>(emptyList())
+    }
+    var subtitleTracks by remember(stream.url) {
+        mutableStateOf<List<TvPlayerTrackOption>>(emptyList())
+    }
+    var subtitlesDisabled by remember(stream.url) { mutableStateOf(false) }
+
+    val preferredSubtitleLanguages = remember(stream.url) {
+        listOf(
+            preferences.subtitlePreferredLanguage,
+            preferences.subtitleSecondPreferredLanguage
+        )
+            .map(::normalizeTvTrackLanguage)
+            .filter(String::isNotBlank)
+            .distinct()
+    }
+    val visibleSubtitleTracks = if (
+        preferences.subtitleDisplayMode == SubtitleDisplayMode.SHOW_ALL
+    ) {
+        subtitleTracks
+    } else {
+        subtitleTracks.filter { option ->
+            normalizeTvTrackLanguage(option.language) in preferredSubtitleLanguages ||
+                option.selected
+        }
+    }
+    val selectedAudioLabel = audioTracks
+        .firstOrNull { it.selected }
+        ?.label
+        ?: "Auto"
+    val selectedSubtitleLabel = when {
+        subtitlesDisabled -> "Off"
+        else -> subtitleTracks.firstOrNull { it.selected }?.label ?: "Auto"
+    }
 
     fun revealControls() {
         controlsVisible = true
@@ -145,6 +206,52 @@ fun TvPlayerScreen(
         revealControls()
     }
 
+    fun openTrackPanel(panel: TvPlayerTrackPanel) {
+        if (playbackError != null) return
+        trackPanel = panel
+        revealControls()
+    }
+
+    fun selectTrack(option: TvPlayerTrackOption) {
+        player.trackSelectionParameters = player.trackSelectionParameters
+            .buildUpon()
+            .setTrackTypeDisabled(option.group.type, false)
+            .setOverrideForType(
+                TrackSelectionOverride(
+                    option.group.mediaTrackGroup,
+                    option.trackIndex
+                )
+            )
+            .build()
+
+        if (option.group.type == C.TRACK_TYPE_TEXT) {
+            subtitlesDisabled = false
+            val language = normalizeTvTrackLanguage(option.language)
+            if (language.isNotBlank()) {
+                val previous = normalizeTvTrackLanguage(
+                    preferences.subtitlePreferredLanguage
+                )
+                if (previous.isNotBlank() && previous != language) {
+                    preferences.subtitleSecondPreferredLanguage = previous
+                }
+                preferences.subtitlePreferredLanguage = language
+            }
+        }
+
+        trackPanel = null
+        revealControls()
+    }
+
+    fun disableSubtitles() {
+        player.trackSelectionParameters = player.trackSelectionParameters
+            .buildUpon()
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+            .build()
+        subtitlesDisabled = true
+        trackPanel = null
+        revealControls()
+    }
+
     DisposableEffect(player, stream.url) {
         val listener = object : Player.Listener {
             override fun onIsPlayingChanged(value: Boolean) {
@@ -161,6 +268,17 @@ fun TvPlayerScreen(
                 }
             }
 
+            override fun onTracksChanged(tracks: Tracks) {
+                audioTracks = collectTvTrackOptions(
+                    tracks = tracks,
+                    trackType = C.TRACK_TYPE_AUDIO
+                )
+                subtitleTracks = collectTvTrackOptions(
+                    tracks = tracks,
+                    trackType = C.TRACK_TYPE_TEXT
+                )
+            }
+
             override fun onPlayerError(error: PlaybackException) {
                 buffering = false
                 controlsVisible = true
@@ -172,6 +290,26 @@ fun TvPlayerScreen(
 
         player.addListener(listener)
 
+        val primarySubtitleLanguage = normalizeTvTrackLanguage(
+            preferences.subtitlePreferredLanguage
+        )
+        val secondSubtitleLanguage = normalizeTvTrackLanguage(
+            preferences.subtitleSecondPreferredLanguage
+        )
+        val preferredTextLanguages = listOf(
+            primarySubtitleLanguage,
+            secondSubtitleLanguage
+        )
+            .filter(String::isNotBlank)
+            .distinct()
+
+        if (preferredTextLanguages.isNotEmpty()) {
+            player.trackSelectionParameters = player.trackSelectionParameters
+                .buildUpon()
+                .setPreferredTextLanguages(*preferredTextLanguages.toTypedArray())
+                .build()
+        }
+
         val itemBuilder = MediaItem.Builder()
             .setUri(stream.url)
 
@@ -179,6 +317,32 @@ fun TvPlayerScreen(
         val url = stream.url.lowercase()
         if ("hls" in type || "m3u8" in type || ".m3u8" in url) {
             itemBuilder.setMimeType(MimeTypes.APPLICATION_M3U8)
+        }
+
+        val subtitleConfigurations = stream.subtitles.mapNotNull { subtitle ->
+            val subtitleUrl = subtitle.url.trim()
+            if (subtitleUrl.isBlank()) {
+                null
+            } else {
+                val builder = MediaItem.SubtitleConfiguration.Builder(
+                    Uri.parse(subtitleUrl)
+                )
+                    .setMimeType(inferTvSubtitleMimeType(subtitleUrl))
+
+                subtitle.language
+                    .trim()
+                    .takeIf { it.isNotBlank() }
+                    ?.let(builder::setLanguage)
+                subtitle.label
+                    .trim()
+                    .takeIf { it.isNotBlank() }
+                    ?.let(builder::setLabel)
+
+                builder.build()
+            }
+        }
+        if (subtitleConfigurations.isNotEmpty()) {
+            itemBuilder.setSubtitleConfigurations(subtitleConfigurations)
         }
 
         player.setMediaItem(itemBuilder.build())
@@ -202,14 +366,24 @@ fun TvPlayerScreen(
         }
     }
 
-    LaunchedEffect(interactionToken, isPlaying, playbackError) {
-        if (isPlaying && playbackError == null) {
+    LaunchedEffect(
+        interactionToken,
+        isPlaying,
+        playbackError,
+        trackPanel
+    ) {
+        if (
+            isPlaying &&
+            playbackError == null &&
+            trackPanel == null
+        ) {
             val token = interactionToken
             delay(3500)
             if (
                 token == interactionToken &&
                 isPlaying &&
-                playbackError == null
+                playbackError == null &&
+                trackPanel == null
             ) {
                 controlsVisible = false
             }
@@ -223,7 +397,21 @@ fun TvPlayerScreen(
         runCatching { focusRequester.requestFocus() }
     }
 
-    BackHandler(onBack = onBack)
+    LaunchedEffect(trackPanel) {
+        if (trackPanel == null) {
+            delay(40)
+            runCatching { focusRequester.requestFocus() }
+        }
+    }
+
+    BackHandler {
+        if (trackPanel != null) {
+            trackPanel = null
+            revealControls()
+        } else {
+            onBack()
+        }
+    }
 
     Box(
         modifier = modifier
@@ -232,6 +420,8 @@ fun TvPlayerScreen(
             .focusRequester(focusRequester)
             .onPreviewKeyEvent { event ->
                 if (event.type != KeyEventType.KeyDown) {
+                    false
+                } else if (trackPanel != null) {
                     false
                 } else {
                     when (event.key) {
@@ -242,6 +432,16 @@ fun TvPlayerScreen(
 
                         Key.DirectionRight -> {
                             seekBy(10_000L)
+                            true
+                        }
+
+                        Key.DirectionUp -> {
+                            openTrackPanel(TvPlayerTrackPanel.AUDIO)
+                            true
+                        }
+
+                        Key.DirectionDown -> {
+                            openTrackPanel(TvPlayerTrackPanel.SUBTITLES)
                             true
                         }
 
@@ -433,7 +633,14 @@ fun TvPlayerScreen(
                     }
 
                     Text(
-                        text = "${stream.name.ifBlank { "Source" }}  •  Left/Right seek  •  OK Play/Pause  •  Back Sources",
+                        text = "Audio: $selectedAudioLabel  •  Subtitles: $selectedSubtitleLabel",
+                        color = Color.White.copy(alpha = 0.78f),
+                        fontSize = 11.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = "${stream.name.ifBlank { "Source" }}  •  ▲ Audio  •  ▼ Subtitles  •  Left/Right seek  •  OK Play/Pause  •  Back Sources",
                         color = Color.White.copy(alpha = 0.68f),
                         fontSize = 11.sp,
                         maxLines = 1,
@@ -442,6 +649,305 @@ fun TvPlayerScreen(
                 }
             }
         }
+
+        trackPanel?.let { panel ->
+            val panelOptions = when (panel) {
+                TvPlayerTrackPanel.AUDIO -> audioTracks
+                TvPlayerTrackPanel.SUBTITLES -> visibleSubtitleTracks
+            }
+            TvPlayerTrackPicker(
+                title = when (panel) {
+                    TvPlayerTrackPanel.AUDIO -> "Audio"
+                    TvPlayerTrackPanel.SUBTITLES -> "Subtitles"
+                },
+                options = panelOptions,
+                showOff = panel == TvPlayerTrackPanel.SUBTITLES,
+                offSelected = subtitlesDisabled,
+                onSelect = ::selectTrack,
+                onOff = ::disableSubtitles,
+                onClose = {
+                    trackPanel = null
+                    revealControls()
+                },
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .padding(end = 28.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun TvPlayerTrackPicker(
+    title: String,
+    options: List<TvPlayerTrackOption>,
+    showOff: Boolean,
+    offSelected: Boolean,
+    onSelect: (TvPlayerTrackOption) -> Unit,
+    onOff: () -> Unit,
+    onClose: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val firstRequester = remember(title) { FocusRequester() }
+    val hasFirstTarget = showOff || options.isNotEmpty()
+
+    LaunchedEffect(title, options.size, showOff) {
+        if (hasFirstTarget) {
+            delay(60)
+            runCatching { firstRequester.requestFocus() }
+        }
+    }
+
+    Surface(
+        modifier = modifier
+            .width(420.dp)
+            .height(480.dp),
+        color = TvColors.BackgroundElevated.copy(alpha = 0.98f),
+        shape = RoundedCornerShape(18.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(
+                text = title,
+                color = TvColors.TextPrimary,
+                fontSize = 23.sp,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = "OK Select  •  Left/Back Close",
+                color = TvColors.TextSecondary,
+                fontSize = 12.sp
+            )
+            if (!hasFirstTarget) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "No $title tracks available.",
+                        color = TvColors.TextSecondary,
+                        fontSize = 14.sp
+                    )
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    if (showOff) {
+                        item(key = "off") {
+                            TvPlayerTrackRow(
+                                label = "Off",
+                                selected = offSelected,
+                                focusRequester = firstRequester,
+                                onSelect = onOff,
+                                onClose = onClose
+                            )
+                        }
+                    }
+                    itemsIndexed(
+                        items = options,
+                        key = { index, option ->
+                            "${option.group.type}|${option.language}|${option.label}|$index"
+                        }
+                    ) { index, option ->
+                        TvPlayerTrackRow(
+                            label = option.label,
+                            selected = option.selected && !offSelected,
+                            focusRequester = if (!showOff && index == 0) {
+                                firstRequester
+                            } else {
+                                null
+                            },
+                            onSelect = { onSelect(option) },
+                            onClose = onClose
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TvPlayerTrackRow(
+    label: String,
+    selected: Boolean,
+    focusRequester: FocusRequester?,
+    onSelect: () -> Unit,
+    onClose: () -> Unit
+) {
+    val requester = remember(label, focusRequester) {
+        focusRequester ?: FocusRequester()
+    }
+    var focused by remember(label) { mutableStateOf(false) }
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(48.dp)
+            .focusRequester(requester)
+            .onFocusChanged { focused = it.hasFocus }
+            .onPreviewKeyEvent { event ->
+                when {
+                    event.type == KeyEventType.KeyDown &&
+                        event.key == Key.DirectionLeft -> {
+                        onClose()
+                        true
+                    }
+
+                    event.type == KeyEventType.KeyDown &&
+                        event.key == Key.DirectionRight -> true
+
+                    event.type == KeyEventType.KeyDown &&
+                        (
+                            event.key == Key.DirectionCenter ||
+                                event.key == Key.Enter
+                            ) -> {
+                        onSelect()
+                        true
+                    }
+
+                    else -> false
+                }
+            }
+            .focusable(),
+        color = when {
+            focused -> TvColors.FocusRing
+            selected -> TvColors.Accent.copy(alpha = 0.76f)
+            else -> TvColors.SurfaceVariant
+        },
+        shape = RoundedCornerShape(10.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 15.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                text = label,
+                color = if (focused) TvColors.Background else TvColors.TextPrimary,
+                fontSize = 14.sp,
+                fontWeight = if (focused || selected) {
+                    FontWeight.SemiBold
+                } else {
+                    FontWeight.Normal
+                },
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (selected) {
+                Text(
+                    text = "Selected",
+                    color = if (focused) {
+                        TvColors.Background.copy(alpha = 0.78f)
+                    } else {
+                        TvColors.TextSecondary
+                    },
+                    fontSize = 11.sp
+                )
+            }
+        }
+    }
+}
+
+private fun collectTvTrackOptions(
+    tracks: Tracks,
+    trackType: Int
+): List<TvPlayerTrackOption> {
+    val options = mutableListOf<TvPlayerTrackOption>()
+
+    tracks.groups
+        .filter { it.type == trackType }
+        .forEach { group ->
+            for (index in 0 until group.length) {
+                if (!group.isTrackSupported(index)) continue
+
+                val format = group.getTrackFormat(index)
+                val language = normalizeTvTrackLanguage(format.language)
+                val languageLabel = displayTvTrackLanguage(language)
+                val detail = buildList {
+                    format.label
+                        ?.trim()
+                        ?.takeIf { it.isNotBlank() && it != languageLabel }
+                        ?.let(::add)
+                    if (trackType == C.TRACK_TYPE_AUDIO) {
+                        format.channelCount
+                            .takeIf { it > 0 }
+                            ?.let { add("${it}ch") }
+                    }
+                    format.codecs
+                        ?.substringBefore(",")
+                        ?.trim()
+                        ?.takeIf { it.isNotBlank() }
+                        ?.let(::add)
+                }
+                    .distinct()
+                    .joinToString(" · ")
+
+                options += TvPlayerTrackOption(
+                    group = group,
+                    trackIndex = index,
+                    label = if (detail.isBlank()) {
+                        languageLabel
+                    } else {
+                        "$languageLabel · $detail"
+                    },
+                    language = language,
+                    selected = group.isTrackSelected(index)
+                )
+            }
+        }
+
+    return options
+}
+
+private fun normalizeTvTrackLanguage(
+    value: String?
+): String {
+    val raw = value
+        ?.trim()
+        ?.lowercase(Locale.ROOT)
+        .orEmpty()
+    if (raw.isBlank() || raw == "und") return ""
+
+    return when (raw.substringBefore("-").substringBefore("_")) {
+        "may", "msa", "zsm" -> "ms"
+        "eng" -> "en"
+        else -> raw.substringBefore("-").substringBefore("_")
+    }
+}
+
+private fun displayTvTrackLanguage(
+    language: String
+): String {
+    if (language.isBlank()) return "Unknown"
+    val locale = Locale.forLanguageTag(language)
+    return locale.getDisplayLanguage(Locale.getDefault())
+        .takeIf { it.isNotBlank() }
+        ?.replaceFirstChar { it.uppercase() }
+        ?: language.uppercase(Locale.ROOT)
+}
+
+private fun inferTvSubtitleMimeType(
+    url: String
+): String {
+    val clean = url
+        .substringBefore("?")
+        .substringBefore("#")
+        .lowercase(Locale.ROOT)
+
+    return when {
+        clean.endsWith(".vtt") -> "text/vtt"
+        clean.endsWith(".ass") || clean.endsWith(".ssa") -> "text/x-ssa"
+        clean.endsWith(".ttml") || clean.endsWith(".xml") -> "application/ttml+xml"
+        else -> "application/x-subrip"
     }
 }
 

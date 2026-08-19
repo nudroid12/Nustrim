@@ -64,10 +64,12 @@ import app.nudroidlabs.nustrim.core.model.MediaEpisode
 import app.nudroidlabs.nustrim.core.model.MediaItem
 import app.nudroidlabs.nustrim.core.model.MediaType
 import app.nudroidlabs.nustrim.core.model.StreamSource
+import app.nudroidlabs.nustrim.core.model.SubtitleSource
 import app.nudroidlabs.nustrim.core.source.SourceEngine
 import app.nudroidlabs.nustrim.core.source.SourceSession
 import app.nudroidlabs.nustrim.core.source.StreamAggregationPhase
 import app.nudroidlabs.nustrim.core.source.StreamSourceAggregator
+import app.nudroidlabs.nustrim.core.source.SubtitleSourceAggregator
 import app.nudroidlabs.nustrim.tv.home.TvHomeEntry
 import app.nudroidlabs.nustrim.tv.player.TvPlayerScreen
 import app.nudroidlabs.nustrim.tv.theme.TvColors
@@ -99,6 +101,7 @@ fun TvDetailsScreen(
         mutableStateOf(entry.item)
     }
     var loading by remember(entry.stableKey) { mutableStateOf(true) }
+    var detailsResolved by remember(entry.stableKey) { mutableStateOf(false) }
     var errorMessage by remember(entry.stableKey) { mutableStateOf<String?>(null) }
     var selectedSeason by remember(entry.stableKey) { mutableStateOf<Int?>(null) }
     var sourcePreview by remember(entry.stableKey) {
@@ -128,10 +131,12 @@ fun TvDetailsScreen(
             onSuccess = { loaded ->
                 detailedItem = loaded
                 savedToLibrary = mediaStore.isSaved(entry.sourceUrl, loaded)
+                detailsResolved = true
                 loading = false
                 errorMessage = null
             },
             onError = { error ->
+                detailsResolved = true
                 loading = false
                 errorMessage = error.message ?: "Could not load full details."
             }
@@ -140,6 +145,7 @@ fun TvDetailsScreen(
 
     LaunchedEffect(entry.stableKey) {
         loading = true
+        detailsResolved = false
         errorMessage = null
 
         val existing = entry.session
@@ -152,17 +158,24 @@ fun TvDetailsScreen(
                     loadWith(session)
                 },
                 onError = { error ->
+                    detailsResolved = true
                     loading = false
                     errorMessage = error.message ?: "Could not open source."
                 }
             )
         } else {
+            detailsResolved = true
             loading = false
             errorMessage = "Source information is unavailable."
         }
     }
 
-    val sortedEpisodes = detailedItem.episodes.sortedWith(
+    val resolvedEpisodes = if (detailsResolved) {
+        detailedItem.episodes
+    } else {
+        emptyList()
+    }
+    val sortedEpisodes = resolvedEpisodes.sortedWith(
         compareBy<MediaEpisode>(
             { it.season ?: Int.MAX_VALUE },
             { it.episode ?: Int.MAX_VALUE },
@@ -324,9 +337,11 @@ fun TvDetailsScreen(
                         focusRequester = firstActionRequester,
                         onFocused = { lastDetailsRequester = it },
                         onClick = {
-                            openSources(
-                                if (isSeries) primaryEpisode else null
-                            )
+                            if (!loading) {
+                                openSources(
+                                    if (isSeries) primaryEpisode else null
+                                )
+                            }
                         }
                     )
                     TvDetailsActionButton(
@@ -858,6 +873,9 @@ private fun TvSourcesStage4Modal(
 ) {
     val context = LocalContext.current
     val aggregator = remember(context) { StreamSourceAggregator(context) }
+    val subtitleAggregator = remember(context) {
+        SubtitleSourceAggregator(context)
+    }
     val requestKey = remember(
         request.sourceUrl,
         request.item.id,
@@ -870,6 +888,9 @@ private fun TvSourcesStage4Modal(
     var loading by remember(requestKey) { mutableStateOf(true) }
     var errorMessage by remember(requestKey) { mutableStateOf<String?>(null) }
     var streams by remember(requestKey) { mutableStateOf<List<StreamSource>>(emptyList()) }
+    var aggregatedSubtitles by remember(requestKey) {
+        mutableStateOf<List<SubtitleSource>>(emptyList())
+    }
     var selectedStreamUrl by remember(requestKey) { mutableStateOf<String?>(null) }
     var scanStatus by remember(requestKey) {
         mutableStateOf("Preparing installed addons...")
@@ -967,6 +988,18 @@ private fun TvSourcesStage4Modal(
         )
     }
 
+    LaunchedEffect(requestKey, reloadToken) {
+        aggregatedSubtitles = emptyList()
+        subtitleAggregator.load(
+            item = request.item,
+            episode = request.episode,
+            preferredSession = request.session,
+            onSuccess = { result ->
+                aggregatedSubtitles = result.subtitles
+            }
+        )
+    }
+
     BackHandler(onBack = onClose)
 
     Box(
@@ -1022,7 +1055,12 @@ private fun TvSourcesStage4Modal(
 
                     if (!loading && streams.isNotEmpty()) {
                         Text(
-                            text = "${streams.size} playable",
+                            text = buildString {
+                                append("${streams.size} playable")
+                                if (aggregatedSubtitles.isNotEmpty()) {
+                                    append(" · ${aggregatedSubtitles.size} subs")
+                                }
+                            },
                             color = TvColors.Accent,
                             fontWeight = FontWeight.SemiBold,
                             fontSize = 13.sp
@@ -1123,7 +1161,17 @@ private fun TvSourcesStage4Modal(
                                     focusRequester = streamRequesters[index],
                                     onSelected = {
                                         selectedStreamUrl = stream.url
-                                        onPlayStream(stream)
+                                        val mergedSubtitles = (
+                                            stream.subtitles + aggregatedSubtitles
+                                            )
+                                            .distinctBy { subtitle ->
+                                                "${subtitle.url}|${subtitle.language}|${subtitle.label}"
+                                            }
+                                        onPlayStream(
+                                            stream.copy(
+                                                subtitles = mergedSubtitles
+                                            )
+                                        )
                                     }
                                 )
                             }
