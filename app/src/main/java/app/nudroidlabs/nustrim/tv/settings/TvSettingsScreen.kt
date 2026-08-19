@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Info
@@ -73,8 +74,9 @@ fun TvSettingsScreen(
         )
     }
 
-    val installedSources = remember {
-        sourceStore.sources()
+    val listState = rememberLazyListState()
+    var installedSources by remember {
+        mutableStateOf(sourceStore.sources())
     }
     var sourceStates by remember {
         mutableStateOf(
@@ -83,15 +85,32 @@ fun TvSettingsScreen(
             }
         )
     }
+    var lastFocusedRequester by remember {
+        mutableStateOf<FocusRequester?>(null)
+    }
+
+    fun reportFocus(requester: FocusRequester) {
+        lastFocusedRequester = requester
+        onContentFocused(requester)
+    }
 
     LaunchedEffect(contentFocusRequestToken) {
+        val latestSources = sourceStore.sources()
+        installedSources = latestSources
+        sourceStates = latestSources.associate { source ->
+            source.url to (sourceStates[source.url] ?: source.enabled)
+        }
+
         if (contentFocusRequestToken > 0) {
-            delay(40)
-            runCatching { firstContentRequester.requestFocus() }
+            delay(60)
+            runCatching {
+                (lastFocusedRequester ?: firstContentRequester).requestFocus()
+            }
         }
     }
 
     LazyColumn(
+        state = listState,
         modifier = Modifier
             .fillMaxSize()
             .background(TvColors.Background),
@@ -115,7 +134,13 @@ fun TvSettingsScreen(
                     fontSize = 30.sp
                 )
                 Text(
-                    text = "TV playback and subtitle preferences.",
+                    text = buildString {
+                        append("TV playback, subtitles and sources")
+                        if (installedSources.isNotEmpty()) {
+                            val enabledCount = sourceStates.values.count { it }
+                            append(" · $enabledCount/${installedSources.size} sources enabled")
+                        }
+                    },
                     color = TvColors.TextSecondary,
                     fontSize = 13.sp
                 )
@@ -133,7 +158,7 @@ fun TvSettingsScreen(
                 icon = Icons.Outlined.PlayArrow,
                 checked = autoplayFirst,
                 focusRequester = firstContentRequester,
-                onFocused = onContentFocused,
+                onFocused = ::reportFocus,
                 onMoveLeft = onMoveLeft,
                 onToggle = {
                     autoplayFirst = !autoplayFirst
@@ -148,7 +173,7 @@ fun TvSettingsScreen(
                 summary = "Continue to the next episode when available.",
                 icon = Icons.Outlined.PlayArrow,
                 checked = autoplayNext,
-                onFocused = onContentFocused,
+                onFocused = ::reportFocus,
                 onMoveLeft = onMoveLeft,
                 onToggle = {
                     autoplayNext = !autoplayNext
@@ -171,7 +196,7 @@ fun TvSettingsScreen(
                 },
                 icon = Icons.Outlined.Info,
                 checked = showAllSubtitles,
-                onFocused = onContentFocused,
+                onFocused = ::reportFocus,
                 onMoveLeft = onMoveLeft,
                 onToggle = {
                     showAllSubtitles = !showAllSubtitles
@@ -203,7 +228,7 @@ fun TvSettingsScreen(
                     },
                     icon = Icons.Outlined.Settings,
                     checked = checked,
-                    onFocused = onContentFocused,
+                    onFocused = ::reportFocus,
                     onMoveLeft = onMoveLeft,
                     onToggle = {
                         val next = !checked
@@ -220,7 +245,7 @@ fun TvSettingsScreen(
                     title = "No sources installed",
                     summary = "Install a source from the mobile source manager.",
                     icon = Icons.Outlined.Info,
-                    onFocused = onContentFocused,
+                    onFocused = ::reportFocus,
                     onMoveLeft = onMoveLeft
                 )
             }
@@ -235,7 +260,7 @@ fun TvSettingsScreen(
                 title = "Nustrim TV",
                 summary = "Version ${BuildConfig.VERSION_NAME} · Remote-first interface",
                 icon = Icons.Outlined.Info,
-                onFocused = onContentFocused,
+                onFocused = ::reportFocus,
                 onMoveLeft = onMoveLeft
             )
         }

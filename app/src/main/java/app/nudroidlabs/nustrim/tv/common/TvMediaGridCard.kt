@@ -1,13 +1,17 @@
 package app.nudroidlabs.nustrim.tv.common
 
+import android.os.SystemClock
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Surface
@@ -17,6 +21,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -37,15 +42,21 @@ import app.nudroidlabs.nustrim.tv.home.TvHomeEntry
 import app.nudroidlabs.nustrim.tv.theme.TvColors
 import coil3.compose.AsyncImage
 
+private const val GRID_CARD_LONG_PRESS_MS = 650L
+
 @Composable
 fun TvMediaGridCard(
     entry: TvHomeEntry,
     focusRequester: FocusRequester? = null,
+    badgeText: String? = null,
+    progressFraction: Float? = null,
     onFocused: (FocusRequester) -> Unit,
     onMoveLeft: (() -> Unit)? = null,
+    onLongPress: ((TvHomeEntry) -> Unit)? = null,
     onOpen: (TvHomeEntry) -> Unit
 ) {
     var focused by remember(entry.stableKey) { mutableStateOf(false) }
+    var selectDownAt by remember(entry.stableKey) { mutableStateOf<Long?>(null) }
     val requester = remember(entry.stableKey, focusRequester) {
         focusRequester ?: FocusRequester()
     }
@@ -70,6 +81,9 @@ fun TvMediaGridCard(
                 .focusRequester(requester)
                 .onFocusChanged { state ->
                     focused = state.hasFocus
+                    if (!state.hasFocus) {
+                        selectDownAt = null
+                    }
                     if (state.hasFocus) onFocused(requester)
                 }
                 .onPreviewKeyEvent { event ->
@@ -81,11 +95,34 @@ fun TvMediaGridCard(
                             true
                         }
 
-                        event.type == KeyEventType.KeyDown &&
-                            (
-                                event.key == Key.DirectionCenter ||
-                                    event.key == Key.Enter
-                                ) -> {
+                        onLongPress != null &&
+                            event.type == KeyEventType.KeyDown &&
+                            isGridSelectKey(event.key) -> {
+                            if (selectDownAt == null) {
+                                selectDownAt = SystemClock.uptimeMillis()
+                            }
+                            true
+                        }
+
+                        onLongPress != null &&
+                            event.type == KeyEventType.KeyUp &&
+                            isGridSelectKey(event.key) -> {
+                            val pressedAt = selectDownAt
+                            selectDownAt = null
+                            val heldMs = pressedAt
+                                ?.let { SystemClock.uptimeMillis() - it }
+                                ?: 0L
+                            if (heldMs >= GRID_CARD_LONG_PRESS_MS) {
+                                onLongPress(entry)
+                            } else {
+                                onOpen(entry)
+                            }
+                            true
+                        }
+
+                        onLongPress == null &&
+                            event.type == KeyEventType.KeyDown &&
+                            isGridSelectKey(event.key) -> {
                             onOpen(entry)
                             true
                         }
@@ -105,17 +142,59 @@ fun TvMediaGridCard(
                 )
             }
         ) {
-            val image = entry.item.posterUrl
-                .takeIf { it.isNotBlank() }
-                ?: entry.item.backgroundUrl
+            Box(modifier = Modifier.fillMaxSize()) {
+                val image = entry.item.posterUrl
+                    .takeIf { it.isNotBlank() }
+                    ?: entry.item.backgroundUrl
+                if (image.isNotBlank()) {
+                    AsyncImage(
+                        model = image,
+                        contentDescription = entry.item.title,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                }
 
-            if (image.isNotBlank()) {
-                AsyncImage(
-                    model = image,
-                    contentDescription = entry.item.title,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop
-                )
+                badgeText
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { badge ->
+                        Text(
+                            text = badge,
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 9.sp,
+                            modifier = Modifier
+                                .align(Alignment.TopStart)
+                                .padding(7.dp)
+                                .background(
+                                    Color.Black.copy(alpha = 0.78f),
+                                    RoundedCornerShape(6.dp)
+                                )
+                                .padding(
+                                    horizontal = 6.dp,
+                                    vertical = 3.dp
+                                )
+                        )
+                    }
+
+                progressFraction
+                    ?.takeIf { it > 0f }
+                    ?.let { progress ->
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .fillMaxWidth()
+                                .height(4.dp)
+                                .background(Color.Black.copy(alpha = 0.58f))
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth(progress.coerceIn(0f, 1f))
+                                    .height(4.dp)
+                                    .background(TvColors.FocusRing)
+                            )
+                        }
+                    }
             }
         }
 
@@ -151,3 +230,6 @@ fun TvMediaGridCard(
             }
     }
 }
+
+private fun isGridSelectKey(key: Key): Boolean =
+    key == Key.DirectionCenter || key == Key.Enter

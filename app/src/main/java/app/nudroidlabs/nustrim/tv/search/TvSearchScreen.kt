@@ -1,5 +1,6 @@
 package app.nudroidlabs.nustrim.tv.search
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
@@ -16,7 +17,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.CircularProgressIndicator
@@ -47,10 +51,10 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
+import app.nudroidlabs.nustrim.core.library.LocalMediaStore
 import app.nudroidlabs.nustrim.core.model.MediaItem
 import app.nudroidlabs.nustrim.core.source.InstalledSourceStore
 import app.nudroidlabs.nustrim.core.source.SearchableSourceSession
@@ -59,6 +63,8 @@ import app.nudroidlabs.nustrim.tv.common.TvMediaGridCard
 import app.nudroidlabs.nustrim.tv.home.TvHomeEntry
 import app.nudroidlabs.nustrim.tv.theme.TvColors
 import kotlinx.coroutines.delay
+
+private const val SEARCH_FOCUS_RESTORE_MS = 60L
 
 @Composable
 fun TvSearchScreen(
@@ -71,7 +77,10 @@ fun TvSearchScreen(
     val context = LocalContext.current
     val engine = remember(context) { SourceEngine(context) }
     val sourceStore = remember(context) { InstalledSourceStore(context) }
+    val mediaStore = remember(context) { LocalMediaStore(context) }
     val searchButtonRequester = remember { FocusRequester() }
+    val resultGridState = rememberLazyGridState()
+    val requesterByKey = remember { mutableMapOf<String, FocusRequester>() }
 
     var query by remember { mutableStateOf("") }
     var submittedQuery by remember { mutableStateOf("") }
@@ -79,6 +88,12 @@ fun TvSearchScreen(
     var searchableCount by remember { mutableIntStateOf(0) }
     var failureCount by remember { mutableIntStateOf(0) }
     var searchGeneration by remember { mutableIntStateOf(0) }
+    var localMediaRevision by remember { mutableIntStateOf(0) }
+    var focusRestoreRevision by remember { mutableIntStateOf(0) }
+    var lastFocusedResultKey by remember { mutableStateOf<String?>(null) }
+    var pendingFocusKey by remember { mutableStateOf<String?>(null) }
+    var optionsEntry by remember { mutableStateOf<TvHomeEntry?>(null) }
+
     val results = remember { mutableStateListOf<TvHomeEntry>() }
 
     fun mediaIdentity(item: MediaItem): String {
@@ -86,6 +101,11 @@ fun TvSearchScreen(
             ?.takeIf { it.isNotBlank() }
             ?: item.id
         return "${item.type}|$id"
+    }
+
+    fun restoreResultFocus(key: String?) {
+        pendingFocusKey = key
+        focusRestoreRevision += 1
     }
 
     fun runSearch() {
@@ -98,6 +118,8 @@ fun TvSearchScreen(
         loading = true
         searchableCount = 0
         failureCount = 0
+        lastFocusedResultKey = null
+        requesterByKey.clear()
         results.clear()
 
         val installed = sourceStore.sources()
@@ -123,7 +145,6 @@ fun TvSearchScreen(
                 sourceUrl,
                 onSuccess = success@{ session ->
                     if (generation != searchGeneration) return@success
-
                     val searchable = session as? SearchableSourceSession
                     if (
                         searchable == null ||
@@ -173,11 +194,40 @@ fun TvSearchScreen(
         }
     }
 
-    LaunchedEffect(contentFocusRequestToken) {
-        if (contentFocusRequestToken > 0) {
+    LaunchedEffect(
+        contentFocusRequestToken,
+        results.size,
+        focusRestoreRevision
+    ) {
+        val explicitRestore = focusRestoreRevision > 0 && pendingFocusKey != null
+        if (contentFocusRequestToken <= 0 && !explicitRestore) return@LaunchedEffect
+
+        val preferredKey = pendingFocusKey ?: lastFocusedResultKey
+        val restoreIndex = preferredKey
+            ?.let { key -> results.indexOfFirst { it.stableKey == key } }
+            ?: -1
+
+        if (restoreIndex >= 0 && preferredKey != null) {
+            resultGridState.scrollToItem(restoreIndex)
+            delay(SEARCH_FOCUS_RESTORE_MS)
+            val restored = requesterByKey[preferredKey]
+            if (restored != null) {
+                runCatching { restored.requestFocus() }
+            } else {
+                runCatching { firstContentRequester.requestFocus() }
+            }
+        } else {
             delay(40)
             runCatching { firstContentRequester.requestFocus() }
         }
+
+        pendingFocusKey = null
+    }
+
+    BackHandler(enabled = optionsEntry != null) {
+        val key = optionsEntry?.stableKey
+        optionsEntry = null
+        restoreResultFocus(key)
     }
 
     Column(
@@ -306,6 +356,7 @@ fun TvSearchScreen(
         } else {
             LazyVerticalGrid(
                 columns = GridCells.Fixed(6),
+                state = resultGridState,
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(
                     top = 4.dp,
@@ -319,15 +370,82 @@ fun TvSearchScreen(
                     items = results,
                     key = { _, entry -> entry.stableKey }
                 ) { index, entry ->
+                    val requester = remember(entry.stableKey) {
+                        FocusRequester()
+                    }
+                    requesterByKey[entry.stableKey] = requester
+
+                    val watched = remember(localMediaRevision, entry.stableKey) {
+                        mediaStore.isWatched(entry.sourceUrl, entry.item)
+                    }
+                    val saved = remember(localMediaRevision, entry.stableKey) {
+                        mediaStore.isSaved(entry.sourceUrl, entry.item)
+                    }
+
                     TvMediaGridCard(
                         entry = entry,
-                        onFocused = onContentFocused,
+                        focusRequester = requester,
+                        badgeText = when {
+                            watched -> "WATCHED"
+                            saved -> "LIBRARY"
+                            else -> null
+                        },
+                        onFocused = { focusedRequester ->
+                            lastFocusedResultKey = entry.stableKey
+                            onContentFocused(focusedRequester)
+                        },
                         onMoveLeft = if (index % 6 == 0) onMoveLeft else null,
+                        onLongPress = {
+                            optionsEntry = it
+                        },
                         onOpen = onOpen
                     )
                 }
             }
         }
+    }
+
+    optionsEntry?.let { entry ->
+        val saved = remember(localMediaRevision, entry.stableKey) {
+            mediaStore.isSaved(entry.sourceUrl, entry.item)
+        }
+        val watched = remember(localMediaRevision, entry.stableKey) {
+            mediaStore.isWatched(entry.sourceUrl, entry.item)
+        }
+
+        TvSearchOptionsOverlay(
+            entry = entry,
+            saved = saved,
+            watched = watched,
+            onDismiss = {
+                optionsEntry = null
+                restoreResultFocus(entry.stableKey)
+            },
+            onOpen = {
+                optionsEntry = null
+                onOpen(entry)
+            },
+            onToggleSaved = {
+                mediaStore.setSaved(
+                    sourceUrl = entry.sourceUrl,
+                    item = entry.item,
+                    saved = !saved
+                )
+                localMediaRevision += 1
+                optionsEntry = null
+                restoreResultFocus(entry.stableKey)
+            },
+            onToggleWatched = {
+                mediaStore.setWatched(
+                    sourceUrl = entry.sourceUrl,
+                    item = entry.item,
+                    watched = !watched
+                )
+                localMediaRevision += 1
+                optionsEntry = null
+                restoreResultFocus(entry.stableKey)
+            }
+        )
     }
 }
 
@@ -395,6 +513,142 @@ private fun TvSearchButton(
                 fontWeight = FontWeight.SemiBold,
                 fontSize = 14.sp,
                 modifier = Modifier.padding(start = 7.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun TvSearchOptionsOverlay(
+    entry: TvHomeEntry,
+    saved: Boolean,
+    watched: Boolean,
+    onDismiss: () -> Unit,
+    onOpen: () -> Unit,
+    onToggleSaved: () -> Unit,
+    onToggleWatched: () -> Unit
+) {
+    val firstRequester = remember(entry.stableKey) { FocusRequester() }
+
+    LaunchedEffect(entry.stableKey) {
+        delay(40)
+        runCatching { firstRequester.requestFocus() }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.62f))
+    ) {
+        Surface(
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .padding(end = 54.dp)
+                .width(360.dp),
+            color = TvColors.BackgroundElevated.copy(alpha = 0.98f),
+            shape = RoundedCornerShape(18.dp),
+            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.12f))
+        ) {
+            Column(
+                modifier = Modifier.padding(22.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = entry.item.title,
+                    color = TvColors.TextPrimary,
+                    fontSize = 19.sp,
+                    lineHeight = 23.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = entry.catalogName,
+                    color = TvColors.TextSecondary,
+                    fontSize = 12.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+
+                TvSearchOptionButton(
+                    label = "Open details",
+                    focusRequester = firstRequester,
+                    onClick = onOpen
+                )
+                TvSearchOptionButton(
+                    label = if (saved) "Remove from Library" else "Add to Library",
+                    onClick = onToggleSaved
+                )
+                TvSearchOptionButton(
+                    label = if (watched) "Mark as unwatched" else "Mark as watched",
+                    onClick = onToggleWatched
+                )
+                TvSearchOptionButton(
+                    label = "Cancel",
+                    onClick = onDismiss
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun TvSearchOptionButton(
+    label: String,
+    focusRequester: FocusRequester? = null,
+    onClick: () -> Unit
+) {
+    var focused by remember(label) { mutableStateOf(false) }
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(48.dp)
+            .then(
+                if (focusRequester != null) {
+                    Modifier.focusRequester(focusRequester)
+                } else {
+                    Modifier
+                }
+            )
+            .onFocusChanged { focused = it.hasFocus }
+            .onPreviewKeyEvent { event ->
+                if (
+                    event.type == KeyEventType.KeyDown &&
+                    (
+                        event.key == Key.DirectionCenter ||
+                            event.key == Key.Enter
+                        )
+                ) {
+                    onClick()
+                    true
+                } else {
+                    false
+                }
+            }
+            .focusable(),
+        color = if (focused) TvColors.FocusBackground else TvColors.Surface,
+        shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(
+            if (focused) 2.dp else 1.dp,
+            if (focused) TvColors.FocusRing
+            else Color.White.copy(alpha = 0.08f)
+        )
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(
+                    horizontal = 15.dp,
+                    vertical = 12.dp
+                ),
+            contentAlignment = Alignment.CenterStart
+        ) {
+            Text(
+                text = label,
+                color = TvColors.TextPrimary,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.SemiBold
             )
         }
     }
