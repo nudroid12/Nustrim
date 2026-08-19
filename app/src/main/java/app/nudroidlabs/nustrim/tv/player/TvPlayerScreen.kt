@@ -28,7 +28,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
@@ -62,6 +61,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -1112,12 +1112,12 @@ fun TvPlayerScreen(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(150.dp)
+                        .height(112.dp)
                         .align(Alignment.TopCenter)
                         .background(
                             Brush.verticalGradient(
                                 colors = listOf(
-                                    Color.Black.copy(alpha = 0.70f),
+                                    Color.Black.copy(alpha = 0.38f),
                                     Color.Transparent
                                 )
                             )
@@ -1127,13 +1127,13 @@ fun TvPlayerScreen(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(200.dp)
+                        .height(176.dp)
                         .align(Alignment.BottomCenter)
                         .background(
                             Brush.verticalGradient(
                                 colors = listOf(
                                     Color.Transparent,
-                                    Color.Black.copy(alpha = 0.80f)
+                                    Color.Black.copy(alpha = 0.68f)
                                 )
                             )
                         )
@@ -1143,8 +1143,8 @@ fun TvPlayerScreen(
                         .align(Alignment.BottomStart)
                         .fillMaxWidth()
                         .padding(
-                            horizontal = 34.dp,
-                            vertical = 28.dp
+                            horizontal = 48.dp,
+                            vertical = 32.dp
                         ),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
@@ -1155,8 +1155,8 @@ fun TvPlayerScreen(
                         Text(
                             text = title,
                             color = Color.White,
-                            fontSize = 26.sp,
-                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 22.sp,
+                            fontWeight = FontWeight.Medium,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
@@ -1166,8 +1166,8 @@ fun TvPlayerScreen(
                                 Text(
                                     text = episode,
                                     color = Color.White.copy(alpha = 0.90f),
-                                    fontSize = 15.sp,
-                                    fontWeight = FontWeight.Medium,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Normal,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
@@ -1200,7 +1200,7 @@ fun TvPlayerScreen(
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             TvPlayerControlButton(
                                 id = "play",
@@ -1324,9 +1324,9 @@ fun TvPlayerScreen(
 
                         Text(
                             text = "${formatTvTime(positionMs)} / ${formatTvTime(durationMs)}",
-                            color = Color.White.copy(alpha = 0.90f),
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Medium
+                            color = Color.White.copy(alpha = 0.72f),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Normal
                         )
                     }
                 }
@@ -1351,25 +1351,25 @@ fun TvPlayerScreen(
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .padding(top = 72.dp),
-                color = Color.Black.copy(alpha = 0.86f),
-                shape = RoundedCornerShape(24.dp)
+                color = Color.Black.copy(alpha = 0.66f),
+                shape = RoundedCornerShape(16.dp)
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Icon(
                         imageVector = Icons.Default.AspectRatio,
                         contentDescription = null,
                         tint = Color.White,
-                        modifier = Modifier.size(22.dp)
+                        modifier = Modifier.size(18.dp)
                     )
                     Text(
                         text = label,
                         color = Color.White,
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.SemiBold
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium
                     )
                 }
             }
@@ -1450,10 +1450,19 @@ private fun TvPlayerControlButton(
         focusRequester ?: FocusRequester()
     }
     var focused by remember(id) { mutableStateOf(false) }
+    val scale by animateFloatAsState(
+        targetValue = if (focused) 1.08f else 1f,
+        animationSpec = tween(110),
+        label = "tv-player-control-scale-$id"
+    )
 
     Surface(
         modifier = Modifier
-            .size(52.dp)
+            .size(44.dp)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
             .focusRequester(requester)
             .onFocusChanged { state ->
                 focused = state.hasFocus
@@ -1493,11 +1502,12 @@ private fun TvPlayerControlButton(
             }
             .focusable(enabled = enabled),
         color = when {
-            focused -> Color.White
-            !enabled -> Color.White.copy(alpha = 0.05f)
+            focused -> Color.White.copy(alpha = 0.14f)
+            !enabled -> Color.White.copy(alpha = 0.02f)
             else -> Color.Transparent
         },
-        shape = CircleShape
+        contentColor = Color.White,
+        shape = RoundedCornerShape(12.dp)
     ) {
         Box(
             modifier = Modifier.fillMaxSize(),
@@ -1507,11 +1517,11 @@ private fun TvPlayerControlButton(
                 imageVector = icon,
                 contentDescription = label,
                 tint = when {
-                    focused -> Color.Black
-                    enabled -> Color.White
-                    else -> Color.White.copy(alpha = 0.32f)
+                    focused -> Color.White
+                    enabled -> Color.White.copy(alpha = 0.84f)
+                    else -> Color.White.copy(alpha = 0.26f)
                 },
-                modifier = Modifier.size(28.dp)
+                modifier = Modifier.size(23.dp)
             )
         }
     }
@@ -1534,27 +1544,27 @@ private fun TvPlayerSpeedPicker(
 
     Surface(
         modifier = modifier
-            .width(360.dp)
-            .height(430.dp),
-        color = TvColors.BackgroundElevated.copy(alpha = 0.98f),
-        shape = RoundedCornerShape(18.dp)
+            .width(316.dp)
+            .height(356.dp),
+        color = Color.Black.copy(alpha = 0.82f),
+        shape = RoundedCornerShape(22.dp)
     ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+                .padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Text(
                 text = "Playback speed",
                 color = TvColors.TextPrimary,
-                fontSize = 23.sp,
-                fontWeight = FontWeight.Bold
+                fontSize = 18.sp,
+                fontWeight = FontWeight.SemiBold
             )
             Text(
                 text = "OK Select  •  Left/Back Close",
                 color = TvColors.TextSecondary,
-                fontSize = 12.sp
+                fontSize = 10.sp
             )
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
@@ -1593,7 +1603,7 @@ private fun TvPlayerSpeedRow(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .height(54.dp)
+            .height(44.dp)
             .then(
                 if (focusRequester != null) {
                     Modifier.focusRequester(focusRequester)
@@ -1622,11 +1632,11 @@ private fun TvPlayerSpeedRow(
             }
             .focusable(),
         color = when {
-            focused -> TvColors.FocusRing
-            selected -> TvColors.Accent.copy(alpha = 0.18f)
-            else -> Color.White.copy(alpha = 0.04f)
+            focused -> Color.White.copy(alpha = 0.16f)
+            selected -> Color.White.copy(alpha = 0.08f)
+            else -> Color.Transparent
         },
-        shape = RoundedCornerShape(10.dp)
+        shape = RoundedCornerShape(12.dp)
     ) {
         Row(
             modifier = Modifier
@@ -1637,20 +1647,16 @@ private fun TvPlayerSpeedRow(
         ) {
             Text(
                 text = formatTvSpeed(speed),
-                color = if (focused) TvColors.Background else TvColors.TextPrimary,
-                fontSize = 15.sp,
-                fontWeight = FontWeight.Medium
+                color = Color.White.copy(alpha = if (focused) 1f else 0.86f),
+                fontSize = 14.sp,
+                fontWeight = if (focused || selected) FontWeight.Medium else FontWeight.Normal
             )
             if (selected) {
                 Text(
-                    text = "Selected",
-                    color = if (focused) {
-                        TvColors.Background.copy(alpha = 0.72f)
-                    } else {
-                        TvColors.Accent
-                    },
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.SemiBold
+                    text = "On",
+                    color = Color.White.copy(alpha = if (focused) 0.82f else 0.52f),
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Medium
                 )
             }
         }
@@ -1680,27 +1686,27 @@ private fun TvPlayerTrackPicker(
 
     Surface(
         modifier = modifier
-            .width(420.dp)
-            .height(480.dp),
-        color = TvColors.BackgroundElevated.copy(alpha = 0.98f),
-        shape = RoundedCornerShape(18.dp)
+            .width(360.dp)
+            .height(420.dp),
+        color = Color.Black.copy(alpha = 0.82f),
+        shape = RoundedCornerShape(22.dp)
     ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+                .padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Text(
                 text = title,
                 color = TvColors.TextPrimary,
-                fontSize = 23.sp,
-                fontWeight = FontWeight.Bold
+                fontSize = 18.sp,
+                fontWeight = FontWeight.SemiBold
             )
             Text(
                 text = "OK Select  •  Left/Back Close",
                 color = TvColors.TextSecondary,
-                fontSize = 12.sp
+                fontSize = 10.sp
             )
             if (!hasFirstTarget) {
                 Box(
@@ -1769,7 +1775,7 @@ private fun TvPlayerTrackRow(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .height(48.dp)
+            .height(44.dp)
             .focusRequester(requester)
             .onFocusChanged { focused = it.hasFocus }
             .onPreviewKeyEvent { event ->
@@ -1797,11 +1803,11 @@ private fun TvPlayerTrackRow(
             }
             .focusable(),
         color = when {
-            focused -> TvColors.FocusRing
-            selected -> TvColors.Accent.copy(alpha = 0.76f)
-            else -> TvColors.SurfaceVariant
+            focused -> Color.White.copy(alpha = 0.16f)
+            selected -> Color.White.copy(alpha = 0.08f)
+            else -> Color.Transparent
         },
-        shape = RoundedCornerShape(10.dp)
+        shape = RoundedCornerShape(12.dp)
     ) {
         Row(
             modifier = Modifier
@@ -1812,8 +1818,8 @@ private fun TvPlayerTrackRow(
         ) {
             Text(
                 text = label,
-                color = if (focused) TvColors.Background else TvColors.TextPrimary,
-                fontSize = 14.sp,
+                color = Color.White.copy(alpha = if (focused) 1f else 0.86f),
+                fontSize = 13.sp,
                 fontWeight = if (focused || selected) {
                     FontWeight.SemiBold
                 } else {
@@ -1824,13 +1830,9 @@ private fun TvPlayerTrackRow(
             )
             if (selected) {
                 Text(
-                    text = "Selected",
-                    color = if (focused) {
-                        TvColors.Background.copy(alpha = 0.78f)
-                    } else {
-                        TvColors.TextSecondary
-                    },
-                    fontSize = 11.sp
+                    text = "On",
+                    color = Color.White.copy(alpha = if (focused) 0.82f else 0.52f),
+                    fontSize = 10.sp
                 )
             }
         }
@@ -1967,7 +1969,7 @@ private fun TvPlayerProgress(
         label = "tv-player-buffered-progress"
     )
     val animatedHeight by animateDpAsState(
-        targetValue = if (focused) 8.dp else 5.dp,
+        targetValue = if (focused) 5.dp else 3.dp,
         animationSpec = tween(120),
         label = "tv-player-progress-height"
     )
@@ -2005,7 +2007,7 @@ private fun TvPlayerProgress(
             }
             .focusable()
             .background(
-                Color.White.copy(alpha = if (focused) 0.45f else 0.30f),
+                Color.White.copy(alpha = if (focused) 0.24f else 0.14f),
                 RoundedCornerShape(99.dp)
             )
     ) {
@@ -2014,7 +2016,7 @@ private fun TvPlayerProgress(
                 .fillMaxHeight()
                 .fillMaxWidth(animatedBufferedFraction)
                 .background(
-                    Color.White.copy(alpha = 0.38f),
+                    Color.White.copy(alpha = 0.22f),
                     RoundedCornerShape(99.dp)
                 )
         )
@@ -2024,7 +2026,7 @@ private fun TvPlayerProgress(
                 .fillMaxHeight()
                 .fillMaxWidth(animatedPlayedFraction)
                 .background(
-                    TvColors.Accent,
+                    Color.White.copy(alpha = 0.96f),
                     RoundedCornerShape(99.dp)
                 )
         )
@@ -2064,15 +2066,15 @@ private fun TvPlayerClockOverlay(
     ) {
         Text(
             text = formatter.format(Date(nowMs)),
-            color = Color.White.copy(alpha = 0.96f),
-            fontSize = 13.sp,
-            fontWeight = FontWeight.SemiBold
+            color = Color.White.copy(alpha = 0.84f),
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Medium
         )
         Text(
             text = "Ends at $endsAt",
-            color = Color.White.copy(alpha = 0.76f),
-            fontSize = 10.sp,
-            fontWeight = FontWeight.Medium
+            color = Color.White.copy(alpha = 0.52f),
+            fontSize = 9.sp,
+            fontWeight = FontWeight.Normal
         )
     }
 }
@@ -2088,13 +2090,13 @@ private fun TvPlayerPostPlayOverlay(
     val progress = (countdown.coerceIn(0, 5) / 5f).coerceIn(0f, 1f)
 
     Surface(
-        modifier = modifier.width(410.dp),
-        color = Color.Black.copy(alpha = 0.90f),
-        shape = RoundedCornerShape(18.dp)
+        modifier = modifier.width(360.dp),
+        color = Color.Black.copy(alpha = 0.74f),
+        shape = RoundedCornerShape(22.dp)
     ) {
         Column(
-            modifier = Modifier.padding(horizontal = 20.dp, vertical = 18.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            modifier = Modifier.padding(horizontal = 18.dp, vertical = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Text(
                 text = if (countdown > 0) {
@@ -2103,8 +2105,8 @@ private fun TvPlayerPostPlayOverlay(
                     "Opening next episode..."
                 },
                 color = Color.White,
-                fontSize = 18.sp,
-                fontWeight = FontWeight.Bold
+                fontSize = 16.sp,
+                fontWeight = FontWeight.SemiBold
             )
 
             nextEpisodeTitle
@@ -2113,8 +2115,8 @@ private fun TvPlayerPostPlayOverlay(
                     Text(
                         text = nextTitle,
                         color = Color.White.copy(alpha = 0.82f),
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Medium,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Normal,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -2123,9 +2125,9 @@ private fun TvPlayerPostPlayOverlay(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(4.dp)
+                    .height(2.dp)
                     .background(
-                        Color.White.copy(alpha = 0.22f),
+                        Color.White.copy(alpha = 0.14f),
                         RoundedCornerShape(2.dp)
                     )
             ) {
@@ -2146,15 +2148,15 @@ private fun TvPlayerPostPlayOverlay(
             ) {
                 Surface(
                     onClick = onPlayNow,
-                    color = Color.White,
-                    contentColor = Color.Black,
-                    shape = RoundedCornerShape(22.dp)
+                    color = Color.White.copy(alpha = 0.12f),
+                    contentColor = Color.White,
+                    shape = RoundedCornerShape(14.dp)
                 ) {
                     Text(
                         text = "Play now",
-                        modifier = Modifier.padding(horizontal = 18.dp, vertical = 9.dp),
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Bold
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium
                     )
                 }
 
@@ -2194,41 +2196,41 @@ private fun TvPlayerPauseOverlay(
             .background(
                 Brush.verticalGradient(
                     colors = listOf(
-                        Color.Black.copy(alpha = 0.24f),
-                        Color.Black.copy(alpha = 0.50f),
-                        Color.Black.copy(alpha = 0.88f)
+                        Color.Black.copy(alpha = 0.10f),
+                        Color.Black.copy(alpha = 0.32f),
+                        Color.Black.copy(alpha = 0.72f)
                     )
                 )
             )
     ) {
         Text(
             text = formatter.format(Date(nowMs)),
-            color = Color.White.copy(alpha = 0.95f),
-            fontSize = 34.sp,
+            color = Color.White.copy(alpha = 0.82f),
+            fontSize = 28.sp,
             fontWeight = FontWeight.Normal,
             modifier = Modifier
                 .align(Alignment.TopEnd)
-                .padding(top = 40.dp, end = 64.dp)
+                .padding(top = 36.dp, end = 48.dp)
         )
 
         Column(
             modifier = Modifier
                 .align(Alignment.BottomStart)
                 .fillMaxWidth(0.72f)
-                .padding(start = 64.dp, end = 48.dp, bottom = 120.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+                .padding(start = 48.dp, end = 48.dp, bottom = 96.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Text(
                 text = "You are watching",
                 color = Color.White.copy(alpha = 0.58f),
-                fontSize = 17.sp,
-                fontWeight = FontWeight.Medium
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Normal
             )
             Text(
                 text = title,
                 color = Color.White,
-                fontSize = 34.sp,
-                fontWeight = FontWeight.SemiBold,
+                fontSize = 28.sp,
+                fontWeight = FontWeight.Medium,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis
             )
@@ -2236,8 +2238,8 @@ private fun TvPlayerPauseOverlay(
                 Text(
                     text = episodeTitle,
                     color = Color.White.copy(alpha = 0.92f),
-                    fontSize = 22.sp,
-                    fontWeight = FontWeight.Medium,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Normal,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -2291,19 +2293,19 @@ private fun TvPlayerSeekOverlay(
                 Brush.verticalGradient(
                     colors = listOf(
                         Color.Transparent,
-                        Color.Black.copy(alpha = 0.80f)
+                        Color.Black.copy(alpha = 0.62f)
                     )
                 )
             )
-            .padding(horizontal = 34.dp, vertical = 28.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
+            .padding(horizontal = 48.dp, vertical = 28.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(5.dp)
+                .height(3.dp)
                 .background(
-                    Color.White.copy(alpha = 0.30f),
+                    Color.White.copy(alpha = 0.14f),
                     RoundedCornerShape(99.dp)
                 )
         ) {
@@ -2312,7 +2314,7 @@ private fun TvPlayerSeekOverlay(
                     .fillMaxHeight()
                     .fillMaxWidth(animatedBufferedFraction)
                     .background(
-                        TvColors.Accent.copy(alpha = 0.35f),
+                        Color.White.copy(alpha = 0.22f),
                         RoundedCornerShape(99.dp)
                     )
             )
@@ -2321,7 +2323,7 @@ private fun TvPlayerSeekOverlay(
                     .fillMaxHeight()
                     .fillMaxWidth(animatedPlayedFraction)
                     .background(
-                        TvColors.Accent,
+                        Color.White.copy(alpha = 0.96f),
                         RoundedCornerShape(99.dp)
                     )
             )
@@ -2334,9 +2336,9 @@ private fun TvPlayerSeekOverlay(
         ) {
             Text(
                 text = "${formatTvTime(positionMs)} / ${formatTvTime(durationMs)}",
-                color = Color.White.copy(alpha = 0.90f),
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Medium
+                color = Color.White.copy(alpha = 0.72f),
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Normal
             )
         }
     }

@@ -16,8 +16,8 @@ android {
         applicationId = "app.nudroidlabs.nustrim"
         minSdk = 23
         targetSdk = 37
-        versionCode = 80
-        versionName = "0.28.6-tv-v2.3-nuvio-player-p5.1-backfix"
+        versionCode = 81
+        versionName = "0.29.0-tv-v2.4-modern-player-p1"
     }
 
     val persistentUpdateSigning = if (
