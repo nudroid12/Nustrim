@@ -586,8 +586,11 @@ fun TvDetailsScreen(
                             }
                         ) { _, episode ->
                             val focusKey = episodeFocusKey(episode)
-                            val episodeRequester = episodeFocusRequesters
-                                .getOrPut(focusKey) { FocusRequester() }
+                            val episodeRequester = remember(focusKey) {
+                                FocusRequester().also { requester ->
+                                    episodeFocusRequesters[focusKey] = requester
+                                }
+                            }
                             val isPlaybackEpisode = localPlaybackEntry?.let { stored ->
                                 stored.episodeId == episode.id &&
                                     stored.season == episode.season &&
