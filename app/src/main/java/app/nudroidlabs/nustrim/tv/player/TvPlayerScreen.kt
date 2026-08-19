@@ -3,6 +3,14 @@ package app.nudroidlabs.nustrim.tv.player
 import android.net.Uri
 import android.view.ViewGroup
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.annotation.OptIn
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
@@ -185,6 +193,8 @@ fun TvPlayerScreen(
         mutableIntStateOf(AspectRatioFrameLayout.RESIZE_MODE_FIT)
     }
     var aspectIndicatorText by remember(stream.url) { mutableStateOf<String?>(null) }
+    var seekOverlayVisible by remember(stream.url) { mutableStateOf(false) }
+    var seekOverlayToken by remember(stream.url) { mutableIntStateOf(0) }
 
     val preferredSubtitleLanguages = remember(stream.url) {
         listOf(
@@ -215,6 +225,7 @@ fun TvPlayerScreen(
     }
 
     fun revealControls() {
+        seekOverlayVisible = false
         controlsVisible = true
         interactionToken += 1
     }
@@ -235,6 +246,7 @@ fun TvPlayerScreen(
         focusedControlId = null
         pendingControlFocus = false
         moreExpanded = false
+        seekOverlayVisible = false
         controlsVisible = false
         interactionToken += 1
         runCatching { focusRequester.requestFocus() }
@@ -345,7 +357,7 @@ fun TvPlayerScreen(
         revealControls()
     }
 
-    fun seekBy(deltaMs: Long) {
+    fun performSeek(deltaMs: Long, showControlsAfter: Boolean) {
         if (playbackError != null) return
 
         cancelAutoNext()
@@ -362,7 +374,22 @@ fun TvPlayerScreen(
 
         player.seekTo(target)
         positionMs = target
-        revealControls()
+        if (showControlsAfter) {
+            revealControls()
+        } else {
+            controlsVisible = false
+            moreExpanded = false
+            seekOverlayVisible = true
+            seekOverlayToken += 1
+        }
+    }
+
+    fun seekBy(deltaMs: Long) {
+        performSeek(deltaMs = deltaMs, showControlsAfter = true)
+    }
+
+    fun previewSeekBy(deltaMs: Long) {
+        performSeek(deltaMs = deltaMs, showControlsAfter = false)
     }
 
     fun openTrackPanel(panel: TvPlayerTrackPanel) {
@@ -625,7 +652,8 @@ fun TvPlayerScreen(
 
     LaunchedEffect(controlsVisible, pendingControlFocus) {
         if (controlsVisible && pendingControlFocus) {
-            delay(40)
+            // Let the 200 ms controls fade complete before moving TV focus.
+            delay(240)
             runCatching { playControlRequester.requestFocus() }
             pendingControlFocus = false
         }
@@ -643,6 +671,18 @@ fun TvPlayerScreen(
         if (aspectIndicatorText != null) {
             delay(1600)
             aspectIndicatorText = null
+        }
+    }
+
+    LaunchedEffect(seekOverlayToken, controlsVisible) {
+        if (controlsVisible) {
+            seekOverlayVisible = false
+        } else if (seekOverlayVisible) {
+            val token = seekOverlayToken
+            delay(1200)
+            if (token == seekOverlayToken && !controlsVisible) {
+                seekOverlayVisible = false
+            }
         }
     }
 
@@ -742,25 +782,12 @@ fun TvPlayerScreen(
                         }
 
                         Key.DirectionLeft -> {
-                            if (
-                                onPreviousEpisode != null &&
-                                positionMs <= 1_500L
-                            ) {
-                                triggerPreviousEpisode()
-                            } else {
-                                seekBy(-10_000L)
-                            }
+                            previewSeekBy(-10_000L)
                             true
                         }
 
                         Key.DirectionRight -> {
-                            val nearEnd = durationMs > 0L &&
-                                durationMs - positionMs <= 12_000L
-                            if (onNextEpisode != null && nearEnd) {
-                                triggerNextEpisode()
-                            } else {
-                                seekBy(10_000L)
-                            }
+                            previewSeekBy(10_000L)
                             true
                         }
 
@@ -861,21 +888,42 @@ fun TvPlayerScreen(
             }
         }
 
-        if (controlsVisible && playbackError == null) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.verticalGradient(
-                            colors = listOf(
-                                Color.Black.copy(alpha = 0.36f),
-                                Color.Transparent,
-                                Color.Transparent,
-                                Color.Black.copy(alpha = 0.86f)
+        AnimatedVisibility(
+            visible = controlsVisible && playbackError == null,
+            enter = fadeIn(animationSpec = tween(200)),
+            exit = fadeOut(animationSpec = tween(200)),
+            modifier = Modifier.fillMaxSize()
+        ) {
+            Box(modifier = Modifier.fillMaxSize()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(150.dp)
+                        .align(Alignment.TopCenter)
+                        .background(
+                            Brush.verticalGradient(
+                                colors = listOf(
+                                    Color.Black.copy(alpha = 0.70f),
+                                    Color.Transparent
+                                )
                             )
                         )
-                    )
-            ) {
+                )
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(200.dp)
+                        .align(Alignment.BottomCenter)
+                        .background(
+                            Brush.verticalGradient(
+                                colors = listOf(
+                                    Color.Transparent,
+                                    Color.Black.copy(alpha = 0.80f)
+                                )
+                            )
+                        )
+                )
                 Column(
                     modifier = Modifier
                         .align(Alignment.BottomStart)
@@ -1003,28 +1051,43 @@ fun TvPlayerScreen(
                                 },
                                 onDownKey = ::hideControlsFromRow
                             )
-                            if (moreExpanded) {
-                                TvPlayerControlButton(
-                                    id = "speed",
-                                    icon = Icons.Default.Speed,
-                                    label = "Playback speed ${formatTvSpeed(playbackSpeed)}",
-                                    focusRequester = speedControlRequester,
-                                    upFocusRequester = progressControlRequester,
-                                    focusedId = focusedControlId,
-                                    onFocusedIdChange = { focusedControlId = it },
-                                    onClick = ::openSpeedPanel,
-                                    onDownKey = ::hideControlsFromRow
-                                )
-                                TvPlayerControlButton(
-                                    id = "aspect",
-                                    icon = Icons.Default.AspectRatio,
-                                    label = "Aspect ratio",
-                                    upFocusRequester = progressControlRequester,
-                                    focusedId = focusedControlId,
-                                    onFocusedIdChange = { focusedControlId = it },
-                                    onClick = ::cycleAspectRatio,
-                                    onDownKey = ::hideControlsFromRow
-                                )
+                            AnimatedVisibility(
+                                visible = moreExpanded,
+                                enter = slideInHorizontally(
+                                    animationSpec = tween(180),
+                                    initialOffsetX = { it / 2 }
+                                ) + fadeIn(animationSpec = tween(180)),
+                                exit = slideOutHorizontally(
+                                    animationSpec = tween(160),
+                                    targetOffsetX = { it / 2 }
+                                ) + fadeOut(animationSpec = tween(160))
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    TvPlayerControlButton(
+                                        id = "speed",
+                                        icon = Icons.Default.Speed,
+                                        label = "Playback speed ${formatTvSpeed(playbackSpeed)}",
+                                        focusRequester = speedControlRequester,
+                                        upFocusRequester = progressControlRequester,
+                                        focusedId = focusedControlId,
+                                        onFocusedIdChange = { focusedControlId = it },
+                                        onClick = ::openSpeedPanel,
+                                        onDownKey = ::hideControlsFromRow
+                                    )
+                                    TvPlayerControlButton(
+                                        id = "aspect",
+                                        icon = Icons.Default.AspectRatio,
+                                        label = "Aspect ratio",
+                                        upFocusRequester = progressControlRequester,
+                                        focusedId = focusedControlId,
+                                        onFocusedIdChange = { focusedControlId = it },
+                                        onClick = ::cycleAspectRatio,
+                                        onDownKey = ::hideControlsFromRow
+                                    )
+                                }
                             }
                             TvPlayerControlButton(
                                 id = "more",
@@ -1054,6 +1117,19 @@ fun TvPlayerScreen(
                     }
                 }
             }
+        }
+
+        AnimatedVisibility(
+            visible = seekOverlayVisible && !controlsVisible && playbackError == null,
+            enter = fadeIn(animationSpec = tween(150)),
+            exit = fadeOut(animationSpec = tween(150)),
+            modifier = Modifier.align(Alignment.BottomCenter)
+        ) {
+            TvPlayerSeekOverlay(
+                positionMs = positionMs,
+                bufferedMs = bufferedMs,
+                durationMs = durationMs
+            )
         }
 
         aspectIndicatorText?.let { label ->
@@ -1701,11 +1777,26 @@ private fun TvPlayerProgress(
     } else {
         0f
     }
+    val animatedPlayedFraction by animateFloatAsState(
+        targetValue = playedFraction,
+        animationSpec = tween(100),
+        label = "tv-player-played-progress"
+    )
+    val animatedBufferedFraction by animateFloatAsState(
+        targetValue = bufferedFraction,
+        animationSpec = tween(200),
+        label = "tv-player-buffered-progress"
+    )
+    val animatedHeight by animateDpAsState(
+        targetValue = if (focused) 8.dp else 5.dp,
+        animationSpec = tween(120),
+        label = "tv-player-progress-height"
+    )
 
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .height(if (focused) 8.dp else 5.dp)
+            .height(animatedHeight)
             .focusRequester(focusRequester)
             .onFocusChanged { onFocusedChange(it.hasFocus) }
             .onPreviewKeyEvent { event ->
@@ -1742,7 +1833,7 @@ private fun TvPlayerProgress(
         Box(
             modifier = Modifier
                 .fillMaxHeight()
-                .fillMaxWidth(bufferedFraction)
+                .fillMaxWidth(animatedBufferedFraction)
                 .background(
                     Color.White.copy(alpha = 0.38f),
                     RoundedCornerShape(99.dp)
@@ -1752,12 +1843,97 @@ private fun TvPlayerProgress(
         Box(
             modifier = Modifier
                 .fillMaxHeight()
-                .fillMaxWidth(playedFraction)
+                .fillMaxWidth(animatedPlayedFraction)
                 .background(
                     TvColors.Accent,
                     RoundedCornerShape(99.dp)
                 )
         )
+    }
+}
+
+@Composable
+private fun TvPlayerSeekOverlay(
+    positionMs: Long,
+    bufferedMs: Long,
+    durationMs: Long
+) {
+    val playedFraction = if (durationMs > 0L) {
+        (positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
+    } else {
+        0f
+    }
+    val bufferedFraction = if (durationMs > 0L) {
+        (bufferedMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
+    } else {
+        0f
+    }
+    val animatedPlayedFraction by animateFloatAsState(
+        targetValue = playedFraction,
+        animationSpec = tween(100),
+        label = "tv-player-seek-overlay-played"
+    )
+    val animatedBufferedFraction by animateFloatAsState(
+        targetValue = bufferedFraction,
+        animationSpec = tween(200),
+        label = "tv-player-seek-overlay-buffered"
+    )
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(
+                Brush.verticalGradient(
+                    colors = listOf(
+                        Color.Transparent,
+                        Color.Black.copy(alpha = 0.80f)
+                    )
+                )
+            )
+            .padding(horizontal = 34.dp, vertical = 28.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(5.dp)
+                .background(
+                    Color.White.copy(alpha = 0.30f),
+                    RoundedCornerShape(99.dp)
+                )
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .fillMaxWidth(animatedBufferedFraction)
+                    .background(
+                        TvColors.Accent.copy(alpha = 0.35f),
+                        RoundedCornerShape(99.dp)
+                    )
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .fillMaxWidth(animatedPlayedFraction)
+                    .background(
+                        TvColors.Accent,
+                        RoundedCornerShape(99.dp)
+                    )
+            )
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "${formatTvTime(positionMs)} / ${formatTvTime(durationMs)}",
+                color = Color.White.copy(alpha = 0.90f),
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium
+            )
+        }
     }
 }
 
