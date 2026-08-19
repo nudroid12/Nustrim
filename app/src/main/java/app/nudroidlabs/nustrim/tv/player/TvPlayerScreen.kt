@@ -810,7 +810,11 @@ fun TvPlayerScreen(
         when {
             pauseOverlayVisible -> {
                 pauseOverlayVisible = false
-                requestControlFocus()
+                controlsVisible = false
+                focusedControlId = null
+                pendingControlFocus = false
+                moreExpanded = false
+                runCatching { focusRequester.requestFocus() }
             }
 
             speedPanelVisible -> {
@@ -862,7 +866,11 @@ fun TvPlayerScreen(
             .background(Color.Black)
             .focusRequester(focusRequester)
             .onPreviewKeyEvent { event ->
-                if (pauseOverlayVisible) {
+                if (event.key == Key.Back) {
+                    // Back belongs to BackHandler. Do not let generic TV input reveal
+                    // controls before the back dispatcher evaluates the current layer.
+                    false
+                } else if (pauseOverlayVisible) {
                     if (event.type == KeyEventType.KeyDown) {
                         when (event.key) {
                             Key.DirectionCenter,
