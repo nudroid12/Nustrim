@@ -174,9 +174,7 @@ fun TvDetailsScreen(
     val seasons = if (positiveSeasons.isNotEmpty()) positiveSeasons else rawSeasons
 
     LaunchedEffect(detailedItem.id, seasons) {
-        if (selectedSeason == null && seasons.isNotEmpty()) {
-            selectedSeason = seasons.first()
-        }
+        selectedSeason = seasons.firstOrNull()
     }
 
     val visibleEpisodes = if (selectedSeason == null) {
