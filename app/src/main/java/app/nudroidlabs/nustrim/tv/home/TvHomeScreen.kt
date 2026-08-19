@@ -1,5 +1,7 @@
 package app.nudroidlabs.nustrim.tv.home
 
+import android.os.SystemClock
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.BorderStroke
@@ -20,6 +22,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Info
@@ -29,6 +32,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -56,6 +60,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import app.nudroidlabs.nustrim.core.library.LocalMediaEntry
 import app.nudroidlabs.nustrim.core.library.LocalMediaStore
 import app.nudroidlabs.nustrim.core.source.CatalogSectionSourceSession
 import app.nudroidlabs.nustrim.core.source.InstalledSourceStore
@@ -64,6 +69,9 @@ import app.nudroidlabs.nustrim.core.source.SourceKind
 import app.nudroidlabs.nustrim.tv.theme.TvColors
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.delay
+
+private const val HOME_FOCUS_SETTLE_MS = 140L
+private const val HOME_LONG_PRESS_MS = 650L
 
 @Composable
 fun TvHomeScreen(
@@ -80,12 +88,22 @@ fun TvHomeScreen(
     val mediaStore = remember(context) { LocalMediaStore(context) }
 
     var reloadToken by remember { mutableIntStateOf(0) }
+    var localRevision by remember { mutableIntStateOf(0) }
     var loading by remember(reloadToken) { mutableStateOf(true) }
     var failureCount by remember(reloadToken) { mutableIntStateOf(0) }
     var sourceOrder by remember(reloadToken) { mutableStateOf<List<String>>(emptyList()) }
     val sectionMap = remember(reloadToken) {
         mutableStateMapOf<String, List<TvHomeSection>>()
     }
+    val focusedIndexByRow = remember { mutableStateMapOf<String, Int>() }
+    val requesterByKey = remember { mutableMapOf<String, FocusRequester>() }
+    val homeListState = rememberLazyListState()
+
+    var focusedEntry by remember { mutableStateOf<TvHomeEntry?>(null) }
+    var heroEntry by remember { mutableStateOf<TvHomeEntry?>(null) }
+    var lastFocusedKey by remember { mutableStateOf<String?>(null) }
+    var pendingRestoreKey by remember { mutableStateOf<String?>(null) }
+    var optionsEntry by remember { mutableStateOf<TvHomeEntry?>(null) }
 
     LaunchedEffect(reloadToken) {
         sectionMap.clear()
@@ -129,7 +147,8 @@ fun TvHomeScreen(
                                                 item = media,
                                                 catalogName = catalog.name
                                             )
-                                        }
+                                        }.distinctBy { it.stableKey }
+
                                         entries.takeIf { it.isNotEmpty() }?.let {
                                             TvHomeSection(
                                                 key = "$sourceUrl|${catalog.name}|$index",
@@ -156,7 +175,8 @@ fun TvHomeScreen(
                                             item = media,
                                             catalogName = catalog.name
                                         )
-                                    }
+                                    }.distinctBy { it.stableKey }
+
                                     sectionMap[sourceUrl] = if (entries.isEmpty()) {
                                         emptyList()
                                     } else {
@@ -188,29 +208,34 @@ fun TvHomeScreen(
         }
     }
 
-    val catalogSections = sourceOrder.flatMap { sectionMap[it].orEmpty() }
-    val continueEntries = remember(loading, reloadToken, refreshToken) {
+    val catalogSections = sourceOrder
+        .flatMap { sectionMap[it].orEmpty() }
+        .map { section ->
+            section.copy(entries = section.entries.distinctBy { it.stableKey })
+        }
+        .filter { it.entries.isNotEmpty() }
+
+    val continueEntries = remember(loading, reloadToken, refreshToken, localRevision) {
         if (loading) {
             emptyList()
         } else {
-            mediaStore.continueWatching().map { local ->
-                TvHomeEntry(
-                    sourceUrl = local.sourceUrl,
-                    session = null,
-                    item = local.toMediaItem(),
-                    catalogName = "Continue Watching",
-                    continueEntry = local
-                )
-            }
+            mediaStore.continueWatching()
+                .map { local ->
+                    TvHomeEntry(
+                        sourceUrl = local.sourceUrl,
+                        session = null,
+                        item = local.toMediaItem(),
+                        catalogName = "Continue Watching",
+                        continueEntry = local
+                    )
+                }
+                .distinctBy { it.stableKey }
         }
     }
 
     val firstCatalogEntries = catalogSections.firstOrNull()?.entries.orEmpty()
-    val initialHero = firstCatalogEntries.firstOrNull()
-        ?: continueEntries.firstOrNull()
-
-    var focusedEntry by remember { mutableStateOf<TvHomeEntry?>(null) }
-    var heroEntry by remember { mutableStateOf<TvHomeEntry?>(null) }
+    val initialHero = continueEntries.firstOrNull()
+        ?: firstCatalogEntries.firstOrNull()
 
     LaunchedEffect(initialHero?.stableKey) {
         if (heroEntry == null && initialHero != null) {
@@ -220,7 +245,7 @@ fun TvHomeScreen(
 
     LaunchedEffect(focusedEntry?.stableKey) {
         val target = focusedEntry ?: return@LaunchedEffect
-        delay(360)
+        delay(HOME_FOCUS_SETTLE_MS)
         if (focusedEntry?.stableKey == target.stableKey) {
             heroEntry = target
         }
@@ -232,8 +257,40 @@ fun TvHomeScreen(
     LaunchedEffect(contentFocusRequestToken, loading, hasContent) {
         if (contentFocusRequestToken > 0 && !loading && hasContent) {
             delay(40)
-            runCatching { firstContentRequester.requestFocus() }
+            val preferred = lastFocusedKey?.let(requesterByKey::get)
+            val restored = preferred != null &&
+                runCatching { preferred.requestFocus() }.isSuccess
+            if (!restored) {
+                runCatching { firstContentRequester.requestFocus() }
+            }
         }
+    }
+
+    LaunchedEffect(refreshToken, loading, hasContent) {
+        if (refreshToken > 0 && !loading && hasContent) {
+            delay(90)
+            val key = lastFocusedKey ?: return@LaunchedEffect
+            requesterByKey[key]?.let { requester ->
+                runCatching { requester.requestFocus() }
+            }
+        }
+    }
+
+    LaunchedEffect(pendingRestoreKey, continueEntries.size, catalogSections.size) {
+        val key = pendingRestoreKey ?: return@LaunchedEffect
+        delay(60)
+        val restored = requesterByKey[key]?.let { requester ->
+            runCatching { requester.requestFocus() }.isSuccess
+        } == true
+        if (restored) {
+            pendingRestoreKey = null
+        }
+    }
+
+    BackHandler(enabled = optionsEntry != null) {
+        val key = optionsEntry?.stableKey
+        optionsEntry = null
+        pendingRestoreKey = key
     }
 
     Box(
@@ -247,6 +304,7 @@ fun TvHomeScreen(
         )
 
         LazyColumn(
+            state = homeListState,
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(
                 top = 304.dp,
@@ -259,29 +317,59 @@ fun TvHomeScreen(
                     TvContinueRow(
                         entries = continueEntries,
                         firstContentRequester = firstContentRequester,
-                        autoAttachFirstRequester = catalogSections.isEmpty(),
-                        onFocused = { entry, requester ->
+                        autoAttachFirstRequester = true,
+                        initialFocusedIndex = focusedIndexByRow["continue-watching"] ?: 0,
+                        optionsStableKey = optionsEntry?.stableKey,
+                        onFocused = { index, entry, requester ->
+                            focusedIndexByRow["continue-watching"] = index
                             focusedEntry = entry
+                            lastFocusedKey = entry.stableKey
                             onContentFocused(entry, requester)
                         },
+                        onRequesterReady = { key, requester ->
+                            requesterByKey[key] = requester
+                        },
+                        onRequesterDisposed = { key, requester ->
+                            if (requesterByKey[key] === requester) {
+                                requesterByKey.remove(key)
+                            }
+                        },
                         onMoveLeft = onMoveLeft,
-                        onOpen = onOpen
+                        onOpen = onOpen,
+                        onLongPress = { optionsEntry = it }
                     )
                 }
             }
 
             catalogSections.forEachIndexed { sectionIndex, section ->
-                item(key = "catalog:${section.key}") {
+                val rowKey = "catalog:${section.key}"
+                item(key = rowKey) {
                     TvCatalogRow(
                         section = section,
                         firstContentRequester = firstContentRequester,
-                        autoAttachFirstRequester = sectionIndex == 0,
-                        onFocused = { entry, requester ->
+                        autoAttachFirstRequester = sectionIndex == 0 && continueEntries.isEmpty(),
+                        initialFocusedIndex = focusedIndexByRow[rowKey] ?: 0,
+                        optionsStableKey = optionsEntry?.stableKey,
+                        isWatched = { entry ->
+                            mediaStore.isWatched(entry.sourceUrl, entry.item)
+                        },
+                        onFocused = { index, entry, requester ->
+                            focusedIndexByRow[rowKey] = index
                             focusedEntry = entry
+                            lastFocusedKey = entry.stableKey
                             onContentFocused(entry, requester)
                         },
+                        onRequesterReady = { key, requester ->
+                            requesterByKey[key] = requester
+                        },
+                        onRequesterDisposed = { key, requester ->
+                            if (requesterByKey[key] === requester) {
+                                requesterByKey.remove(key)
+                            }
+                        },
                         onMoveLeft = onMoveLeft,
-                        onOpen = onOpen
+                        onOpen = onOpen,
+                        onLongPress = { optionsEntry = it }
                     )
                 }
             }
@@ -313,6 +401,58 @@ fun TvHomeScreen(
                     modifier = Modifier.align(Alignment.Center)
                 )
             }
+        }
+
+        optionsEntry?.let { entry ->
+            val saved = remember(entry.stableKey, localRevision) {
+                mediaStore.isSaved(entry.sourceUrl, entry.item)
+            }
+            val continueIndex = continueEntries.indexOfFirst { it.stableKey == entry.stableKey }
+
+            TvHomeOptionsOverlay(
+                entry = entry,
+                saved = saved,
+                onDismiss = {
+                    val key = entry.stableKey
+                    optionsEntry = null
+                    pendingRestoreKey = key
+                },
+                onOpen = {
+                    optionsEntry = null
+                    onOpen(entry)
+                },
+                onToggleSaved = {
+                    mediaStore.setSaved(
+                        sourceUrl = entry.sourceUrl,
+                        item = entry.item,
+                        saved = !saved
+                    )
+                    localRevision += 1
+                    optionsEntry = null
+                    pendingRestoreKey = entry.stableKey
+                },
+                onClearContinue = if (entry.continueEntry != null) {
+                    {
+                        val restoreKey = continueEntries.getOrNull(continueIndex + 1)?.stableKey
+                            ?: continueEntries.getOrNull(continueIndex - 1)?.stableKey
+                            ?: firstCatalogEntries.firstOrNull()?.stableKey
+
+                        mediaStore.clearContinueWatching(
+                            sourceUrl = entry.sourceUrl,
+                            item = entry.item
+                        )
+                        localRevision += 1
+                        optionsEntry = null
+                        pendingRestoreKey = restoreKey
+                        if (focusedEntry?.stableKey == entry.stableKey) {
+                            focusedEntry = null
+                            heroEntry = initialHero
+                        }
+                    }
+                } else {
+                    null
+                }
+            )
         }
     }
 }
@@ -438,21 +578,10 @@ private fun TvHeroBackdrop(
                     )
                     Text(
                         text = entry.continueEntry?.let { local ->
-                            val episodeLabel = buildString {
-                                local.season?.let { append("S$it") }
-                                local.episode?.let { append("E$it") }
-                            }
+                            val status = homeContinueStatusLine(local)
                             when {
-                                local.nextUp && episodeLabel.isNotBlank() -> {
-                                    "Next up · $episodeLabel"
-                                }
-                                local.nextUp -> "Next up"
-                                local.hasProgress && episodeLabel.isNotBlank() -> {
-                                    "Resume · $episodeLabel · ${(local.progressFraction * 100).toInt()}%"
-                                }
-                                local.hasProgress -> {
-                                    "Resume · ${(local.progressFraction * 100).toInt()}%"
-                                }
+                                local.nextUp -> status
+                                status.isNotBlank() -> "Resume · $status"
                                 else -> "Press OK for details"
                             }
                         } ?: "Press OK for details",
@@ -471,10 +600,24 @@ private fun TvCatalogRow(
     section: TvHomeSection,
     firstContentRequester: FocusRequester,
     autoAttachFirstRequester: Boolean,
-    onFocused: (TvHomeEntry, FocusRequester) -> Unit,
+    initialFocusedIndex: Int,
+    optionsStableKey: String?,
+    isWatched: (TvHomeEntry) -> Boolean,
+    onFocused: (Int, TvHomeEntry, FocusRequester) -> Unit,
+    onRequesterReady: (String, FocusRequester) -> Unit,
+    onRequesterDisposed: (String, FocusRequester) -> Unit,
     onMoveLeft: () -> Unit,
-    onOpen: (TvHomeEntry) -> Unit
+    onOpen: (TvHomeEntry) -> Unit,
+    onLongPress: (TvHomeEntry) -> Unit
 ) {
+    val entries = remember(section.key, section.entries) {
+        section.entries.distinctBy { it.stableKey }
+    }
+    val rowState = rememberLazyListState(
+        initialFirstVisibleItemIndex = (initialFocusedIndex - 1)
+            .coerceIn(0, (entries.lastIndex).coerceAtLeast(0))
+    )
+
     Column(
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
@@ -487,11 +630,12 @@ private fun TvCatalogRow(
         )
 
         LazyRow(
+            state = rowState,
             contentPadding = PaddingValues(horizontal = 34.dp),
             horizontalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             itemsIndexed(
-                items = section.entries,
+                items = entries,
                 key = { _, entry -> entry.stableKey }
             ) { index, entry ->
                 TvPosterCard(
@@ -503,9 +647,16 @@ private fun TvCatalogRow(
                     } else {
                         null
                     },
-                    onFocused = onFocused,
+                    watched = isWatched(entry),
+                    keepExpanded = optionsStableKey == entry.stableKey,
+                    onFocused = { focusedEntry, requester ->
+                        onFocused(index, focusedEntry, requester)
+                    },
+                    onRequesterReady = onRequesterReady,
+                    onRequesterDisposed = onRequesterDisposed,
                     onMoveLeft = if (index == 0) onMoveLeft else null,
-                    onOpen = onOpen
+                    onOpen = onOpen,
+                    onLongPress = onLongPress
                 )
             }
         }
@@ -517,10 +668,21 @@ private fun TvContinueRow(
     entries: List<TvHomeEntry>,
     firstContentRequester: FocusRequester,
     autoAttachFirstRequester: Boolean,
-    onFocused: (TvHomeEntry, FocusRequester) -> Unit,
+    initialFocusedIndex: Int,
+    optionsStableKey: String?,
+    onFocused: (Int, TvHomeEntry, FocusRequester) -> Unit,
+    onRequesterReady: (String, FocusRequester) -> Unit,
+    onRequesterDisposed: (String, FocusRequester) -> Unit,
     onMoveLeft: () -> Unit,
-    onOpen: (TvHomeEntry) -> Unit
+    onOpen: (TvHomeEntry) -> Unit,
+    onLongPress: (TvHomeEntry) -> Unit
 ) {
+    val stableEntries = remember(entries) { entries.distinctBy { it.stableKey } }
+    val rowState = rememberLazyListState(
+        initialFirstVisibleItemIndex = (initialFocusedIndex - 1)
+            .coerceIn(0, (stableEntries.lastIndex).coerceAtLeast(0))
+    )
+
     Column(
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
@@ -533,11 +695,12 @@ private fun TvContinueRow(
         )
 
         LazyRow(
+            state = rowState,
             contentPadding = PaddingValues(horizontal = 34.dp),
             horizontalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             itemsIndexed(
-                items = entries,
+                items = stableEntries,
                 key = { _, entry -> entry.stableKey }
             ) { index, entry ->
                 TvContinueCard(
@@ -549,9 +712,15 @@ private fun TvContinueRow(
                     } else {
                         null
                     },
-                    onFocused = onFocused,
+                    optionsActive = optionsStableKey == entry.stableKey,
+                    onFocused = { focusedEntry, requester ->
+                        onFocused(index, focusedEntry, requester)
+                    },
+                    onRequesterReady = onRequesterReady,
+                    onRequesterDisposed = onRequesterDisposed,
                     onMoveLeft = if (index == 0) onMoveLeft else null,
-                    onOpen = onOpen
+                    onOpen = onOpen,
+                    onLongPress = onLongPress
                 )
             }
         }
@@ -562,21 +731,34 @@ private fun TvContinueRow(
 private fun TvPosterCard(
     entry: TvHomeEntry,
     focusRequester: FocusRequester?,
+    watched: Boolean,
+    keepExpanded: Boolean,
     onFocused: (TvHomeEntry, FocusRequester) -> Unit,
+    onRequesterReady: (String, FocusRequester) -> Unit,
+    onRequesterDisposed: (String, FocusRequester) -> Unit,
     onMoveLeft: (() -> Unit)?,
-    onOpen: (TvHomeEntry) -> Unit
+    onOpen: (TvHomeEntry) -> Unit,
+    onLongPress: (TvHomeEntry) -> Unit
 ) {
     var focused by remember { mutableStateOf(false) }
     var expanded by remember { mutableStateOf(false) }
+    var selectDownAt by remember { mutableStateOf<Long?>(null) }
     val cardRequester = remember(entry.stableKey, focusRequester) {
         focusRequester ?: FocusRequester()
     }
 
-    LaunchedEffect(focused) {
+    DisposableEffect(entry.stableKey, cardRequester) {
+        onRequesterReady(entry.stableKey, cardRequester)
+        onDispose {
+            onRequesterDisposed(entry.stableKey, cardRequester)
+        }
+    }
+
+    LaunchedEffect(focused, keepExpanded) {
         if (focused) {
-            delay(2400)
+            delay(900)
             if (focused) expanded = true
-        } else {
+        } else if (!keepExpanded) {
             expanded = false
         }
     }
@@ -593,7 +775,6 @@ private fun TvPosterCard(
         targetValue = if (focused) 1.045f else 1f,
         label = "posterScale"
     )
-
     val image = if (expanded) {
         entry.item.backgroundUrl.takeIf { it.isNotBlank() }
             ?: entry.item.posterUrl
@@ -613,6 +794,7 @@ private fun TvPosterCard(
             .focusRequester(cardRequester)
             .onFocusChanged {
                 focused = it.hasFocus
+                if (!it.hasFocus) selectDownAt = null
                 if (it.hasFocus) onFocused(entry, cardRequester)
             }
             .onPreviewKeyEvent { event ->
@@ -624,12 +806,22 @@ private fun TvPosterCard(
                         true
                     }
 
-                    event.type == KeyEventType.KeyDown &&
-                        (
-                            event.key == Key.DirectionCenter ||
-                                event.key == Key.Enter
-                            ) -> {
-                        onOpen(entry)
+                    isHomeSelectKey(event.key) && event.type == KeyEventType.KeyDown -> {
+                        if (selectDownAt == null) {
+                            selectDownAt = SystemClock.uptimeMillis()
+                        }
+                        true
+                    }
+
+                    isHomeSelectKey(event.key) && event.type == KeyEventType.KeyUp -> {
+                        val pressedAt = selectDownAt
+                        selectDownAt = null
+                        val heldMs = pressedAt?.let { SystemClock.uptimeMillis() - it } ?: 0L
+                        if (heldMs >= HOME_LONG_PRESS_MS) {
+                            onLongPress(entry)
+                        } else {
+                            onOpen(entry)
+                        }
                         true
                     }
 
@@ -642,10 +834,7 @@ private fun TvPosterCard(
         border = if (focused) {
             BorderStroke(2.dp, TvColors.FocusRing)
         } else {
-            BorderStroke(
-                1.dp,
-                Color.White.copy(alpha = 0.08f)
-            )
+            BorderStroke(1.dp, Color.White.copy(alpha = 0.08f))
         }
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
@@ -683,6 +872,24 @@ private fun TvPosterCard(
                         .padding(10.dp)
                 )
             }
+
+            if (watched) {
+                Surface(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(7.dp),
+                    color = Color.Black.copy(alpha = 0.72f),
+                    shape = RoundedCornerShape(6.dp)
+                ) {
+                    Text(
+                        text = "WATCHED",
+                        color = Color.White.copy(alpha = 0.92f),
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp)
+                    )
+                }
+            }
         }
     }
 }
@@ -691,16 +898,29 @@ private fun TvPosterCard(
 private fun TvContinueCard(
     entry: TvHomeEntry,
     focusRequester: FocusRequester?,
+    optionsActive: Boolean,
     onFocused: (TvHomeEntry, FocusRequester) -> Unit,
+    onRequesterReady: (String, FocusRequester) -> Unit,
+    onRequesterDisposed: (String, FocusRequester) -> Unit,
     onMoveLeft: (() -> Unit)?,
-    onOpen: (TvHomeEntry) -> Unit
+    onOpen: (TvHomeEntry) -> Unit,
+    onLongPress: (TvHomeEntry) -> Unit
 ) {
     var focused by remember { mutableStateOf(false) }
+    var selectDownAt by remember { mutableStateOf<Long?>(null) }
     val cardRequester = remember(entry.stableKey, focusRequester) {
         focusRequester ?: FocusRequester()
     }
+
+    DisposableEffect(entry.stableKey, cardRequester) {
+        onRequesterReady(entry.stableKey, cardRequester)
+        onDispose {
+            onRequesterDisposed(entry.stableKey, cardRequester)
+        }
+    }
+
     val scale by animateFloatAsState(
-        targetValue = if (focused) 1.035f else 1f,
+        targetValue = if (focused || optionsActive) 1.035f else 1f,
         label = "continueScale"
     )
     val local = entry.continueEntry
@@ -708,27 +928,7 @@ private fun TvContinueCard(
         .takeIf { it.isNotBlank() }
         ?: entry.item.posterUrl
     val progress = local?.progressFraction ?: 0f
-    val episodeLabel = local?.let { state ->
-        buildString {
-            state.season?.let { append("S$it") }
-            state.episode?.let { append("E$it") }
-        }
-    }.orEmpty()
-    val statusLine = local?.let { state ->
-        when {
-            state.nextUp && episodeLabel.isNotBlank() -> {
-                "Next up · $episodeLabel"
-            }
-            state.nextUp -> "Next up"
-            state.hasProgress && episodeLabel.isNotBlank() -> {
-                "$episodeLabel · ${(state.progressFraction * 100).toInt()}%"
-            }
-            state.hasProgress -> {
-                "${(state.progressFraction * 100).toInt()}% watched"
-            }
-            else -> ""
-        }
-    }.orEmpty()
+    val statusLine = local?.let(::homeContinueStatusLine).orEmpty()
 
     Surface(
         modifier = Modifier
@@ -741,6 +941,7 @@ private fun TvContinueCard(
             .focusRequester(cardRequester)
             .onFocusChanged {
                 focused = it.hasFocus
+                if (!it.hasFocus) selectDownAt = null
                 if (it.hasFocus) onFocused(entry, cardRequester)
             }
             .onPreviewKeyEvent { event ->
@@ -751,14 +952,26 @@ private fun TvContinueCard(
                         onMoveLeft()
                         true
                     }
-                    event.type == KeyEventType.KeyDown &&
-                        (
-                            event.key == Key.DirectionCenter ||
-                                event.key == Key.Enter
-                            ) -> {
-                        onOpen(entry)
+
+                    isHomeSelectKey(event.key) && event.type == KeyEventType.KeyDown -> {
+                        if (selectDownAt == null) {
+                            selectDownAt = SystemClock.uptimeMillis()
+                        }
                         true
                     }
+
+                    isHomeSelectKey(event.key) && event.type == KeyEventType.KeyUp -> {
+                        val pressedAt = selectDownAt
+                        selectDownAt = null
+                        val heldMs = pressedAt?.let { SystemClock.uptimeMillis() - it } ?: 0L
+                        if (heldMs >= HOME_LONG_PRESS_MS) {
+                            onLongPress(entry)
+                        } else {
+                            onOpen(entry)
+                        }
+                        true
+                    }
+
                     else -> false
                 }
             }
@@ -766,8 +979,8 @@ private fun TvContinueCard(
         color = TvColors.Surface,
         shape = RoundedCornerShape(9.dp),
         border = BorderStroke(
-            if (focused) 2.dp else 1.dp,
-            if (focused) {
+            if (focused || optionsActive) 2.dp else 1.dp,
+            if (focused || optionsActive) {
                 Color.White.copy(alpha = 0.92f)
             } else {
                 Color.White.copy(alpha = 0.08f)
@@ -818,11 +1031,28 @@ private fun TvContinueCard(
                 if (statusLine.isNotBlank()) {
                     Text(
                         text = statusLine,
-                        color = Color.White.copy(alpha = 0.68f),
+                        color = Color.White.copy(alpha = 0.72f),
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Medium,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+            if (local?.nextUp == true) {
+                Surface(
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(8.dp),
+                    color = Color.Black.copy(alpha = 0.72f),
+                    shape = RoundedCornerShape(6.dp)
+                ) {
+                    Text(
+                        text = "NEXT UP",
+                        color = Color.White,
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp)
                     )
                 }
             }
@@ -837,12 +1067,184 @@ private fun TvContinueCard(
                     Box(
                         modifier = Modifier
                             .fillMaxHeight()
-                            .fillMaxWidth(progress)
+                            .fillMaxWidth(progress.coerceIn(0f, 1f))
                             .background(TvColors.Accent)
                     )
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun TvHomeOptionsOverlay(
+    entry: TvHomeEntry,
+    saved: Boolean,
+    onDismiss: () -> Unit,
+    onOpen: () -> Unit,
+    onToggleSaved: () -> Unit,
+    onClearContinue: (() -> Unit)?
+) {
+    val firstRequester = remember(entry.stableKey) { FocusRequester() }
+
+    LaunchedEffect(entry.stableKey) {
+        delay(40)
+        runCatching { firstRequester.requestFocus() }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.62f))
+    ) {
+        Surface(
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .padding(end = 54.dp)
+                .width(360.dp),
+            color = TvColors.BackgroundElevated.copy(alpha = 0.98f),
+            shape = RoundedCornerShape(18.dp),
+            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.12f))
+        ) {
+            Column(
+                modifier = Modifier.padding(22.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = entry.item.title,
+                    color = TvColors.TextPrimary,
+                    fontSize = 19.sp,
+                    lineHeight = 23.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = if (entry.continueEntry != null) {
+                        homeContinueStatusLine(entry.continueEntry)
+                    } else {
+                        entry.catalogName
+                    },
+                    color = TvColors.TextSecondary,
+                    fontSize = 12.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+
+                TvHomeOptionButton(
+                    label = "Open details",
+                    focusRequester = firstRequester,
+                    onClick = onOpen
+                )
+                TvHomeOptionButton(
+                    label = if (saved) "Remove from Library" else "Add to Library",
+                    onClick = onToggleSaved
+                )
+                if (onClearContinue != null) {
+                    TvHomeOptionButton(
+                        label = "Remove from Continue Watching",
+                        onClick = onClearContinue
+                    )
+                }
+                TvHomeOptionButton(
+                    label = "Cancel",
+                    onClick = onDismiss
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun TvHomeOptionButton(
+    label: String,
+    focusRequester: FocusRequester? = null,
+    onClick: () -> Unit
+) {
+    var focused by remember { mutableStateOf(false) }
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(48.dp)
+            .then(
+                if (focusRequester != null) Modifier.focusRequester(focusRequester)
+                else Modifier
+            )
+            .onFocusChanged { focused = it.hasFocus }
+            .onPreviewKeyEvent { event ->
+                if (
+                    event.type == KeyEventType.KeyDown &&
+                    isHomeSelectKey(event.key)
+                ) {
+                    onClick()
+                    true
+                } else {
+                    false
+                }
+            }
+            .focusable(),
+        color = if (focused) {
+            Color.White.copy(alpha = 0.94f)
+        } else {
+            Color.White.copy(alpha = 0.06f)
+        },
+        shape = RoundedCornerShape(10.dp),
+        border = if (focused) null else BorderStroke(
+            1.dp,
+            Color.White.copy(alpha = 0.08f)
+        )
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 14.dp),
+            contentAlignment = Alignment.CenterStart
+        ) {
+            Text(
+                text = label,
+                color = if (focused) TvColors.Background else TvColors.TextPrimary,
+                fontSize = 14.sp,
+                fontWeight = if (focused) FontWeight.SemiBold else FontWeight.Medium
+            )
+        }
+    }
+}
+
+private fun isHomeSelectKey(key: Key): Boolean =
+    key == Key.DirectionCenter || key == Key.Enter
+
+private fun homeContinueStatusLine(local: LocalMediaEntry): String {
+    val episodeLabel = buildString {
+        local.season?.let { append("S$it") }
+        local.episode?.let {
+            if (isNotEmpty()) append("E$it") else append("E$it")
+        }
+    }
+
+    if (local.nextUp) {
+        return if (episodeLabel.isNotBlank()) "Next up · $episodeLabel" else "Next up"
+    }
+
+    if (!local.hasProgress) return ""
+
+    val remainingMs = (local.durationMs - local.positionMs).coerceAtLeast(0L)
+    val remainingMinutes = if (remainingMs >= 60_000L) {
+        (remainingMs / 60_000L).coerceAtLeast(1L)
+    } else {
+        0L
+    }
+    val progressPercent = (local.progressFraction * 100f).toInt().coerceIn(0, 100)
+    val progressText = if (remainingMinutes > 0L) {
+        "${remainingMinutes}m left"
+    } else {
+        "$progressPercent% watched"
+    }
+
+    return if (episodeLabel.isNotBlank()) {
+        "$episodeLabel · $progressText"
+    } else {
+        progressText
     }
 }
 

@@ -228,13 +228,21 @@ class LocalMediaStore(context: Context) {
         val continueEpisode = if (reachedEnd) nextEpisode else episode
         val shouldQueueNext = reachedEnd && nextEpisode != null
 
-        if (reachedEnd && episode != null) {
-            setEpisodeWatched(
-                sourceUrl = sourceUrl,
-                item = item,
-                episode = episode,
-                watched = true
-            )
+        if (reachedEnd) {
+            if (episode != null) {
+                setEpisodeWatched(
+                    sourceUrl = sourceUrl,
+                    item = item,
+                    episode = episode,
+                    watched = true
+                )
+            } else {
+                setWatched(
+                    sourceUrl = sourceUrl,
+                    item = item,
+                    watched = true
+                )
+            }
         }
 
         val updated = snapshot(
@@ -263,6 +271,33 @@ class LocalMediaStore(context: Context) {
             return
         }
 
+        save(current)
+    }
+
+    fun clearContinueWatching(sourceUrl: String, item: MediaItem) {
+        if (sourceUrl.isBlank()) return
+        val key = mediaKey(sourceUrl, item)
+        val current = read().toMutableList()
+        val index = current.indexOfFirst { it.key == key }
+        if (index < 0) return
+
+        val old = current[index]
+        val updated = old.copy(
+            episodeId = "",
+            episodeTitle = "",
+            season = null,
+            episode = null,
+            positionMs = 0L,
+            durationMs = 0L,
+            nextUp = false,
+            updatedAt = System.currentTimeMillis()
+        )
+
+        if (updated.saved) {
+            current[index] = updated
+        } else {
+            current.removeAt(index)
+        }
         save(current)
     }
 
