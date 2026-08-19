@@ -159,7 +159,7 @@ class InstalledSourceStore(context: Context) {
     companion object {
         const val CINEMETA_URL = "https://v3-cinemeta.strem.io/"
         const val OPENSUBTITLES_URL = "https://opensubtitles-v3.strem.io/"
-        const val DEV_CLOUDSTREAM_URL = "https://raw.githubusercontent.com/kurato-svg/kurato-project/refs/heads/main/repo.json"
+        const val DEV_CLOUDSTREAM_URL = "https://raw.githubusercontent.com/Luckez12/Cloudstream-Repo/refs/heads/main/repo.json"
         const val DEV_YASTREAM_URL = "https://yastream.tamthai.de/manifest.json"
 
         private const val KEY_SOURCES = "sources_v2"
@@ -171,7 +171,7 @@ class InstalledSourceStore(context: Context) {
         )
 
         private val DEVELOPER_DEFAULTS = listOf(
-            InstalledSource(DEV_CLOUDSTREAM_URL, preset = SourcePreset.DEVELOPER_DEFAULT, label = "Kurato CloudStream Repo"),
+            InstalledSource(DEV_CLOUDSTREAM_URL, preset = SourcePreset.DEVELOPER_DEFAULT, label = "CloudStream Repo"),
             InstalledSource(DEV_YASTREAM_URL, preset = SourcePreset.DEVELOPER_DEFAULT, label = "Yastream")
         )
     }
