@@ -15,4 +15,6 @@ Current capabilities include:
 
 Android package: `app.nudroidlabs.nustrim`
 
-Current development baseline: `0.17.0-tv2-rc2`
+Current development baseline: `0.26.0-tv-stage7-rc1`
+
+TV mode baseline: fresh `app.nudroidlabs.nustrim.tv` namespace with Home, Details, Sources, Player, Search, Library and Settings implemented.
