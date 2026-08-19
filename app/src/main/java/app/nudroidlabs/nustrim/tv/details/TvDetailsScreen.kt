@@ -33,6 +33,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -62,6 +63,7 @@ import app.nudroidlabs.nustrim.core.model.StreamSource
 import app.nudroidlabs.nustrim.core.source.SourceEngine
 import app.nudroidlabs.nustrim.core.source.SourceSession
 import app.nudroidlabs.nustrim.tv.home.TvHomeEntry
+import app.nudroidlabs.nustrim.tv.player.TvPlayerScreen
 import app.nudroidlabs.nustrim.tv.theme.TvColors
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.delay
@@ -96,6 +98,12 @@ fun TvDetailsScreen(
     }
     var restoreSourceFocus by remember(entry.stableKey) {
         mutableStateOf(false)
+    }
+    var playingStream by remember(entry.stableKey) {
+        mutableStateOf<StreamSource?>(null)
+    }
+    var sourcePlayerReturnToken by remember(entry.stableKey) {
+        mutableIntStateOf(0)
     }
     var lastDetailsRequester by remember(entry.stableKey) {
         mutableStateOf<FocusRequester?>(null)
@@ -414,6 +422,10 @@ fun TvDetailsScreen(
         sourcePreview?.let { request ->
             TvSourcesStage4Modal(
                 request = request,
+                playerReturnToken = sourcePlayerReturnToken,
+                onPlayStream = { stream ->
+                    playingStream = stream
+                },
                 onClose = {
                     sourcePreview = null
                     restoreSourceFocus = true
@@ -421,6 +433,21 @@ fun TvDetailsScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .zIndex(30f)
+            )
+        }
+
+        playingStream?.let { stream ->
+            TvPlayerScreen(
+                stream = stream,
+                title = detailedItem.title,
+                episodeTitle = sourcePreview?.episode?.displayTitle,
+                onBack = {
+                    playingStream = null
+                    sourcePlayerReturnToken += 1
+                },
+                modifier = Modifier
+                    .fillMaxSize()
+                    .zIndex(40f)
             )
         }
     }
@@ -789,6 +816,8 @@ private fun TvEpisodeCard(
 @Composable
 private fun TvSourcesStage4Modal(
     request: TvSourcePreviewRequest,
+    playerReturnToken: Int,
+    onPlayStream: (StreamSource) -> Unit,
     onClose: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -1021,6 +1050,7 @@ private fun TvSourcesStage4Modal(
                                     focusRequester = streamRequesters[index],
                                     onSelected = {
                                         selectedStreamUrl = stream.url
+                                        onPlayStream(stream)
                                     }
                                 )
                             }
@@ -1067,6 +1097,25 @@ private fun TvSourcesStage4Modal(
             !loading && errorMessage != null -> {
                 runCatching { retryRequester.requestFocus() }
             }
+        }
+    }
+
+    LaunchedEffect(playerReturnToken) {
+        if (
+            playerReturnToken > 0 &&
+            !loading &&
+            streams.isNotEmpty()
+        ) {
+            delay(80)
+            val selectedIndex = streams.indexOfFirst { stream ->
+                stream.url == selectedStreamUrl
+            }.takeIf { it >= 0 } ?: 0
+
+            streamRequesters
+                .getOrNull(selectedIndex)
+                ?.let { requester ->
+                    runCatching { requester.requestFocus() }
+                }
         }
     }
 }
