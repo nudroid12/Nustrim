@@ -529,11 +529,17 @@ fun TvPlayerScreen(
                         completed = true,
                         force = true
                     )
-                    controlsVisible = true
-                    autoNextCountdown = if (onNextEpisode != null) {
+                    val hasNextEpisode = onNextEpisode != null
+                    controlsVisible = !hasNextEpisode
+                    moreExpanded = false
+                    focusedControlId = null
+                    autoNextCountdown = if (hasNextEpisode) {
                         5
                     } else {
                         -1
+                    }
+                    if (hasNextEpisode) {
+                        runCatching { focusRequester.requestFocus() }
                     }
                 }
             }
@@ -869,6 +875,25 @@ fun TvPlayerScreen(
                         }
                     }
                     true
+                } else if (autoNextCountdown >= 0 && event.type == KeyEventType.KeyDown) {
+                    when (event.key) {
+                        Key.DirectionCenter,
+                        Key.Enter -> {
+                            triggerNextEpisode()
+                            true
+                        }
+
+                        Key.DirectionLeft,
+                        Key.DirectionRight,
+                        Key.DirectionUp,
+                        Key.DirectionDown -> {
+                            cancelAutoNext()
+                            requestControlFocus()
+                            true
+                        }
+
+                        else -> false
+                    }
                 } else if (event.type == KeyEventType.KeyUp &&
                     focusedControlId == null &&
                     (event.key == Key.DirectionLeft || event.key == Key.DirectionRight) &&
@@ -1049,7 +1074,28 @@ fun TvPlayerScreen(
         }
 
         AnimatedVisibility(
-            visible = controlsVisible && playbackError == null && !pauseOverlayVisible,
+            visible = controlsVisible &&
+                playbackError == null &&
+                !pauseOverlayVisible &&
+                autoNextCountdown < 0 &&
+                trackPanel == null &&
+                !speedPanelVisible &&
+                !buffering,
+            enter = fadeIn(animationSpec = tween(150)),
+            exit = fadeOut(animationSpec = tween(150)),
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = 30.dp, end = 34.dp)
+        ) {
+            TvPlayerClockOverlay(
+                positionMs = positionMs,
+                durationMs = durationMs,
+                playbackSpeed = playbackSpeed
+            )
+        }
+
+        AnimatedVisibility(
+            visible = controlsVisible && playbackError == null && !pauseOverlayVisible && autoNextCountdown < 0,
             enter = fadeIn(animationSpec = tween(200)),
             exit = fadeOut(animationSpec = tween(200)),
             modifier = Modifier.fillMaxSize()
@@ -1326,53 +1372,18 @@ fun TvPlayerScreen(
             onNextEpisode != null &&
             playbackError == null
         ) {
-            Surface(
+            TvPlayerPostPlayOverlay(
+                countdown = autoNextCountdown,
+                nextEpisodeTitle = nextEpisodeTitle,
+                onPlayNow = ::triggerNextEpisode,
+                onCancel = {
+                    cancelAutoNext()
+                    requestControlFocus()
+                },
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
-                    .padding(
-                        end = 34.dp,
-                        bottom = 132.dp
-                    )
-                    .width(410.dp),
-                color = TvColors.BackgroundElevated.copy(alpha = 0.97f),
-                shape = RoundedCornerShape(16.dp)
-            ) {
-                Column(
-                    modifier = Modifier.padding(
-                        horizontal = 20.dp,
-                        vertical = 16.dp
-                    ),
-                    verticalArrangement = Arrangement.spacedBy(5.dp)
-                ) {
-                    Text(
-                        text = if (autoNextCountdown > 0) {
-                            "Next episode in ${autoNextCountdown}s"
-                        } else {
-                            "Opening next episode..."
-                        },
-                        color = TvColors.TextPrimary,
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                    nextEpisodeTitle
-                        ?.takeIf { it.isNotBlank() }
-                        ?.let { nextTitle ->
-                            Text(
-                                text = nextTitle,
-                                color = TvColors.TextSecondary,
-                                fontSize = 13.sp,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                    Text(
-                        text = "OK Play now  •  Back Cancel",
-                        color = TvColors.Accent,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                }
-            }
+                    .padding(end = 34.dp, bottom = 42.dp)
+            )
         }
 
         if (speedPanelVisible) {
@@ -2009,6 +2020,144 @@ private fun TvPlayerProgress(
                     RoundedCornerShape(99.dp)
                 )
         )
+    }
+}
+
+@Composable
+private fun TvPlayerClockOverlay(
+    positionMs: Long,
+    durationMs: Long,
+    playbackSpeed: Float
+) {
+    var nowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    val context = LocalContext.current
+    val formatter = remember(context) { DateFormat.getTimeFormat(context) }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            val current = System.currentTimeMillis()
+            nowMs = current
+            delay((1_000L - (current % 1_000L)).coerceAtLeast(250L))
+        }
+    }
+
+    val remainingMediaMs = (durationMs - positionMs).coerceAtLeast(0L)
+    val effectiveSpeed = playbackSpeed.takeIf { it > 0f } ?: 1f
+    val remainingRealMs = (remainingMediaMs.toDouble() / effectiveSpeed.toDouble()).toLong()
+    val endsAt = if (durationMs > 0L) {
+        formatter.format(Date(nowMs + remainingRealMs))
+    } else {
+        "--:--"
+    }
+
+    Column(
+        horizontalAlignment = Alignment.End,
+        verticalArrangement = Arrangement.spacedBy(1.dp)
+    ) {
+        Text(
+            text = formatter.format(Date(nowMs)),
+            color = Color.White.copy(alpha = 0.96f),
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold
+        )
+        Text(
+            text = "Ends at $endsAt",
+            color = Color.White.copy(alpha = 0.76f),
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Medium
+        )
+    }
+}
+
+@Composable
+private fun TvPlayerPostPlayOverlay(
+    countdown: Int,
+    nextEpisodeTitle: String?,
+    onPlayNow: () -> Unit,
+    onCancel: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val progress = (countdown.coerceIn(0, 5) / 5f).coerceIn(0f, 1f)
+
+    Surface(
+        modifier = modifier.width(410.dp),
+        color = Color.Black.copy(alpha = 0.90f),
+        shape = RoundedCornerShape(18.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 18.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(
+                text = if (countdown > 0) {
+                    "Up next in ${countdown}s"
+                } else {
+                    "Opening next episode..."
+                },
+                color = Color.White,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold
+            )
+
+            nextEpisodeTitle
+                ?.takeIf { it.isNotBlank() }
+                ?.let { nextTitle ->
+                    Text(
+                        text = nextTitle,
+                        color = Color.White.copy(alpha = 0.82f),
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(4.dp)
+                    .background(
+                        Color.White.copy(alpha = 0.22f),
+                        RoundedCornerShape(2.dp)
+                    )
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .fillMaxWidth(progress)
+                        .background(
+                            Color.White,
+                            RoundedCornerShape(2.dp)
+                        )
+                )
+            }
+
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Surface(
+                    onClick = onPlayNow,
+                    color = Color.White,
+                    contentColor = Color.Black,
+                    shape = RoundedCornerShape(22.dp)
+                ) {
+                    Text(
+                        text = "Play now",
+                        modifier = Modifier.padding(horizontal = 18.dp, vertical = 9.dp),
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                Text(
+                    text = "OK Play now  •  Back Cancel",
+                    color = Color.White.copy(alpha = 0.62f),
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium
+                )
+            }
+        }
     }
 }
 
