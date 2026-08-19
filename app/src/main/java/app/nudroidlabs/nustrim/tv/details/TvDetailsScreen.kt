@@ -836,6 +836,7 @@ private fun TvSourcesStage4Modal(
     var errorMessage by remember(requestKey) { mutableStateOf<String?>(null) }
     var streams by remember(requestKey) { mutableStateOf<List<StreamSource>>(emptyList()) }
     var selectedStreamUrl by remember(requestKey) { mutableStateOf<String?>(null) }
+    var sourceDiag by remember(requestKey) { mutableStateOf("WAITING") }
 
     val modalRequester = remember(requestKey) { FocusRequester() }
     val retryRequester = remember(requestKey) { FocusRequester() }
@@ -845,6 +846,16 @@ private fun TvSourcesStage4Modal(
 
     fun acceptStreams(loaded: List<StreamSource>) {
         val ranked = rankTvStreams(loaded)
+        val playableCount = loaded.count { stream ->
+            stream.playable && stream.url.isNotBlank()
+        }
+        val sample = loaded
+            .take(3)
+            .joinToString(" | ") { stream ->
+                "${stream.name.take(18)}:${stream.type}:play=${stream.playable}:url=${stream.url.isNotBlank()}"
+            }
+        sourceDiag = "SUCCESS raw=${loaded.size} playable=$playableCount ranked=${ranked.size}" +
+            if (sample.isBlank()) "" else " • $sample"
         streams = ranked
         loading = false
         errorMessage = if (ranked.isEmpty()) {
@@ -862,8 +873,10 @@ private fun TvSourcesStage4Modal(
         errorMessage = null
         streams = emptyList()
         selectedStreamUrl = null
+        sourceDiag = "START session=${request.session?.id ?: "none"} source=${request.sourceUrl.take(48)} item=${request.item.id.take(40)} ep=${request.episode?.id?.take(30) ?: "none"}"
 
         fun loadFrom(session: SourceSession) {
+            sourceDiag = "LOAD session=${session.id} name=${session.displayName.take(28)} kind=${session.kind} item=${request.item.id.take(32)} ep=${request.episode?.id?.take(24) ?: "none"}"
             session.loadStreams(
                 item = request.item,
                 episode = request.episode,
@@ -873,9 +886,11 @@ private fun TvSourcesStage4Modal(
                 onError = { error ->
                     loading = false
                     streams = emptyList()
-                    errorMessage = error.message
+                    val message = error.message
                         ?.takeIf { it.isNotBlank() }
                         ?: "Could not load streams."
+                    errorMessage = message
+                    sourceDiag = "LOAD_ERROR ${error::class.java.simpleName}: ${message.take(120)}"
                 }
             )
         }
@@ -887,20 +902,24 @@ private fun TvSourcesStage4Modal(
             engine.open(
                 request.sourceUrl,
                 onSuccess = { session ->
+                    sourceDiag = "OPEN_OK session=${session.id} name=${session.displayName.take(28)} kind=${session.kind}"
                     loadFrom(session)
                 },
                 onError = { error ->
                     loading = false
                     streams = emptyList()
-                    errorMessage = error.message
+                    val message = error.message
                         ?.takeIf { it.isNotBlank() }
                         ?: "Could not open source."
+                    errorMessage = message
+                    sourceDiag = "OPEN_ERROR ${error::class.java.simpleName}: ${message.take(120)}"
                 }
             )
         } else {
             loading = false
             streams = emptyList()
             errorMessage = "Source information is unavailable."
+            sourceDiag = "NO_SOURCE session=null sourceUrl=blank"
         }
     }
 
@@ -966,6 +985,16 @@ private fun TvSourcesStage4Modal(
                         )
                     }
                 }
+
+                Text(
+                    text = "DIAG • $sourceDiag",
+                    modifier = Modifier.fillMaxWidth(),
+                    color = TvColors.TextSecondary,
+                    fontSize = 10.sp,
+                    lineHeight = 13.sp,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis
+                )
 
                 when {
                     loading -> {
