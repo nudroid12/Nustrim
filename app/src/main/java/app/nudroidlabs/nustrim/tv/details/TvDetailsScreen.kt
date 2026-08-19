@@ -89,6 +89,8 @@ data class TvSourcePreviewRequest(
     val startFromBeginning: Boolean = false
 )
 
+private const val EPISODE_SCROLL_REPEAT_THROTTLE_MS = 80L
+
 @Composable
 fun TvDetailsScreen(
     entry: TvHomeEntry,
@@ -99,7 +101,9 @@ fun TvDetailsScreen(
     val mediaStore = remember(context) { LocalMediaStore(context) }
     val firstActionRequester = remember { FocusRequester() }
     val libraryActionRequester = remember { FocusRequester() }
+    val seasonListState = rememberLazyListState()
     val episodeListState = rememberLazyListState()
+    var lastEpisodeRepeatAt by remember(entry.stableKey) { mutableStateOf(0L) }
     val episodeFocusRequesters = remember(entry.stableKey) {
         mutableMapOf<String, FocusRequester>()
     }
@@ -156,6 +160,9 @@ fun TvDetailsScreen(
     }
     var episodeOptions by remember(entry.stableKey) {
         mutableStateOf<MediaEpisode?>(null)
+    }
+    var seasonOptions by remember(entry.stableKey) {
+        mutableStateOf<Int?>(null)
     }
     var lastDetailsRequester by remember(entry.stableKey) {
         mutableStateOf<FocusRequester?>(null)
@@ -216,21 +223,25 @@ fun TvDetailsScreen(
     } else {
         emptyList()
     }
-    val sortedEpisodes = resolvedEpisodes.sortedWith(
-        compareBy<MediaEpisode>(
-            { it.season ?: Int.MAX_VALUE },
-            { it.episode ?: Int.MAX_VALUE },
-            { it.title }
+    val sortedEpisodes = resolvedEpisodes
+        .sortedWith(
+            compareBy<MediaEpisode>(
+                { it.season ?: Int.MAX_VALUE },
+                { it.episode ?: Int.MAX_VALUE },
+                { it.title }
+            )
         )
-    )
+        .distinctBy(::episodeFocusKey)
     val rawSeasons = sortedEpisodes.mapNotNull { it.season }.distinct().sorted()
-    val positiveSeasons = rawSeasons.filter { it > 0 }
-    val seasons = if (positiveSeasons.isNotEmpty()) positiveSeasons else rawSeasons
+    val regularSeasons = rawSeasons.filter { it > 0 }
+    val specialSeasons = rawSeasons.filter { it == 0 }
+    val seasons = (regularSeasons + specialSeasons).ifEmpty { rawSeasons }
     val localContinueEntry = remember(
         entry.sourceUrl,
         detailedItem.id,
         detailedItem.ref?.metaId,
-        sourcePlayerReturnToken
+        sourcePlayerReturnToken,
+        episodeWatchedRevision
     ) {
         val detailMetaId = detailedItem.ref?.metaId.orEmpty()
         mediaStore.all().firstOrNull { stored ->
@@ -312,6 +323,162 @@ fun TvDetailsScreen(
         )
     }
 
+    val selectedSeasonEpisodes = remember(selectedSeason, sortedEpisodes) {
+        selectedSeason?.let { season ->
+            sortedEpisodes.filter { it.season == season }
+        }.orEmpty()
+    }
+    val selectedSeasonWatchedCount = remember(
+        selectedSeasonEpisodes,
+        watchedEpisodeKeys
+    ) {
+        selectedSeasonEpisodes.count { episode ->
+            episodeWatchKey(episode) in watchedEpisodeKeys
+        }
+    }
+    fun markEpisodeWatched(
+        episode: MediaEpisode,
+        watched: Boolean
+    ) {
+        mediaStore.setEpisodeWatched(
+            sourceUrl = entry.sourceUrl,
+            item = detailedItem,
+            episode = episode,
+            watched = watched
+        )
+
+        val isContinueEpisode = effectiveContinueEntry?.let { stored ->
+            stored.episodeId == episode.id &&
+                stored.season == episode.season &&
+                stored.episode == episode.episode
+        } == true
+
+        if (watched && isContinueEpisode) {
+            val currentIndex = sortedEpisodes.indexOfFirst {
+                episodeFocusKey(it) == episodeFocusKey(episode)
+            }
+            val next = currentIndex
+                .takeIf { it >= 0 }
+                ?.let { sortedEpisodes.getOrNull(it + 1) }
+
+            mediaStore.recordProgress(
+                sourceUrl = entry.sourceUrl,
+                item = detailedItem,
+                episode = episode,
+                positionMs = 0L,
+                durationMs = 0L,
+                completed = true,
+                nextEpisode = next
+            )
+            if (next == null) {
+                mediaStore.setWatched(
+                    sourceUrl = entry.sourceUrl,
+                    item = detailedItem,
+                    watched = true
+                )
+            }
+        } else if (!watched) {
+            mediaStore.setWatched(
+                sourceUrl = entry.sourceUrl,
+                item = detailedItem,
+                watched = false
+            )
+        }
+
+        episodeWatchedRevision += 1
+    }
+
+    fun markSeasonWatched(
+        season: Int,
+        watched: Boolean
+    ) {
+        val seasonEpisodes = sortedEpisodes.filter { it.season == season }
+        if (seasonEpisodes.isEmpty()) return
+
+        mediaStore.setSeasonWatched(
+            sourceUrl = entry.sourceUrl,
+            item = detailedItem,
+            episodes = seasonEpisodes,
+            watched = watched
+        )
+
+        val continueEpisode = storedContinueEpisode
+        if (watched && continueEpisode?.season == season) {
+            val lastSeasonIndex = sortedEpisodes.indexOfLast { it.season == season }
+            val next = lastSeasonIndex
+                .takeIf { it >= 0 }
+                ?.let { sortedEpisodes.getOrNull(it + 1) }
+
+            mediaStore.recordProgress(
+                sourceUrl = entry.sourceUrl,
+                item = detailedItem,
+                episode = continueEpisode,
+                positionMs = 0L,
+                durationMs = 0L,
+                completed = true,
+                nextEpisode = next
+            )
+            if (next == null) {
+                mediaStore.setWatched(
+                    sourceUrl = entry.sourceUrl,
+                    item = detailedItem,
+                    watched = true
+                )
+            }
+        } else if (!watched) {
+            mediaStore.setWatched(
+                sourceUrl = entry.sourceUrl,
+                item = detailedItem,
+                watched = false
+            )
+        }
+
+        episodeWatchedRevision += 1
+    }
+
+    fun markPreviousEpisodesWatched(episode: MediaEpisode) {
+        val targetNumber = episode.episode ?: return
+        val season = episode.season ?: return
+        val previous = sortedEpisodes.filter { candidate ->
+            candidate.season == season &&
+                candidate.episode != null &&
+                candidate.episode < targetNumber
+        }
+        if (previous.isEmpty()) return
+
+        mediaStore.setSeasonWatched(
+            sourceUrl = entry.sourceUrl,
+            item = detailedItem,
+            episodes = previous,
+            watched = true
+        )
+        episodeWatchedRevision += 1
+    }
+
+    fun markPreviousSeasonsWatched(season: Int) {
+        val previous = sortedEpisodes.filter { episode ->
+            val episodeSeason = episode.season
+            episodeSeason != null &&
+                episodeSeason > 0 &&
+                episodeSeason < season
+        }
+        if (previous.isEmpty()) return
+
+        mediaStore.setSeasonWatched(
+            sourceUrl = entry.sourceUrl,
+            item = detailedItem,
+            episodes = previous,
+            watched = true
+        )
+        episodeWatchedRevision += 1
+    }
+
+    LaunchedEffect(seasons, selectedSeason) {
+        val index = seasons.indexOf(selectedSeason)
+        if (index >= 0) {
+            seasonListState.scrollToItem(index)
+        }
+    }
 
     LaunchedEffect(selectedSeason) {
         if (
@@ -552,6 +719,7 @@ fun TvDetailsScreen(
                     )
 
                     LazyRow(
+                        state = seasonListState,
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         contentPadding = PaddingValues(end = 18.dp)
                     ) {
@@ -559,9 +727,16 @@ fun TvDetailsScreen(
                             items = seasons,
                             key = { _, season -> season }
                         ) { _, season ->
+                            val seasonEpisodes = sortedEpisodes.filter { it.season == season }
+                            val seasonFullyWatched = seasonEpisodes.isNotEmpty() &&
+                                seasonEpisodes.all { episode ->
+                                    episodeWatchKey(episode) in watchedEpisodeKeys
+                                }
+
                             TvSeasonChip(
                                 season = season,
                                 selected = season == selectedSeason,
+                                fullyWatched = seasonFullyWatched,
                                 onFocused = { requester ->
                                     lastDetailsRequester = requester
                                     if (season != selectedSeason) {
@@ -573,6 +748,11 @@ fun TvDetailsScreen(
                                     selectedSeason = season
                                     lastFocusedEpisodeKey = null
                                     pendingEpisodeFocusRestoreKey = null
+                                },
+                                onLongPress = {
+                                    pendingSeasonSelection = null
+                                    selectedSeason = season
+                                    seasonOptions = season
                                 }
                             )
                         }
@@ -581,10 +761,18 @@ fun TvDetailsScreen(
 
                 if (sortedEpisodes.isNotEmpty()) {
                     Text(
-                        text = if (selectedSeason != null) {
-                            "Episodes · Season $selectedSeason"
-                        } else {
-                            "Episodes"
+                        text = when {
+                            selectedSeason == null -> "Episodes"
+                            selectedSeason == 0 && selectedSeasonEpisodes.isEmpty() -> "Episodes · Specials"
+                            selectedSeason == 0 -> {
+                                "Episodes · Specials · " +
+                                    "$selectedSeasonWatchedCount/${selectedSeasonEpisodes.size} watched"
+                            }
+                            selectedSeasonEpisodes.isEmpty() -> "Episodes · Season $selectedSeason"
+                            else -> {
+                                "Episodes · Season $selectedSeason · " +
+                                    "$selectedSeasonWatchedCount/${selectedSeasonEpisodes.size} watched"
+                            }
                         },
                         color = TvColors.TextPrimary,
                         fontWeight = FontWeight.SemiBold,
@@ -593,7 +781,32 @@ fun TvDetailsScreen(
 
                     LazyRow(
                         state = episodeListState,
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .onPreviewKeyEvent { event ->
+                                val native = event.nativeKeyEvent
+                                val horizontal =
+                                    native.keyCode == AndroidKeyEvent.KEYCODE_DPAD_LEFT ||
+                                        native.keyCode == AndroidKeyEvent.KEYCODE_DPAD_RIGHT
+                                if (
+                                    horizontal &&
+                                    native.action == AndroidKeyEvent.ACTION_DOWN &&
+                                    native.repeatCount > 0
+                                ) {
+                                    val now = System.currentTimeMillis()
+                                    if (
+                                        now - lastEpisodeRepeatAt <
+                                        EPISODE_SCROLL_REPEAT_THROTTLE_MS
+                                    ) {
+                                        true
+                                    } else {
+                                        lastEpisodeRepeatAt = now
+                                        false
+                                    }
+                                } else {
+                                    false
+                                }
+                            },
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                         contentPadding = PaddingValues(
                             end = 32.dp,
@@ -602,8 +815,8 @@ fun TvDetailsScreen(
                     ) {
                         itemsIndexed(
                             items = visibleEpisodes,
-                            key = { index, episode ->
-                                "${episode.id}|${episode.season}|${episode.episode}|$index"
+                            key = { _, episode ->
+                                episodeFocusKey(episode)
                             }
                         ) { _, episode ->
                             val focusKey = episodeFocusKey(episode)
@@ -705,10 +918,27 @@ fun TvDetailsScreen(
                 item = detailedItem,
                 episode = episode
             )
+            val episodeSeason = episode.season
+            val seasonEpisodes = episodeSeason?.let { season ->
+                sortedEpisodes.filter { it.season == season }
+            }.orEmpty()
+            val seasonFullyWatched = seasonEpisodes.isNotEmpty() &&
+                seasonEpisodes.all { candidate ->
+                    episodeWatchKey(candidate) in watchedEpisodeKeys
+                }
+            val hasPreviousEpisodes = episode.episode?.let { episodeNumber ->
+                seasonEpisodes.any { candidate ->
+                    candidate.episode != null &&
+                        candidate.episode < episodeNumber
+                }
+            } == true
+
             TvEpisodeOptionsOverlay(
                 episode = episode,
                 watched = watched,
                 hasProgress = progress > 0L,
+                seasonFullyWatched = seasonFullyWatched,
+                hasPreviousEpisodes = hasPreviousEpisodes,
                 onDismiss = {
                     episodeOptions = null
                     restoreSourceFocus = true
@@ -726,14 +956,63 @@ fun TvDetailsScreen(
                     )
                 },
                 onToggleWatched = {
-                    mediaStore.setEpisodeWatched(
-                        sourceUrl = entry.sourceUrl,
-                        item = detailedItem,
+                    markEpisodeWatched(
                         episode = episode,
                         watched = !watched
                     )
-                    episodeWatchedRevision += 1
                     episodeOptions = null
+                    restoreSourceFocus = true
+                },
+                onToggleSeasonWatched = {
+                    episodeSeason?.let { season ->
+                        markSeasonWatched(
+                            season = season,
+                            watched = !seasonFullyWatched
+                        )
+                    }
+                    episodeOptions = null
+                    restoreSourceFocus = true
+                },
+                onMarkPreviousEpisodesWatched = {
+                    markPreviousEpisodesWatched(episode)
+                    episodeOptions = null
+                    restoreSourceFocus = true
+                },
+                modifier = Modifier
+                    .fillMaxSize()
+                    .zIndex(25f)
+            )
+        }
+
+        seasonOptions?.let { season ->
+            val seasonEpisodes = sortedEpisodes.filter { it.season == season }
+            val seasonFullyWatched = seasonEpisodes.isNotEmpty() &&
+                seasonEpisodes.all { episode ->
+                    episodeWatchKey(episode) in watchedEpisodeKeys
+                }
+            val hasPreviousSeasons = seasons.any { candidate ->
+                candidate > 0 && candidate < season
+            }
+
+            TvSeasonOptionsOverlay(
+                season = season,
+                fullyWatched = seasonFullyWatched,
+                hasPreviousSeasons = hasPreviousSeasons,
+                onDismiss = {
+                    seasonOptions = null
+                    restoreSourceFocus = true
+                },
+                onToggleSeasonWatched = {
+                    markSeasonWatched(
+                        season = season,
+                        watched = !seasonFullyWatched
+                    )
+                    seasonOptions = null
+                    restoreSourceFocus = true
+                },
+                onMarkPreviousSeasonsWatched = {
+                    markPreviousSeasonsWatched(season)
+                    seasonOptions = null
                     restoreSourceFocus = true
                 },
                 modifier = Modifier
@@ -1048,10 +1327,13 @@ private fun TvDetailsActionButton(
 private fun TvSeasonChip(
     season: Int,
     selected: Boolean,
+    fullyWatched: Boolean,
     onFocused: (FocusRequester) -> Unit,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onLongPress: () -> Unit
 ) {
     var focused by remember { mutableStateOf(false) }
+    var longPressTriggered by remember(season) { mutableStateOf(false) }
     val requester = remember(season) { FocusRequester() }
 
     Surface(
@@ -1063,17 +1345,42 @@ private fun TvSeasonChip(
                 if (it.hasFocus) onFocused(requester)
             }
             .onPreviewKeyEvent { event ->
-                if (
-                    event.type == KeyEventType.KeyDown &&
-                    (
-                        event.key == Key.DirectionCenter ||
-                            event.key == Key.Enter
-                        )
-                ) {
-                    onClick()
-                    true
-                } else {
-                    false
+                val native = event.nativeKeyEvent
+                val isSelect = native.keyCode == AndroidKeyEvent.KEYCODE_DPAD_CENTER ||
+                    native.keyCode == AndroidKeyEvent.KEYCODE_ENTER ||
+                    native.keyCode == AndroidKeyEvent.KEYCODE_NUMPAD_ENTER
+
+                when {
+                    native.action == AndroidKeyEvent.ACTION_DOWN &&
+                        native.keyCode == AndroidKeyEvent.KEYCODE_MENU -> {
+                        longPressTriggered = true
+                        onLongPress()
+                        true
+                    }
+
+                    isSelect &&
+                        native.action == AndroidKeyEvent.ACTION_DOWN &&
+                        native.repeatCount >= 2 &&
+                        !longPressTriggered -> {
+                        longPressTriggered = true
+                        onLongPress()
+                        true
+                    }
+
+                    isSelect &&
+                        native.action == AndroidKeyEvent.ACTION_DOWN -> true
+
+                    isSelect &&
+                        native.action == AndroidKeyEvent.ACTION_UP -> {
+                        if (longPressTriggered) {
+                            longPressTriggered = false
+                        } else {
+                            onClick()
+                        }
+                        true
+                    }
+
+                    else -> false
                 }
             }
             .focusable(),
@@ -1092,12 +1399,13 @@ private fun TvSeasonChip(
             }
         )
     ) {
-        Box(
+        Row(
             modifier = Modifier.padding(horizontal = 14.dp),
-            contentAlignment = Alignment.Center
+            horizontalArrangement = Arrangement.spacedBy(7.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = "Season $season",
+                text = if (season == 0) "Specials" else "Season $season",
                 color = if (focused) TvColors.Background else TvColors.TextPrimary,
                 fontSize = 13.sp,
                 fontWeight = if (focused || selected) {
@@ -1106,6 +1414,14 @@ private fun TvSeasonChip(
                     FontWeight.Normal
                 }
             )
+            if (fullyWatched) {
+                Text(
+                    text = "✓",
+                    color = if (focused) TvColors.Background else TvColors.TextSecondary,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
         }
     }
 }
@@ -1364,15 +1680,120 @@ private fun TvEpisodeOptionsOverlay(
     episode: MediaEpisode,
     watched: Boolean,
     hasProgress: Boolean,
+    seasonFullyWatched: Boolean,
+    hasPreviousEpisodes: Boolean,
     onDismiss: () -> Unit,
     onPlay: () -> Unit,
     onStartFromBeginning: () -> Unit,
     onToggleWatched: () -> Unit,
+    onToggleSeasonWatched: () -> Unit,
+    onMarkPreviousEpisodesWatched: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val playRequester = remember(episodeFocusKey(episode)) { FocusRequester() }
-    val startRequester = remember(episodeFocusKey(episode), hasProgress) { FocusRequester() }
     val watchedRequester = remember(episodeFocusKey(episode), watched) { FocusRequester() }
+    val seasonRequester = remember(
+        episodeFocusKey(episode),
+        seasonFullyWatched
+    ) { FocusRequester() }
+    val previousRequester = remember(episodeFocusKey(episode)) { FocusRequester() }
+    val playRequester = remember(episodeFocusKey(episode), hasProgress) { FocusRequester() }
+    val startRequester = remember(episodeFocusKey(episode), hasProgress) { FocusRequester() }
+
+    BackHandler(onBack = onDismiss)
+
+    Box(
+        modifier = modifier
+            .background(Color.Black.copy(alpha = 0.64f)),
+        contentAlignment = Alignment.Center
+    ) {
+        Surface(
+            modifier = Modifier.width(430.dp),
+            color = TvColors.BackgroundElevated.copy(alpha = 0.98f),
+            shape = RoundedCornerShape(16.dp),
+            border = BorderStroke(
+                1.dp,
+                Color.White.copy(alpha = 0.12f)
+            )
+        ) {
+            Column(
+                modifier = Modifier.padding(22.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = episode.displayTitle,
+                    color = TvColors.TextPrimary,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 20.sp,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = "Episode options",
+                    color = TvColors.TextSecondary,
+                    fontSize = 12.sp
+                )
+
+                TvEpisodeOptionButton(
+                    label = if (watched) "Mark as unwatched" else "Mark as watched",
+                    focusRequester = watchedRequester,
+                    onClick = onToggleWatched
+                )
+                TvEpisodeOptionButton(
+                    label = if (seasonFullyWatched) {
+                        "Mark season as unwatched"
+                    } else {
+                        "Mark season as watched"
+                    },
+                    focusRequester = seasonRequester,
+                    onClick = onToggleSeasonWatched
+                )
+                if (hasPreviousEpisodes) {
+                    TvEpisodeOptionButton(
+                        label = "Mark previous episodes watched",
+                        focusRequester = previousRequester,
+                        onClick = onMarkPreviousEpisodesWatched
+                    )
+                }
+                TvEpisodeOptionButton(
+                    label = if (hasProgress) "Resume" else "Play",
+                    focusRequester = playRequester,
+                    onClick = onPlay
+                )
+                if (hasProgress) {
+                    TvEpisodeOptionButton(
+                        label = "Start from beginning",
+                        focusRequester = startRequester,
+                        onClick = onStartFromBeginning
+                    )
+                }
+
+                Text(
+                    text = "Hold OK for options · Back to close",
+                    color = TvColors.TextSecondary.copy(alpha = 0.78f),
+                    fontSize = 11.sp
+                )
+            }
+        }
+    }
+
+    LaunchedEffect(episodeFocusKey(episode), watched) {
+        delay(80)
+        runCatching { watchedRequester.requestFocus() }
+    }
+}
+
+@Composable
+private fun TvSeasonOptionsOverlay(
+    season: Int,
+    fullyWatched: Boolean,
+    hasPreviousSeasons: Boolean,
+    onDismiss: () -> Unit,
+    onToggleSeasonWatched: () -> Unit,
+    onMarkPreviousSeasonsWatched: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val primaryRequester = remember(season, fullyWatched) { FocusRequester() }
+    val previousRequester = remember(season) { FocusRequester() }
 
     BackHandler(onBack = onDismiss)
 
@@ -1392,40 +1813,39 @@ private fun TvEpisodeOptionsOverlay(
         ) {
             Column(
                 modifier = Modifier.padding(22.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Text(
-                    text = episode.displayTitle,
+                    text = if (season == 0) "Specials" else "Season $season",
                     color = TvColors.TextPrimary,
                     fontWeight = FontWeight.Bold,
-                    fontSize = 20.sp,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
+                    fontSize = 20.sp
                 )
                 Text(
-                    text = "Episode options",
+                    text = "Season options",
                     color = TvColors.TextSecondary,
                     fontSize = 12.sp
                 )
 
                 TvEpisodeOptionButton(
-                    label = if (hasProgress) "Resume" else "Play",
-                    focusRequester = playRequester,
-                    onClick = onPlay
+                    label = if (fullyWatched) {
+                        "Mark season as unwatched"
+                    } else {
+                        "Mark season as watched"
+                    },
+                    focusRequester = primaryRequester,
+                    onClick = onToggleSeasonWatched
                 )
-                TvEpisodeOptionButton(
-                    label = "Start from beginning",
-                    focusRequester = startRequester,
-                    onClick = onStartFromBeginning
-                )
-                TvEpisodeOptionButton(
-                    label = if (watched) "Mark as unwatched" else "Mark as watched",
-                    focusRequester = watchedRequester,
-                    onClick = onToggleWatched
-                )
+                if (hasPreviousSeasons && season > 0) {
+                    TvEpisodeOptionButton(
+                        label = "Mark previous seasons watched",
+                        focusRequester = previousRequester,
+                        onClick = onMarkPreviousSeasonsWatched
+                    )
+                }
 
                 Text(
-                    text = "Hold OK for options · Back to close",
+                    text = "Hold OK on a season for options · Back to close",
                     color = TvColors.TextSecondary.copy(alpha = 0.78f),
                     fontSize = 11.sp
                 )
@@ -1433,9 +1853,9 @@ private fun TvEpisodeOptionsOverlay(
         }
     }
 
-    LaunchedEffect(episodeFocusKey(episode)) {
+    LaunchedEffect(season, fullyWatched) {
         delay(80)
-        runCatching { playRequester.requestFocus() }
+        runCatching { primaryRequester.requestFocus() }
     }
 }
 
