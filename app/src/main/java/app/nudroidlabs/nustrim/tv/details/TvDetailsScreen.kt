@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -96,6 +97,24 @@ fun TvDetailsScreen(
     val mediaStore = remember(context) { LocalMediaStore(context) }
     val firstActionRequester = remember { FocusRequester() }
     val libraryActionRequester = remember { FocusRequester() }
+    val episodeListState = rememberLazyListState()
+    val episodeFocusRequesters = remember(entry.stableKey) {
+        mutableMapOf<String, FocusRequester>()
+    }
+
+    var lastFocusedEpisodeKey by remember(entry.stableKey) {
+        mutableStateOf(
+            entry.continueEntry
+                ?.toEpisode()
+                ?.let(::episodeFocusKey)
+        )
+    }
+    var pendingEpisodeFocusRestoreKey by remember(entry.stableKey) {
+        mutableStateOf<String?>(null)
+    }
+    var pendingSeasonSelection by remember(entry.stableKey) {
+        mutableStateOf<Int?>(null)
+    }
 
     var resolvedSession by remember(entry.stableKey) {
         mutableStateOf<SourceSession?>(entry.session)
@@ -107,6 +126,17 @@ fun TvDetailsScreen(
     var detailsResolved by remember(entry.stableKey) { mutableStateOf(false) }
     var errorMessage by remember(entry.stableKey) { mutableStateOf<String?>(null) }
     var selectedSeason by remember(entry.stableKey) { mutableStateOf<Int?>(null) }
+
+    LaunchedEffect(pendingSeasonSelection) {
+        val targetSeason = pendingSeasonSelection
+            ?: return@LaunchedEffect
+        delay(150)
+        selectedSeason = targetSeason
+        lastFocusedEpisodeKey = null
+        pendingEpisodeFocusRestoreKey = null
+        pendingSeasonSelection = null
+    }
+
     var sourcePreview by remember(entry.stableKey) {
         mutableStateOf<TvSourcePreviewRequest?>(null)
     }
@@ -188,7 +218,31 @@ fun TvDetailsScreen(
     val rawSeasons = sortedEpisodes.mapNotNull { it.season }.distinct().sorted()
     val positiveSeasons = rawSeasons.filter { it > 0 }
     val seasons = if (positiveSeasons.isNotEmpty()) positiveSeasons else rawSeasons
-    val storedContinueEpisode = entry.continueEntry
+    val localContinueEntry = remember(
+        entry.sourceUrl,
+        detailedItem.id,
+        detailedItem.ref?.metaId,
+        sourcePlayerReturnToken
+    ) {
+        val detailMetaId = detailedItem.ref?.metaId.orEmpty()
+        mediaStore.all().firstOrNull { stored ->
+            stored.sourceUrl == entry.sourceUrl &&
+                stored.hasContinueState &&
+                (
+                    stored.mediaId == detailedItem.id ||
+                        (
+                            detailMetaId.isNotBlank() &&
+                                stored.refMetaId == detailMetaId
+                            )
+                    )
+        }
+    }
+    val effectiveContinueEntry = if (sourcePlayerReturnToken > 0) {
+        localContinueEntry
+    } else {
+        localContinueEntry ?: entry.continueEntry
+    }
+    val storedContinueEpisode = effectiveContinueEntry
         ?.toEpisode()
         ?.let { stored ->
             sortedEpisodes.firstOrNull { candidate ->
@@ -201,7 +255,7 @@ fun TvDetailsScreen(
     LaunchedEffect(
         detailedItem.id,
         seasons,
-        entry.continueEntry?.episodeId
+        effectiveContinueEntry?.episodeId
     ) {
         selectedSeason = storedContinueSeason ?: seasons.firstOrNull()
     }
@@ -224,7 +278,7 @@ fun TvDetailsScreen(
         episode = resumeEpisode
     )
     val resumeActionLabel = when {
-        entry.continueEntry?.nextUp == true &&
+        effectiveContinueEntry?.nextUp == true &&
             resumeEpisode != null -> {
             "Next · ${resumeEpisode.displayTitle}"
         }
@@ -236,6 +290,17 @@ fun TvDetailsScreen(
 
         resumePositionMs > 0L -> "Resume"
         else -> "Play"
+    }
+
+    val localPlaybackEntry = effectiveContinueEntry
+
+    LaunchedEffect(selectedSeason) {
+        if (
+            pendingEpisodeFocusRestoreKey == null &&
+            visibleEpisodes.isNotEmpty()
+        ) {
+            episodeListState.scrollToItem(0)
+        }
     }
 
     fun openSources(
@@ -273,6 +338,11 @@ fun TvDetailsScreen(
 
     fun switchPlayerEpisode(episode: MediaEpisode) {
         val currentStream = playingStream
+        episode.season
+            ?.takeIf { it in seasons }
+            ?.let { selectedSeason = it }
+        lastFocusedEpisodeKey = episodeFocusKey(episode)
+        pendingEpisodeFocusRestoreKey = episodeFocusKey(episode)
         playingStream = null
         openSources(
             episode = episode,
@@ -412,7 +482,7 @@ fun TvDetailsScreen(
                         onFocused = { lastDetailsRequester = it },
                         onClick = {
                             if (!loading) {
-                                val continueEntry = entry.continueEntry
+                                val continueEntry = effectiveContinueEntry
                                 if (continueEntry != null) {
                                     openSources(
                                         episode = resumeEpisode,
@@ -471,9 +541,17 @@ fun TvDetailsScreen(
                             TvSeasonChip(
                                 season = season,
                                 selected = season == selectedSeason,
-                                onFocused = { lastDetailsRequester = it },
+                                onFocused = { requester ->
+                                    lastDetailsRequester = requester
+                                    if (season != selectedSeason) {
+                                        pendingSeasonSelection = season
+                                    }
+                                },
                                 onClick = {
+                                    pendingSeasonSelection = null
                                     selectedSeason = season
+                                    lastFocusedEpisodeKey = null
+                                    pendingEpisodeFocusRestoreKey = null
                                 }
                             )
                         }
@@ -493,6 +571,7 @@ fun TvDetailsScreen(
                     )
 
                     LazyRow(
+                        state = episodeListState,
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                         contentPadding = PaddingValues(
@@ -506,10 +585,47 @@ fun TvDetailsScreen(
                                 "${episode.id}|${episode.season}|${episode.episode}|$index"
                             }
                         ) { _, episode ->
+                            val focusKey = episodeFocusKey(episode)
+                            val episodeRequester = episodeFocusRequesters
+                                .getOrPut(focusKey) { FocusRequester() }
+                            val isPlaybackEpisode = localPlaybackEntry?.let { stored ->
+                                stored.episodeId == episode.id &&
+                                    stored.season == episode.season &&
+                                    stored.episode == episode.episode
+                            } == true
+                            val progressFraction = if (
+                                isPlaybackEpisode &&
+                                localPlaybackEntry?.hasProgress == true
+                            ) {
+                                localPlaybackEntry.progressFraction
+                            } else {
+                                0f
+                            }
+                            val statusLabel = when {
+                                isPlaybackEpisode &&
+                                    localPlaybackEntry?.nextUp == true -> {
+                                    "Next up"
+                                }
+
+                                progressFraction > 0f -> {
+                                    "Resume · ${(progressFraction * 100f).toInt()}%"
+                                }
+
+                                else -> null
+                            }
+
                             TvEpisodeCard(
                                 episode = episode,
-                                onFocused = { lastDetailsRequester = it },
+                                focusRequester = episodeRequester,
+                                progressFraction = progressFraction,
+                                statusLabel = statusLabel,
+                                onFocused = { requester ->
+                                    lastDetailsRequester = requester
+                                    lastFocusedEpisodeKey = focusKey
+                                },
                                 onClick = {
+                                    lastFocusedEpisodeKey = focusKey
+                                    pendingEpisodeFocusRestoreKey = focusKey
                                     openSources(episode)
                                 }
                             )
@@ -558,6 +674,14 @@ fun TvDetailsScreen(
                     playingStream = stream
                 },
                 onClose = {
+                    val returningEpisode = sourcePreview?.episode
+                    returningEpisode
+                        ?.season
+                        ?.takeIf { it in seasons }
+                        ?.let { selectedSeason = it }
+                    pendingEpisodeFocusRestoreKey = returningEpisode
+                        ?.let(::episodeFocusKey)
+                        ?: lastFocusedEpisodeKey
                     sourcePreview = null
                     restoreSourceFocus = true
                 },
@@ -618,11 +742,48 @@ fun TvDetailsScreen(
         }
     }
 
-    LaunchedEffect(sourcePreview, restoreSourceFocus) {
+    LaunchedEffect(
+        sourcePreview,
+        restoreSourceFocus,
+        selectedSeason,
+        sourcePlayerReturnToken
+    ) {
         if (sourcePreview == null && restoreSourceFocus) {
-            delay(70)
-            val requester = lastDetailsRequester ?: firstActionRequester
-            runCatching { requester.requestFocus() }
+            val restoreKey = pendingEpisodeFocusRestoreKey
+                ?: lastFocusedEpisodeKey
+            val restoreIndex = restoreKey?.let { key ->
+                visibleEpisodes.indexOfFirst {
+                    episodeFocusKey(it) == key
+                }
+            } ?: -1
+
+            var focusRestored = false
+            if (restoreIndex >= 0 && restoreKey != null) {
+                episodeListState.scrollToItem(restoreIndex)
+                delay(90)
+                focusRestored = runCatching {
+                    episodeFocusRequesters[restoreKey]?.let { requester ->
+                        requester.requestFocus()
+                        true
+                    } ?: false
+                }.getOrDefault(false)
+            }
+
+            if (!focusRestored) {
+                delay(40)
+                focusRestored = lastDetailsRequester?.let { requester ->
+                    runCatching {
+                        requester.requestFocus()
+                        true
+                    }.getOrDefault(false)
+                } == true
+            }
+
+            if (!focusRestored) {
+                runCatching { firstActionRequester.requestFocus() }
+            }
+
+            pendingEpisodeFocusRestoreKey = null
             restoreSourceFocus = false
         }
     }
@@ -869,18 +1030,25 @@ private fun TvSeasonChip(
     }
 }
 
+private fun episodeFocusKey(episode: MediaEpisode): String =
+    buildString {
+        append(episode.id)
+        append('|')
+        append(episode.season ?: -1)
+        append('|')
+        append(episode.episode ?: -1)
+    }
+
 @Composable
 private fun TvEpisodeCard(
     episode: MediaEpisode,
+    focusRequester: FocusRequester,
+    progressFraction: Float = 0f,
+    statusLabel: String? = null,
     onFocused: (FocusRequester) -> Unit,
     onClick: () -> Unit
 ) {
     var focused by remember { mutableStateOf(false) }
-    val requester = remember(
-        episode.id,
-        episode.season,
-        episode.episode
-    ) { FocusRequester() }
     val scale by animateFloatAsState(
         targetValue = if (focused) 1.035f else 1f,
         label = "episodeScale"
@@ -894,10 +1062,10 @@ private fun TvEpisodeCard(
                 scaleX = scale
                 scaleY = scale
             }
-            .focusRequester(requester)
+            .focusRequester(focusRequester)
             .onFocusChanged {
                 focused = it.hasFocus
-                if (it.hasFocus) onFocused(requester)
+                if (it.hasFocus) onFocused(focusRequester)
             }
             .onPreviewKeyEvent { event ->
                 if (
@@ -949,14 +1117,62 @@ private fun TvEpisodeCard(
                     )
             )
 
+            statusLabel?.let { label ->
+                Surface(
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(9.dp),
+                    color = Color.Black.copy(alpha = 0.72f),
+                    shape = RoundedCornerShape(6.dp),
+                    border = BorderStroke(
+                        1.dp,
+                        Color.White.copy(alpha = 0.12f)
+                    )
+                ) {
+                    Text(
+                        text = label,
+                        color = TvColors.TextPrimary,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(
+                            horizontal = 8.dp,
+                            vertical = 4.dp
+                        )
+                    )
+                }
+            }
+
             Column(
                 modifier = Modifier
                     .align(Alignment.BottomStart)
-                    .padding(11.dp),
+                    .padding(
+                        start = 11.dp,
+                        end = 11.dp,
+                        bottom = if (progressFraction > 0f) 15.dp else 11.dp
+                    ),
                 verticalArrangement = Arrangement.spacedBy(3.dp)
             ) {
+                val episodeNumberLabel = when {
+                    episode.season != null && episode.episode != null -> {
+                        "S${episode.season} · E${episode.episode}"
+                    }
+
+                    episode.episode != null -> "Episode ${episode.episode}"
+                    else -> ""
+                }
+
+                if (episodeNumberLabel.isNotBlank()) {
+                    Text(
+                        text = episodeNumberLabel,
+                        color = TvColors.TextSecondary,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1
+                    )
+                }
+
                 Text(
-                    text = episode.displayTitle,
+                    text = episode.title.ifBlank { episode.displayTitle },
                     color = TvColors.TextPrimary,
                     fontWeight = FontWeight.SemiBold,
                     fontSize = 13.sp,
@@ -975,6 +1191,23 @@ private fun TvEpisodeCard(
                             overflow = TextOverflow.Ellipsis
                         )
                     }
+            }
+
+            if (progressFraction > 0f) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .fillMaxWidth()
+                        .height(4.dp)
+                        .background(Color.White.copy(alpha = 0.18f))
+                )
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .fillMaxWidth(progressFraction.coerceIn(0f, 1f))
+                        .height(4.dp)
+                        .background(TvColors.FocusRing)
+                )
             }
         }
     }
