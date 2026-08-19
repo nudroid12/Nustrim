@@ -91,8 +91,11 @@ class StreamSourceAggregator(
             engine.open(
                 url,
                 onSuccess = { session ->
-                    if (supportsStreams(session)) {
-                        streamSessions.putIfAbsent(session.id, session)
+                    if (
+                        supportsStreams(session) &&
+                        !streamSessions.containsKey(session.id)
+                    ) {
+                        streamSessions[session.id] = session
                     }
 
                     completedDiscovery += 1
