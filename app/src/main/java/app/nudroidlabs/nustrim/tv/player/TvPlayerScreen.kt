@@ -101,6 +101,9 @@ fun TvPlayerScreen(
     val context = LocalContext.current
     val preferences = remember(context) { UiPreferences(context) }
     val focusRequester = remember(stream.url) { FocusRequester() }
+    val playControlRequester = remember(stream.url) { FocusRequester() }
+    val audioControlRequester = remember(stream.url) { FocusRequester() }
+    val subtitleControlRequester = remember(stream.url) { FocusRequester() }
 
     val player = remember(context, stream.url, stream.headers) {
         val httpFactory = DefaultHttpDataSource.Factory()
@@ -141,6 +144,11 @@ fun TvPlayerScreen(
     }
     var subtitlesDisabled by remember(stream.url) { mutableStateOf(false) }
     var autoNextCountdown by remember(stream.url) { mutableIntStateOf(-1) }
+    var focusedControlId by remember(stream.url) { mutableStateOf<String?>(null) }
+    var pendingControlFocus by remember(stream.url) { mutableStateOf(false) }
+    var panelReturnFocus by remember(stream.url) {
+        mutableStateOf<TvPlayerTrackPanel?>(null)
+    }
 
     val preferredSubtitleLanguages = remember(stream.url) {
         listOf(
@@ -173,6 +181,18 @@ fun TvPlayerScreen(
     fun revealControls() {
         controlsVisible = true
         interactionToken += 1
+    }
+
+    fun requestControlFocus() {
+        revealControls()
+        pendingControlFocus = true
+    }
+
+    fun restoreVideoFocus() {
+        focusedControlId = null
+        pendingControlFocus = false
+        revealControls()
+        runCatching { focusRequester.requestFocus() }
     }
 
     fun cancelAutoNext() {
@@ -241,6 +261,7 @@ fun TvPlayerScreen(
     fun openTrackPanel(panel: TvPlayerTrackPanel) {
         if (playbackError != null) return
         cancelAutoNext()
+        panelReturnFocus = if (focusedControlId != null) panel else null
         trackPanel = panel
         revealControls()
     }
@@ -423,12 +444,14 @@ fun TvPlayerScreen(
         interactionToken,
         isPlaying,
         playbackError,
-        trackPanel
+        trackPanel,
+        focusedControlId
     ) {
         if (
             isPlaying &&
             playbackError == null &&
-            trackPanel == null
+            trackPanel == null &&
+            focusedControlId == null
         ) {
             val token = interactionToken
             delay(3500)
@@ -436,7 +459,8 @@ fun TvPlayerScreen(
                 token == interactionToken &&
                 isPlaying &&
                 playbackError == null &&
-                trackPanel == null
+                trackPanel == null &&
+                focusedControlId == null
             ) {
                 controlsVisible = false
             }
@@ -453,7 +477,28 @@ fun TvPlayerScreen(
     LaunchedEffect(trackPanel) {
         if (trackPanel == null) {
             delay(40)
-            runCatching { focusRequester.requestFocus() }
+            when (panelReturnFocus) {
+                TvPlayerTrackPanel.AUDIO -> {
+                    runCatching { audioControlRequester.requestFocus() }
+                }
+
+                TvPlayerTrackPanel.SUBTITLES -> {
+                    runCatching { subtitleControlRequester.requestFocus() }
+                }
+
+                null -> {
+                    runCatching { focusRequester.requestFocus() }
+                }
+            }
+            panelReturnFocus = null
+        }
+    }
+
+    LaunchedEffect(controlsVisible, pendingControlFocus) {
+        if (controlsVisible && pendingControlFocus) {
+            delay(40)
+            runCatching { playControlRequester.requestFocus() }
+            pendingControlFocus = false
         }
     }
 
@@ -467,6 +512,10 @@ fun TvPlayerScreen(
             autoNextCountdown >= 0 -> {
                 cancelAutoNext()
                 revealControls()
+            }
+
+            focusedControlId != null -> {
+                restoreVideoFocus()
             }
 
             else -> onBack()
@@ -483,6 +532,31 @@ fun TvPlayerScreen(
                     false
                 } else if (trackPanel != null) {
                     false
+                } else if (focusedControlId != null) {
+                    when (event.key) {
+                        Key.MediaPrevious -> {
+                            if (onPreviousEpisode != null) {
+                                triggerPreviousEpisode()
+                                true
+                            } else {
+                                false
+                            }
+                        }
+
+                        Key.MediaNext -> {
+                            if (onNextEpisode != null) {
+                                triggerNextEpisode()
+                                true
+                            } else {
+                                false
+                            }
+                        }
+
+                        else -> {
+                            revealControls()
+                            false
+                        }
+                    }
                 } else {
                     when (event.key) {
                         Key.MediaPrevious -> {
@@ -534,7 +608,7 @@ fun TvPlayerScreen(
                         }
 
                         Key.DirectionDown -> {
-                            openTrackPanel(TvPlayerTrackPanel.SUBTITLES)
+                            requestControlFocus()
                             true
                         }
 
@@ -695,25 +769,97 @@ fun TvPlayerScreen(
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(20.dp)
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Text(
-                                text = "◀ 10s",
-                                color = Color.White,
-                                fontSize = 15.sp,
-                                fontWeight = FontWeight.SemiBold
+                            TvPlayerControlButton(
+                                id = "previous",
+                                symbol = "|◀",
+                                label = "Previous",
+                                enabled = onPreviousEpisode != null,
+                                focusedId = focusedControlId,
+                                onFocusedIdChange = { focusedControlId = it },
+                                onClick = ::triggerPreviousEpisode,
+                                onExitControls = ::restoreVideoFocus
                             )
-                            Text(
-                                text = if (isPlaying) "Ⅱ" else "▶",
-                                color = Color.White,
-                                fontSize = 25.sp,
-                                fontWeight = FontWeight.Bold
+                            TvPlayerControlButton(
+                                id = "rewind",
+                                symbol = "↶",
+                                label = "-10s",
+                                focusedId = focusedControlId,
+                                onFocusedIdChange = { focusedControlId = it },
+                                onClick = { seekBy(-10_000L) },
+                                onExitControls = ::restoreVideoFocus
                             )
-                            Text(
-                                text = "10s ▶",
-                                color = Color.White,
-                                fontSize = 15.sp,
-                                fontWeight = FontWeight.SemiBold
+                            TvPlayerControlButton(
+                                id = "play",
+                                symbol = if (isPlaying) "Ⅱ" else "▶",
+                                label = if (isPlaying) "Pause" else "Play",
+                                focusRequester = playControlRequester,
+                                focusedId = focusedControlId,
+                                onFocusedIdChange = { focusedControlId = it },
+                                onClick = ::togglePlayback,
+                                onExitControls = ::restoreVideoFocus
+                            )
+                            TvPlayerControlButton(
+                                id = "forward",
+                                symbol = "↷",
+                                label = "+10s",
+                                focusedId = focusedControlId,
+                                onFocusedIdChange = { focusedControlId = it },
+                                onClick = { seekBy(10_000L) },
+                                onExitControls = ::restoreVideoFocus
+                            )
+                            TvPlayerControlButton(
+                                id = "next",
+                                symbol = "▶|",
+                                label = "Next",
+                                enabled = onNextEpisode != null,
+                                focusedId = focusedControlId,
+                                onFocusedIdChange = { focusedControlId = it },
+                                onClick = ::triggerNextEpisode,
+                                onExitControls = ::restoreVideoFocus
+                            )
+                            TvPlayerControlButton(
+                                id = "audio",
+                                symbol = "A",
+                                label = "Audio",
+                                secondary = selectedAudioLabel,
+                                wide = true,
+                                focusRequester = audioControlRequester,
+                                focusedId = focusedControlId,
+                                onFocusedIdChange = { focusedControlId = it },
+                                onClick = {
+                                    openTrackPanel(TvPlayerTrackPanel.AUDIO)
+                                },
+                                onExitControls = ::restoreVideoFocus
+                            )
+                            TvPlayerControlButton(
+                                id = "subtitles",
+                                symbol = "CC",
+                                label = "Subtitles",
+                                secondary = selectedSubtitleLabel,
+                                wide = true,
+                                focusRequester = subtitleControlRequester,
+                                focusedId = focusedControlId,
+                                onFocusedIdChange = { focusedControlId = it },
+                                onClick = {
+                                    openTrackPanel(
+                                        TvPlayerTrackPanel.SUBTITLES
+                                    )
+                                },
+                                onExitControls = ::restoreVideoFocus
+                            )
+                            TvPlayerControlButton(
+                                id = "sources",
+                                symbol = "≡",
+                                label = "Sources",
+                                focusedId = focusedControlId,
+                                onFocusedIdChange = { focusedControlId = it },
+                                onClick = {
+                                    cancelAutoNext()
+                                    onBack()
+                                },
+                                onExitControls = ::restoreVideoFocus
                             )
                         }
 
@@ -725,13 +871,6 @@ fun TvPlayerScreen(
                         )
                     }
 
-                    Text(
-                        text = "Audio: $selectedAudioLabel  •  Subtitles: $selectedSubtitleLabel",
-                        color = Color.White.copy(alpha = 0.78f),
-                        fontSize = 11.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
                     if (
                         previousEpisodeTitle != null ||
                         nextEpisodeTitle != null
@@ -761,18 +900,18 @@ fun TvPlayerScreen(
                     Text(
                         text = buildString {
                             append(stream.name.ifBlank { "Source" })
-                            append("  •  ▲ Audio  •  ▼ Subtitles")
-                            append("  •  Left/Right seek")
-                            if (onPreviousEpisode != null || onNextEpisode != null) {
-                                append("  •  Media Prev/Next episode")
-                            }
-                            append("  •  OK Play/Pause  •  Back Sources")
+                            append("  •  ↓ Controls")
+                            append("  •  ▲ Audio shortcut")
+                            append("  •  Left/Right seek shortcut")
+                            append("  •  OK Play/Pause")
+                            append("  •  Back Sources")
                         },
                         color = Color.White.copy(alpha = 0.68f),
                         fontSize = 11.sp,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
+
                 }
             }
         }
@@ -854,6 +993,116 @@ fun TvPlayerScreen(
                     .align(Alignment.CenterEnd)
                     .padding(end = 28.dp)
             )
+        }
+    }
+}
+
+
+@Composable
+private fun TvPlayerControlButton(
+    id: String,
+    symbol: String,
+    label: String,
+    secondary: String = "",
+    enabled: Boolean = true,
+    wide: Boolean = false,
+    focusRequester: FocusRequester? = null,
+    focusedId: String?,
+    onFocusedIdChange: (String?) -> Unit,
+    onClick: () -> Unit,
+    onExitControls: () -> Unit
+) {
+    val requester = remember(id, focusRequester) {
+        focusRequester ?: FocusRequester()
+    }
+    var focused by remember(id) { mutableStateOf(false) }
+
+    Surface(
+        modifier = Modifier
+            .width(if (wide) 118.dp else 82.dp)
+            .height(64.dp)
+            .focusRequester(requester)
+            .onFocusChanged { state ->
+                focused = state.hasFocus
+                when {
+                    state.hasFocus -> onFocusedIdChange(id)
+                    focusedId == id -> onFocusedIdChange(null)
+                }
+            }
+            .onPreviewKeyEvent { event ->
+                if (event.type != KeyEventType.KeyDown) {
+                    false
+                } else {
+                    when (event.key) {
+                        Key.DirectionUp -> {
+                            onExitControls()
+                            true
+                        }
+
+                        Key.DirectionCenter,
+                        Key.Enter -> {
+                            if (enabled) onClick()
+                            true
+                        }
+
+                        else -> false
+                    }
+                }
+            }
+            .focusable(enabled = enabled),
+        color = when {
+            focused -> TvColors.FocusRing
+            !enabled -> Color.White.copy(alpha = 0.06f)
+            else -> Color.Black.copy(alpha = 0.42f)
+        },
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(
+                    horizontal = 8.dp,
+                    vertical = 7.dp
+                ),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text(
+                text = symbol,
+                color = when {
+                    focused -> TvColors.Background
+                    enabled -> Color.White
+                    else -> Color.White.copy(alpha = 0.34f)
+                },
+                fontSize = if (wide) 15.sp else 18.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1
+            )
+            Text(
+                text = label,
+                color = when {
+                    focused -> TvColors.Background.copy(alpha = 0.86f)
+                    enabled -> Color.White.copy(alpha = 0.82f)
+                    else -> Color.White.copy(alpha = 0.3f)
+                },
+                fontSize = 9.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1
+            )
+            secondary
+                .takeIf { it.isNotBlank() }
+                ?.let { detail ->
+                    Text(
+                        text = detail,
+                        color = when {
+                            focused -> TvColors.Background.copy(alpha = 0.7f)
+                            else -> Color.White.copy(alpha = 0.56f)
+                        },
+                        fontSize = 8.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
         }
     }
 }
