@@ -1,4 +1,4 @@
-name: Nustrim TV Stage 5 Player
+name: Nustrim TV Stage 5 Player R1
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ permissions:
   actions: write
 
 concurrency:
-  group: nustrim-tv-stage5-player
+  group: nustrim-tv-stage5-player-r1
   cancel-in-progress: false
 
 env:
@@ -127,6 +127,18 @@ jobs:
           
           DETAILS = Path("app/src/main/java/app/nudroidlabs/nustrim/tv/details/TvDetailsScreen.kt")
           text = DETAILS.read_text(encoding="utf-8")
+          
+          mutable_int_import = "import androidx.compose.runtime.mutableIntStateOf\\n"
+          if mutable_int_import not in text:
+              anchor = "import androidx.compose.runtime.mutableStateOf\\n"
+              if anchor not in text:
+                  raise SystemExit("mutableStateOf import anchor missing")
+              text = text.replace(
+                  anchor,
+                  anchor + mutable_int_import,
+                  1
+              )
+              print("ADDED: mutableIntStateOf import")
           
           def dec(value):
               return base64.b64decode(value).decode()
@@ -247,7 +259,7 @@ jobs:
           SHELL="app/src/main/java/app/nudroidlabs/nustrim/tv/shell/TvShell.kt"
           PLAYER="app/src/main/java/app/nudroidlabs/nustrim/tv/player/TvPlayerScreen.kt"
 
-          echo "AUDIT VERSION: TV-STAGE5-PLAYER-R1"
+          echo "AUDIT VERSION: TV-STAGE5-PLAYER-R1-FIX1"
 
           test -f "$PLAYER"
           grep -q 'fun TvPlayerScreen(' "$PLAYER"
@@ -261,6 +273,7 @@ jobs:
           grep -q 'BackHandler(onBack = onBack)' "$PLAYER"
           grep -q 'Playback error' "$PLAYER"
 
+          grep -q 'import androidx.compose.runtime.mutableIntStateOf' "$DETAILS"
           grep -q 'TvPlayerScreen(' "$DETAILS"
           grep -q 'onPlayStream(stream)' "$DETAILS"
           grep -q 'sourcePlayerReturnToken += 1' "$DETAILS"
@@ -437,7 +450,7 @@ jobs:
         run: |
           set +e
           DIR="$RUNNER_TEMP/tv-stage5"
-          echo "========== TV Stage 5 Player =========="
+          echo "========== TV Stage 5 Player R1 =========="
           echo "Result: FAILED"
 
           for file in preflight.txt remote-main.txt push.log dispatch.txt signed-build-watch.log published-update.json; do
@@ -460,7 +473,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: nustrim-tv-stage5-player-diagnose
+          name: nustrim-tv-stage5-player-r1-diagnose
           path: ${{ runner.temp }}/tv-stage5
           if-no-files-found: ignore
           retention-days: 7
