@@ -188,9 +188,22 @@ fun TvDetailsScreen(
     val rawSeasons = sortedEpisodes.mapNotNull { it.season }.distinct().sorted()
     val positiveSeasons = rawSeasons.filter { it > 0 }
     val seasons = if (positiveSeasons.isNotEmpty()) positiveSeasons else rawSeasons
+    val storedContinueEpisode = entry.continueEntry
+        ?.toEpisode()
+        ?.let { stored ->
+            sortedEpisodes.firstOrNull { candidate ->
+                candidate.id == stored.id
+            } ?: stored
+        }
+    val storedContinueSeason = storedContinueEpisode?.season
+        ?.takeIf { it in seasons }
 
-    LaunchedEffect(detailedItem.id, seasons) {
-        selectedSeason = seasons.firstOrNull()
+    LaunchedEffect(
+        detailedItem.id,
+        seasons,
+        entry.continueEntry?.episodeId
+    ) {
+        selectedSeason = storedContinueSeason ?: seasons.firstOrNull()
     }
 
     val visibleEpisodes = if (selectedSeason == null) {
@@ -200,6 +213,30 @@ fun TvDetailsScreen(
     }
     val primaryEpisode = visibleEpisodes.firstOrNull() ?: sortedEpisodes.firstOrNull()
     val isSeries = detailedItem.type == MediaType.SERIES || sortedEpisodes.isNotEmpty()
+    val resumeEpisode = if (isSeries) {
+        storedContinueEpisode ?: primaryEpisode
+    } else {
+        null
+    }
+    val resumePositionMs = mediaStore.resumePosition(
+        sourceUrl = entry.sourceUrl,
+        item = detailedItem,
+        episode = resumeEpisode
+    )
+    val resumeActionLabel = when {
+        entry.continueEntry?.nextUp == true &&
+            resumeEpisode != null -> {
+            "Next · ${resumeEpisode.displayTitle}"
+        }
+
+        resumePositionMs > 0L &&
+            resumeEpisode != null -> {
+            "Resume · ${resumeEpisode.displayTitle}"
+        }
+
+        resumePositionMs > 0L -> "Resume"
+        else -> "Play"
+    }
 
     fun openSources(
         episode: MediaEpisode?,
@@ -370,14 +407,22 @@ fun TvDetailsScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     TvDetailsActionButton(
-                        label = if (entry.continueEntry != null) "Resume" else "Play",
+                        label = resumeActionLabel,
                         focusRequester = firstActionRequester,
                         onFocused = { lastDetailsRequester = it },
                         onClick = {
                             if (!loading) {
-                                openSources(
-                                    if (isSeries) primaryEpisode else null
-                                )
+                                val continueEntry = entry.continueEntry
+                                if (continueEntry != null) {
+                                    openSources(
+                                        episode = resumeEpisode,
+                                        autoPlay = true
+                                    )
+                                } else {
+                                    openSources(
+                                        if (isSeries) primaryEpisode else null
+                                    )
+                                }
                             }
                         }
                     )
@@ -537,6 +582,29 @@ fun TvDetailsScreen(
                 onNextEpisode = nextEpisode?.let { episode ->
                     {
                         switchPlayerEpisode(episode)
+                    }
+                },
+                startPositionMs = mediaStore.resumePosition(
+                    sourceUrl = entry.sourceUrl,
+                    item = detailedItem,
+                    episode = sourcePreview?.episode
+                ),
+                onProgress = { position, duration, completed ->
+                    mediaStore.recordProgress(
+                        sourceUrl = entry.sourceUrl,
+                        item = detailedItem,
+                        episode = sourcePreview?.episode,
+                        positionMs = position,
+                        durationMs = duration,
+                        completed = completed,
+                        nextEpisode = if (completed) nextEpisode else null
+                    )
+                    if (completed && nextEpisode == null) {
+                        mediaStore.setWatched(
+                            sourceUrl = entry.sourceUrl,
+                            item = detailedItem,
+                            watched = true
+                        )
                     }
                 },
                 onBack = {

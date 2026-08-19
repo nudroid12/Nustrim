@@ -68,6 +68,7 @@ import kotlinx.coroutines.delay
 @Composable
 fun TvHomeScreen(
     contentFocusRequestToken: Int,
+    refreshToken: Int = 0,
     firstContentRequester: FocusRequester,
     onContentFocused: (TvHomeEntry, FocusRequester) -> Unit,
     onMoveLeft: () -> Unit,
@@ -188,7 +189,7 @@ fun TvHomeScreen(
     }
 
     val catalogSections = sourceOrder.flatMap { sectionMap[it].orEmpty() }
-    val continueEntries = remember(loading, reloadToken) {
+    val continueEntries = remember(loading, reloadToken, refreshToken) {
         if (loading) {
             emptyList()
         } else {
@@ -436,7 +437,25 @@ private fun TvHeroBackdrop(
                         modifier = Modifier.size(18.dp)
                     )
                     Text(
-                        text = "Press OK for details",
+                        text = entry.continueEntry?.let { local ->
+                            val episodeLabel = buildString {
+                                local.season?.let { append("S$it") }
+                                local.episode?.let { append("E$it") }
+                            }
+                            when {
+                                local.nextUp && episodeLabel.isNotBlank() -> {
+                                    "Next up · $episodeLabel"
+                                }
+                                local.nextUp -> "Next up"
+                                local.hasProgress && episodeLabel.isNotBlank() -> {
+                                    "Resume · $episodeLabel · ${(local.progressFraction * 100).toInt()}%"
+                                }
+                                local.hasProgress -> {
+                                    "Resume · ${(local.progressFraction * 100).toInt()}%"
+                                }
+                                else -> "Press OK for details"
+                            }
+                        } ?: "Press OK for details",
                         color = TvColors.TextPrimary.copy(alpha = 0.88f),
                         fontSize = 13.sp,
                         fontWeight = FontWeight.SemiBold
@@ -681,18 +700,40 @@ private fun TvContinueCard(
         focusRequester ?: FocusRequester()
     }
     val scale by animateFloatAsState(
-        targetValue = if (focused) 1.04f else 1f,
+        targetValue = if (focused) 1.035f else 1f,
         label = "continueScale"
     )
     val local = entry.continueEntry
     val image = entry.item.backgroundUrl
         .takeIf { it.isNotBlank() }
         ?: entry.item.posterUrl
+    val progress = local?.progressFraction ?: 0f
+    val episodeLabel = local?.let { state ->
+        buildString {
+            state.season?.let { append("S$it") }
+            state.episode?.let { append("E$it") }
+        }
+    }.orEmpty()
+    val statusLine = local?.let { state ->
+        when {
+            state.nextUp && episodeLabel.isNotBlank() -> {
+                "Next up · $episodeLabel"
+            }
+            state.nextUp -> "Next up"
+            state.hasProgress && episodeLabel.isNotBlank() -> {
+                "$episodeLabel · ${(state.progressFraction * 100).toInt()}%"
+            }
+            state.hasProgress -> {
+                "${(state.progressFraction * 100).toInt()}% watched"
+            }
+            else -> ""
+        }
+    }.orEmpty()
 
     Surface(
         modifier = Modifier
-            .width(244.dp)
-            .height(138.dp)
+            .width(260.dp)
+            .height(146.dp)
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
@@ -710,7 +751,6 @@ private fun TvContinueCard(
                         onMoveLeft()
                         true
                     }
-
                     event.type == KeyEventType.KeyDown &&
                         (
                             event.key == Key.DirectionCenter ||
@@ -719,21 +759,20 @@ private fun TvContinueCard(
                         onOpen(entry)
                         true
                     }
-
                     else -> false
                 }
             }
             .focusable(),
         color = TvColors.Surface,
-        shape = RoundedCornerShape(10.dp),
-        border = if (focused) {
-            BorderStroke(2.dp, TvColors.FocusRing)
-        } else {
-            BorderStroke(
-                1.dp,
+        shape = RoundedCornerShape(9.dp),
+        border = BorderStroke(
+            if (focused) 2.dp else 1.dp,
+            if (focused) {
+                Color.White.copy(alpha = 0.92f)
+            } else {
                 Color.White.copy(alpha = 0.08f)
-            )
-        }
+            }
+        )
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
             if (image.isNotBlank()) {
@@ -744,7 +783,6 @@ private fun TvContinueCard(
                     contentScale = ContentScale.Crop
                 )
             }
-
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -753,43 +791,48 @@ private fun TvContinueCard(
                             listOf(
                                 Color.Transparent,
                                 Color.Transparent,
-                                TvColors.Background.copy(alpha = 0.92f)
+                                TvColors.Background.copy(alpha = 0.94f)
                             )
                         )
                     )
             )
-
-            Text(
-                text = entry.item.title,
-                color = TvColors.TextPrimary,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
+            Column(
                 modifier = Modifier
                     .align(Alignment.BottomStart)
+                    .fillMaxWidth()
                     .padding(
-                        start = 10.dp,
-                        end = 10.dp,
-                        bottom = 15.dp
+                        start = 11.dp,
+                        end = 11.dp,
+                        bottom = if (progress > 0f) 11.dp else 8.dp
+                    ),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Text(
+                    text = entry.item.title,
+                    color = TvColors.TextPrimary,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (statusLine.isNotBlank()) {
+                    Text(
+                        text = statusLine,
+                        color = Color.White.copy(alpha = 0.68f),
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
-            )
-
-            val progress = local?.progressFraction ?: 0f
+                }
+            }
             if (progress > 0f) {
                 Box(
                     modifier = Modifier
                         .align(Alignment.BottomStart)
-                        .padding(
-                            horizontal = 10.dp,
-                            vertical = 7.dp
-                        )
                         .fillMaxWidth()
-                        .height(3.dp)
-                        .clip(RoundedCornerShape(2.dp))
-                        .background(
-                            Color.White.copy(alpha = 0.26f)
-                        )
+                        .height(4.dp)
+                        .background(Color.White.copy(alpha = 0.22f))
                 ) {
                     Box(
                         modifier = Modifier

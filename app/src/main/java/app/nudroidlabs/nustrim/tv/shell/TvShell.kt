@@ -130,6 +130,7 @@ fun TvShell(
             when (selected) {
                 TvDestination.HOME -> TvHomeScreen(
                     contentFocusRequestToken = contentFocusRequestToken,
+                    refreshToken = libraryRefreshToken,
                     firstContentRequester = firstContentRequester,
                     onContentFocused = { _, requester ->
                         sidebarExpanded = false

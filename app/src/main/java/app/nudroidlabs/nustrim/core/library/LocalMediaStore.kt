@@ -28,6 +28,7 @@ data class LocalMediaEntry(
     val episode: Int? = null,
     val positionMs: Long = 0L,
     val durationMs: Long = 0L,
+    val nextUp: Boolean = false,
     val updatedAt: Long = 0L
 ) {
     val progressFraction: Float
@@ -35,6 +36,9 @@ data class LocalMediaEntry(
 
     val hasProgress: Boolean
         get() = positionMs >= MIN_PROGRESS_MS && (durationMs <= 0L || progressFraction < COMPLETE_FRACTION)
+
+    val hasContinueState: Boolean
+        get() = hasProgress || nextUp
 
     fun toMediaItem(): MediaItem = MediaItem(
         id = mediaId,
@@ -75,7 +79,7 @@ class LocalMediaStore(context: Context) {
         .sortedByDescending { it.updatedAt }
 
     fun continueWatching(): List<LocalMediaEntry> = read()
-        .filter { it.hasProgress }
+        .filter { it.hasContinueState }
         .sortedByDescending { it.updatedAt }
 
     fun all(): List<LocalMediaEntry> = read().sortedByDescending { it.updatedAt }
@@ -110,9 +114,14 @@ class LocalMediaStore(context: Context) {
                 episode = old.episode,
                 positionMs = old.positionMs,
                 durationMs = old.durationMs,
+                nextUp = old.nextUp,
                 updatedAt = now
             )
-            if (!updated.saved && !updated.hasProgress) current.removeAt(index) else current[index] = updated
+            if (!updated.saved && !updated.hasContinueState) {
+                current.removeAt(index)
+            } else {
+                current[index] = updated
+            }
         } else if (saved) {
             current += snapshot(sourceUrl, item, null).copy(saved = true, updatedAt = now)
         }
@@ -132,31 +141,63 @@ class LocalMediaStore(context: Context) {
         episode: MediaEpisode?,
         positionMs: Long,
         durationMs: Long,
-        completed: Boolean = false
+        completed: Boolean = false,
+        nextEpisode: MediaEpisode? = null
     ) {
         if (sourceUrl.isBlank()) return
+
         val key = mediaKey(sourceUrl, item)
         val current = read().toMutableList()
         val index = current.indexOfFirst { it.key == key }
         val old = current.getOrNull(index)
+        val safePosition = positionMs.coerceAtLeast(0L)
         val safeDuration = durationMs.coerceAtLeast(0L)
-        val fraction = if (safeDuration > 0L) positionMs.toDouble() / safeDuration.toDouble() else 0.0
-        val shouldClear = completed || (safeDuration > 0L && fraction >= COMPLETE_FRACTION)
-        val updated = snapshot(sourceUrl, item, episode).copy(
-            saved = old?.saved == true,
-            positionMs = if (shouldClear) 0L else positionMs.coerceAtLeast(0L),
-            durationMs = if (shouldClear) 0L else safeDuration,
-            updatedAt = System.currentTimeMillis()
-        )
-        if (index >= 0) {
-            if (!updated.saved && !updated.hasProgress) current.removeAt(index) else current[index] = updated
-        } else if (updated.saved || updated.hasProgress) {
-            current += updated
-        } else {
-            // Do not rewrite the JSON store for playback that has not reached
-            // the Continue Watching threshold yet.
+
+        if (
+            !completed &&
+            safePosition < MIN_PROGRESS_MS &&
+            old?.nextUp == true &&
+            old.episodeId == episode?.id
+        ) {
             return
         }
+
+        val fraction = if (safeDuration > 0L) {
+            safePosition.toDouble() / safeDuration.toDouble()
+        } else {
+            0.0
+        }
+        val reachedEnd = completed ||
+            (safeDuration > 0L && fraction >= COMPLETE_FRACTION)
+        val continueEpisode = if (reachedEnd) nextEpisode else episode
+        val shouldQueueNext = reachedEnd && nextEpisode != null
+
+        val updated = snapshot(
+            sourceUrl = sourceUrl,
+            item = item,
+            episode = continueEpisode
+        ).copy(
+            saved = old?.saved == true,
+            positionMs = if (reachedEnd) 0L else safePosition,
+            durationMs = if (reachedEnd) 0L else safeDuration,
+            nextUp = shouldQueueNext,
+            updatedAt = System.currentTimeMillis()
+        )
+
+        if (index >= 0) {
+            if (!updated.saved && !updated.hasContinueState) {
+                current.removeAt(index)
+            } else {
+                current[index] = updated
+            }
+        } else if (updated.saved || updated.hasContinueState) {
+            current += updated
+        } else {
+            // Ignore very short playback so accidental starts do not pollute
+            // Continue Watching.
+            return
+        }
+
         save(current)
     }
 
@@ -242,6 +283,7 @@ class LocalMediaStore(context: Context) {
                     .put("episode", entry.episode ?: JSONObject.NULL)
                     .put("positionMs", entry.positionMs)
                     .put("durationMs", entry.durationMs)
+                    .put("nextUp", entry.nextUp)
                     .put("updatedAt", entry.updatedAt)
             )
         }
@@ -276,6 +318,7 @@ class LocalMediaStore(context: Context) {
                     episode = obj.optInt("episode").takeIf { !obj.isNull("episode") },
                     positionMs = obj.optLong("positionMs", 0L),
                     durationMs = obj.optLong("durationMs", 0L),
+                    nextUp = obj.optBoolean("nextUp", false),
                     updatedAt = obj.optLong("updatedAt", 0L)
                 )
             )
@@ -285,6 +328,7 @@ class LocalMediaStore(context: Context) {
     companion object {
         private const val KEY_ENTRIES = "entries_v1"
         private const val KEY_WATCHED = "watched_v1"
+        private const val MIN_PROGRESS_MS = 15_000L
         private const val COMPLETE_FRACTION = 0.95
 
         private val cacheLock = Any()

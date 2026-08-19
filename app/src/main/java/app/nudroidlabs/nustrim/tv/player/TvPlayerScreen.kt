@@ -30,6 +30,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -68,6 +69,7 @@ import app.nudroidlabs.nustrim.tv.theme.TvColors
 import app.nudroidlabs.nustrim.ui.SubtitleDisplayMode
 import app.nudroidlabs.nustrim.ui.UiPreferences
 import kotlinx.coroutines.delay
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 import java.util.Locale
@@ -95,11 +97,14 @@ fun TvPlayerScreen(
     nextEpisodeTitle: String? = null,
     onPreviousEpisode: (() -> Unit)? = null,
     onNextEpisode: (() -> Unit)? = null,
+    startPositionMs: Long = 0L,
+    onProgress: ((Long, Long, Boolean) -> Unit)? = null,
     onBack: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val preferences = remember(context) { UiPreferences(context) }
+    val latestOnProgress by rememberUpdatedState(onProgress)
     val focusRequester = remember(stream.url) { FocusRequester() }
     val playControlRequester = remember(stream.url) { FocusRequester() }
     val audioControlRequester = remember(stream.url) { FocusRequester() }
@@ -130,7 +135,9 @@ fun TvPlayerScreen(
     var isPlaying by remember(stream.url) { mutableStateOf(false) }
     var buffering by remember(stream.url) { mutableStateOf(true) }
     var playbackError by remember(stream.url) { mutableStateOf<String?>(null) }
-    var positionMs by remember(stream.url) { mutableLongStateOf(0L) }
+    var positionMs by remember(stream.url, startPositionMs) {
+        mutableLongStateOf(startPositionMs.coerceAtLeast(0L))
+    }
     var durationMs by remember(stream.url) { mutableLongStateOf(0L) }
     var bufferedMs by remember(stream.url) { mutableLongStateOf(0L) }
     var trackPanel by remember(stream.url) {
@@ -144,6 +151,10 @@ fun TvPlayerScreen(
     }
     var subtitlesDisabled by remember(stream.url) { mutableStateOf(false) }
     var autoNextCountdown by remember(stream.url) { mutableIntStateOf(-1) }
+    var playbackCompleted by remember(stream.url) { mutableStateOf(false) }
+    var lastProgressReportMs by remember(stream.url) {
+        mutableLongStateOf(startPositionMs.coerceAtLeast(0L))
+    }
     var focusedControlId by remember(stream.url) { mutableStateOf<String?>(null) }
     var pendingControlFocus by remember(stream.url) { mutableStateOf(false) }
     var panelReturnFocus by remember(stream.url) {
@@ -201,15 +212,46 @@ fun TvPlayerScreen(
         }
     }
 
+    fun reportProgress(
+        completed: Boolean = false,
+        force: Boolean = false
+    ) {
+        if (playbackCompleted && !completed) return
+
+        val current = max(0L, player.currentPosition)
+        val duration = player.duration
+            .takeIf { it != C.TIME_UNSET && it > 0L }
+            ?: durationMs
+            .coerceAtLeast(0L)
+
+        val enoughDelta = abs(current - lastProgressReportMs) >= 5_000L
+        val eligible = current >= 15_000L
+
+        if (completed || force || (eligible && enoughDelta)) {
+            latestOnProgress?.invoke(
+                current,
+                duration,
+                completed
+            )
+            lastProgressReportMs = current
+        }
+
+        if (completed) {
+            playbackCompleted = true
+        }
+    }
+
     fun triggerPreviousEpisode() {
         val callback = onPreviousEpisode ?: return
         cancelAutoNext()
+        reportProgress(force = true)
         callback()
     }
 
     fun triggerNextEpisode() {
         val callback = onNextEpisode ?: return
         cancelAutoNext()
+        reportProgress(force = true)
         callback()
     }
 
@@ -318,6 +360,10 @@ fun TvPlayerScreen(
                     state == Player.STATE_IDLE
 
                 if (state == Player.STATE_ENDED) {
+                    reportProgress(
+                        completed = true,
+                        force = true
+                    )
                     controlsVisible = true
                     autoNextCountdown = if (onNextEpisode != null) {
                         5
@@ -405,10 +451,17 @@ fun TvPlayerScreen(
         }
 
         player.setMediaItem(itemBuilder.build())
+        if (startPositionMs > 0L) {
+            player.seekTo(startPositionMs)
+            positionMs = startPositionMs
+        }
         player.prepare()
         player.playWhenReady = true
 
         onDispose {
+            if (!playbackCompleted) {
+                reportProgress(force = true)
+            }
             player.removeListener(listener)
             player.release()
         }
@@ -421,6 +474,9 @@ fun TvPlayerScreen(
             durationMs = player.duration
                 .takeIf { it != C.TIME_UNSET && it > 0L }
                 ?: 0L
+            if (player.isPlaying) {
+                reportProgress()
+            }
             delay(500)
         }
     }
@@ -518,7 +574,10 @@ fun TvPlayerScreen(
                 restoreVideoFocus()
             }
 
-            else -> onBack()
+            else -> {
+                reportProgress(force = true)
+                onBack()
+            }
         }
     }
 
@@ -857,6 +916,7 @@ fun TvPlayerScreen(
                                 onFocusedIdChange = { focusedControlId = it },
                                 onClick = {
                                     cancelAutoNext()
+                                    reportProgress(force = true)
                                     onBack()
                                 },
                                 onExitControls = ::restoreVideoFocus
