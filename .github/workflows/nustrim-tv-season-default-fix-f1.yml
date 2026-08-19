@@ -1,0 +1,302 @@
+name: Nustrim TV Season Default Fix F1
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: nustrim-tv-season-default-fix-f1
+  cancel-in-progress: false
+
+env:
+  TARGET_VERSION: "0.26.1-tv-season-default-fix"
+
+jobs:
+  fix-season:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Sync origin main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          git checkout -B main origin/main
+          git reset --hard origin/main
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "9.5.0"
+
+      - name: Capture protected baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/season-default-f1"
+          mkdir -p "$DIR"
+          DETAILS="app/src/main/java/app/nudroidlabs/nustrim/tv/details/TvDetailsScreen.kt"
+
+          test -f "$DETAILS"
+          test -f .github/workflows/build.yml
+          test -d app/src/main/java/app/nudroidlabs/nustrim/core/update
+
+          grep -q 'LaunchedEffect(detailedItem.id, seasons)' "$DETAILS"
+          grep -q 'StreamSourceAggregator(context)' "$DETAILS"
+          grep -q 'TvPlayerScreen(' "$DETAILS"
+
+          cp app/src/main/java/app/nudroidlabs/nustrim/tv/home/TvHomeScreen.kt "$DIR/Home.before.kt"
+          cp app/src/main/java/app/nudroidlabs/nustrim/tv/player/TvPlayerScreen.kt "$DIR/Player.before.kt"
+          cp app/src/main/java/app/nudroidlabs/nustrim/tv/search/TvSearchScreen.kt "$DIR/Search.before.kt"
+          cp app/src/main/java/app/nudroidlabs/nustrim/tv/library/TvLibraryScreen.kt "$DIR/Library.before.kt"
+          cp app/src/main/java/app/nudroidlabs/nustrim/tv/settings/TvSettingsScreen.kt "$DIR/Settings.before.kt"
+          cp app/src/main/java/app/nudroidlabs/nustrim/core/source/StreamSourceAggregator.kt "$DIR/Aggregator.before.kt"
+          cp app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt "$DIR/NustrimApp.before.kt"
+
+          sha256sum .github/workflows/build.yml > "$DIR/build.before"
+          find app/src/main/java/app/nudroidlabs/nustrim/core/update -type f -print0 | sort -z | xargs -0 sha256sum > "$DIR/updater.before"
+
+          echo "TV Season Default Fix F1 | sha=$(git rev-parse HEAD)" | tee "$DIR/preflight.txt"
+          grep -n -A7 'LaunchedEffect(detailedItem.id, seasons)' "$DETAILS" | tee -a "$DIR/preflight.txt"
+
+      - name: Apply season default fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("app/src/main/java/app/nudroidlabs/nustrim/tv/details/TvDetailsScreen.kt")
+          text = path.read_text(encoding="utf-8")
+          
+          old = """    LaunchedEffect(detailedItem.id, seasons) {
+                  if (selectedSeason == null && seasons.isNotEmpty()) {
+                      selectedSeason = seasons.first()
+                  }
+              }
+          """
+          new = """    LaunchedEffect(detailedItem.id, seasons) {
+                  selectedSeason = seasons.firstOrNull()
+              }
+          """
+          
+          if old in text:
+              text = text.replace(old, new, 1)
+              path.write_text(text, encoding="utf-8")
+              print("Applied season default fix.")
+          elif new in text:
+              print("Season default fix already present.")
+          else:
+              raise SystemExit("Expected season-selection block not found; refusing unsafe patch.")
+          
+          updated = path.read_text(encoding="utf-8")
+          assert "selectedSeason = seasons.firstOrNull()" in updated
+          assert "if (selectedSeason == null && seasons.isNotEmpty())" not in updated
+          assert "StreamSourceAggregator(context)" in updated
+          assert "TvPlayerScreen(" in updated
+          PY
+
+      - name: Set fix version
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import os, re
+          path = Path("app/build.gradle.kts")
+          text = path.read_text(encoding="utf-8")
+          target = os.environ["TARGET_VERSION"]
+          
+          cm = re.search(r'versionCode\s*=\s*(\d+)', text)
+          nm = re.search(r'versionName\s*=\s*"([^"]+)"', text)
+          if not cm or not nm:
+              raise SystemExit("Could not parse app version.")
+          
+          old_code = int(cm.group(1))
+          old_name = nm.group(1)
+          new_code = old_code if old_name == target else old_code + 1
+          
+          text = re.sub(r'versionCode\s*=\s*\d+', f'versionCode = {new_code}', text, count=1)
+          text = re.sub(r'versionName\s*=\s*"[^"]+"', f'versionName = "{target}"', text, count=1)
+          path.write_text(text, encoding="utf-8")
+          print(f"versionName: {old_name} -> {target}")
+          print(f"versionCode: {old_code} -> {new_code}")
+          PY
+
+      - name: Protection audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/season-default-f1"
+          DETAILS="app/src/main/java/app/nudroidlabs/nustrim/tv/details/TvDetailsScreen.kt"
+
+          grep -q 'selectedSeason = seasons.firstOrNull()' "$DETAILS"
+          ! grep -q 'if (selectedSeason == null && seasons.isNotEmpty())' "$DETAILS"
+          grep -q 'StreamSourceAggregator(context)' "$DETAILS"
+          grep -q 'TvPlayerScreen(' "$DETAILS"
+
+          cmp "$DIR/Home.before.kt" app/src/main/java/app/nudroidlabs/nustrim/tv/home/TvHomeScreen.kt
+          cmp "$DIR/Player.before.kt" app/src/main/java/app/nudroidlabs/nustrim/tv/player/TvPlayerScreen.kt
+          cmp "$DIR/Search.before.kt" app/src/main/java/app/nudroidlabs/nustrim/tv/search/TvSearchScreen.kt
+          cmp "$DIR/Library.before.kt" app/src/main/java/app/nudroidlabs/nustrim/tv/library/TvLibraryScreen.kt
+          cmp "$DIR/Settings.before.kt" app/src/main/java/app/nudroidlabs/nustrim/tv/settings/TvSettingsScreen.kt
+          cmp "$DIR/Aggregator.before.kt" app/src/main/java/app/nudroidlabs/nustrim/core/source/StreamSourceAggregator.kt
+          cmp "$DIR/NustrimApp.before.kt" app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt
+
+          sha256sum .github/workflows/build.yml > "$DIR/build.after"
+          find app/src/main/java/app/nudroidlabs/nustrim/core/update -type f -print0 | sort -z | xargs -0 sha256sum > "$DIR/updater.after"
+          cmp "$DIR/build.before" "$DIR/build.after"
+          cmp "$DIR/updater.before" "$DIR/updater.after"
+
+          git diff --check
+          git diff --name-only | tee "$DIR/changed-files.txt"
+
+          unexpected="$(git diff --name-only | grep -v -E '^(app/src/main/java/app/nudroidlabs/nustrim/tv/details/TvDetailsScreen.kt|app/build.gradle.kts)$' || true)"
+          if [[ -n "$unexpected" ]]; then
+            echo "::error::Unexpected files changed:"
+            printf '%s\n' "$unexpected"
+            exit 1
+          fi
+
+      - name: Compile debug
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle --no-daemon --build-cache :app:compileDebugKotlin --stacktrace --console=plain 2>&1 | tee "$RUNNER_TEMP/season-default-f1/compile.log"
+
+      - name: Release lint
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle --no-daemon --build-cache :app:lintRelease --stacktrace --console=plain 2>&1 | tee "$RUNNER_TEMP/season-default-f1/lint.log"
+
+      - name: Commit and push
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$RUNNER_TEMP/season-default-f1/push.log") 2>&1
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add app/src/main/java/app/nudroidlabs/nustrim/tv/details/TvDetailsScreen.kt app/build.gradle.kts
+          git diff --cached --check
+
+          if ! git diff --cached --quiet; then
+            git commit -m "fix(tv): default series details to first season"
+            git fetch --no-tags origin main
+            git rebase origin/main
+            git push origin HEAD:main
+          fi
+
+      - name: Verify origin main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          python3 - <<'PY'
+          import subprocess
+          details = subprocess.check_output(
+              ["git","show","origin/main:app/src/main/java/app/nudroidlabs/nustrim/tv/details/TvDetailsScreen.kt"],
+              text=True,
+          )
+          gradle = subprocess.check_output(
+              ["git","show","origin/main:app/build.gradle.kts"],
+              text=True,
+          )
+          
+          checks = {
+              "season fix": "selectedSeason = seasons.firstOrNull()" in details,
+              "old guard removed": "if (selectedSeason == null && seasons.isNotEmpty())" not in details,
+              "sources retained": "StreamSourceAggregator(context)" in details,
+              "player retained": "TvPlayerScreen(" in details,
+              "version": 'versionName = "0.26.1-tv-season-default-fix"' in gradle,
+          }
+          failed = [k for k,v in checks.items() if not v]
+          if failed:
+              raise SystemExit("REMOTE VERIFY FAILED: " + ", ".join(failed))
+          for k in checks:
+              print("PASS:", k)
+          PY
+
+      - name: Dispatch signed updater
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          HEAD_SHA="$(git rev-parse origin/main)"
+          echo "HEAD_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
+
+          gh workflow run build.yml --repo "$GITHUB_REPOSITORY" --ref main -f publish_release=true
+          sleep 8
+
+          RUN_ID=""
+          for attempt in $(seq 1 24); do
+            RUN_ID="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow build.yml --branch main --event workflow_dispatch --limit 20 --json databaseId,headSha --jq ".[] | select(.headSha == \"$HEAD_SHA\") | .databaseId" | head -n1)"
+            if [[ -n "$RUN_ID" ]]; then break; fi
+            sleep 5
+          done
+          test -n "$RUN_ID"
+          echo "SIGNED_RUN_ID=$RUN_ID" >> "$GITHUB_ENV"
+
+      - name: Wait signed updater
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run watch "$SIGNED_RUN_ID" --repo "$GITHUB_REPOSITORY" --exit-status 2>&1 | tee "$RUNNER_TEMP/season-default-f1/signed-build-watch.log"
+
+      - name: Verify published fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          MANIFEST="$RUNNER_TEMP/season-default-f1/update.json"
+
+          for attempt in $(seq 1 24); do
+            curl --fail --location --silent --show-error --header 'Cache-Control: no-cache'               "https://github.com/$GITHUB_REPOSITORY/releases/latest/download/update.json?ts=$(date +%s)"               --output "$MANIFEST" || true
+            if grep -q '0.26.1-tv-season-default-fix' "$MANIFEST" 2>/dev/null; then break; fi
+            sleep 5
+          done
+
+          test -s "$MANIFEST"
+          grep -q '0.26.1-tv-season-default-fix' "$MANIFEST"
+
+      - name: Failure summary
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          DIR="$RUNNER_TEMP/season-default-f1"
+          echo "========== TV Season Default Fix F1 =========="
+          for f in preflight.txt changed-files.txt compile.log lint.log push.log signed-build-watch.log update.json; do
+            if [[ -f "$DIR/$f" ]]; then
+              echo "===== $f ====="
+              tail -n 260 "$DIR/$f"
+            fi
+          done
+
+      - name: Upload diagnose
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nustrim-tv-season-default-fix-f1-diagnose
+          path: ${{ runner.temp }}/season-default-f1
+          if-no-files-found: ignore
+          retention-days: 7
