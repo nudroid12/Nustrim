@@ -195,6 +195,9 @@ fun TvPlayerScreen(
     var aspectIndicatorText by remember(stream.url) { mutableStateOf<String?>(null) }
     var seekOverlayVisible by remember(stream.url) { mutableStateOf(false) }
     var seekOverlayToken by remember(stream.url) { mutableIntStateOf(0) }
+    var seekPreviewMs by remember(stream.url) { mutableStateOf<Long?>(null) }
+    var seekRepeatDirection by remember(stream.url) { mutableIntStateOf(0) }
+    var seekRepeatCount by remember(stream.url) { mutableIntStateOf(0) }
 
     val preferredSubtitleLanguages = remember(stream.url) {
         listOf(
@@ -226,6 +229,9 @@ fun TvPlayerScreen(
 
     fun revealControls() {
         seekOverlayVisible = false
+        seekPreviewMs = null
+        seekRepeatDirection = 0
+        seekRepeatCount = 0
         controlsVisible = true
         interactionToken += 1
     }
@@ -247,6 +253,9 @@ fun TvPlayerScreen(
         pendingControlFocus = false
         moreExpanded = false
         seekOverlayVisible = false
+        seekPreviewMs = null
+        seekRepeatDirection = 0
+        seekRepeatCount = 0
         controlsVisible = false
         interactionToken += 1
         runCatching { focusRequester.requestFocus() }
@@ -374,6 +383,9 @@ fun TvPlayerScreen(
 
         player.seekTo(target)
         positionMs = target
+        seekPreviewMs = null
+        seekRepeatDirection = 0
+        seekRepeatCount = 0
         if (showControlsAfter) {
             revealControls()
         } else {
@@ -388,8 +400,50 @@ fun TvPlayerScreen(
         performSeek(deltaMs = deltaMs, showControlsAfter = true)
     }
 
-    fun previewSeekBy(deltaMs: Long) {
-        performSeek(deltaMs = deltaMs, showControlsAfter = false)
+    fun previewSeekBy(direction: Int) {
+        if (playbackError != null || direction == 0) return
+
+        cancelAutoNext()
+        if (seekRepeatDirection == direction) {
+            seekRepeatCount += 1
+        } else {
+            seekRepeatDirection = direction
+            seekRepeatCount = 1
+        }
+
+        val stepMs = when {
+            seekRepeatCount >= 9 -> 30_000L
+            seekRepeatCount >= 5 -> 20_000L
+            else -> 10_000L
+        }
+        val duration = player.duration
+            .takeIf { it != C.TIME_UNSET && it > 0L }
+            ?: durationMs.takeIf { it > 0L }
+            ?: Long.MAX_VALUE
+        val base = seekPreviewMs ?: max(0L, player.currentPosition)
+        val target = (base + (stepMs * direction))
+            .coerceAtLeast(0L)
+            .let {
+                if (duration == Long.MAX_VALUE) it else min(it, duration)
+            }
+
+        seekPreviewMs = target
+        controlsVisible = false
+        moreExpanded = false
+        seekOverlayVisible = true
+        seekOverlayToken += 1
+    }
+
+    fun commitPreviewSeek() {
+        val target = seekPreviewMs ?: return
+        player.seekTo(target)
+        positionMs = target
+        seekPreviewMs = null
+        seekRepeatDirection = 0
+        seekRepeatCount = 0
+        seekOverlayVisible = true
+        seekOverlayToken += 1
+        interactionToken += 1
     }
 
     fun openTrackPanel(panel: TvPlayerTrackPanel) {
@@ -561,7 +615,9 @@ fun TvPlayerScreen(
 
     LaunchedEffect(player, stream.url) {
         while (true) {
-            positionMs = max(0L, player.currentPosition)
+            if (seekPreviewMs == null) {
+                positionMs = max(0L, player.currentPosition)
+            }
             bufferedMs = max(positionMs, player.bufferedPosition)
             durationMs = player.duration
                 .takeIf { it != C.TIME_UNSET && it > 0L }
@@ -717,6 +773,13 @@ fun TvPlayerScreen(
                 runCatching { focusRequester.requestFocus() }
             }
 
+            seekPreviewMs != null || seekOverlayVisible -> {
+                seekPreviewMs = null
+                seekRepeatDirection = 0
+                seekRepeatCount = 0
+                seekOverlayVisible = false
+            }
+
             else -> {
                 reportProgress(force = true)
                 onBack()
@@ -730,7 +793,14 @@ fun TvPlayerScreen(
             .background(Color.Black)
             .focusRequester(focusRequester)
             .onPreviewKeyEvent { event ->
-                if (event.type != KeyEventType.KeyDown) {
+                if (event.type == KeyEventType.KeyUp &&
+                    focusedControlId == null &&
+                    (event.key == Key.DirectionLeft || event.key == Key.DirectionRight) &&
+                    seekPreviewMs != null
+                ) {
+                    commitPreviewSeek()
+                    true
+                } else if (event.type != KeyEventType.KeyDown) {
                     false
                 } else if (trackPanel != null || speedPanelVisible) {
                     false
@@ -782,12 +852,12 @@ fun TvPlayerScreen(
                         }
 
                         Key.DirectionLeft -> {
-                            previewSeekBy(-10_000L)
+                            previewSeekBy(-1)
                             true
                         }
 
                         Key.DirectionRight -> {
-                            previewSeekBy(10_000L)
+                            previewSeekBy(1)
                             true
                         }
 
@@ -1126,7 +1196,7 @@ fun TvPlayerScreen(
             modifier = Modifier.align(Alignment.BottomCenter)
         ) {
             TvPlayerSeekOverlay(
-                positionMs = positionMs,
+                positionMs = seekPreviewMs ?: positionMs,
                 bufferedMs = bufferedMs,
                 durationMs = durationMs
             )
