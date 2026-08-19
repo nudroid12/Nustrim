@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -57,6 +58,7 @@ import androidx.compose.ui.zIndex
 import app.nudroidlabs.nustrim.core.model.MediaEpisode
 import app.nudroidlabs.nustrim.core.model.MediaItem
 import app.nudroidlabs.nustrim.core.model.MediaType
+import app.nudroidlabs.nustrim.core.model.StreamSource
 import app.nudroidlabs.nustrim.core.source.SourceEngine
 import app.nudroidlabs.nustrim.core.source.SourceSession
 import app.nudroidlabs.nustrim.tv.home.TvHomeEntry
@@ -91,6 +93,9 @@ fun TvDetailsScreen(
     var selectedSeason by remember(entry.stableKey) { mutableStateOf<Int?>(null) }
     var sourcePreview by remember(entry.stableKey) {
         mutableStateOf<TvSourcePreviewRequest?>(null)
+    }
+    var restoreSourceFocus by remember(entry.stableKey) {
+        mutableStateOf(false)
     }
     var lastDetailsRequester by remember(entry.stableKey) {
         mutableStateOf<FocusRequester?>(null)
@@ -162,6 +167,7 @@ fun TvDetailsScreen(
     val isSeries = detailedItem.type == MediaType.SERIES || sortedEpisodes.isNotEmpty()
 
     fun openSources(episode: MediaEpisode?) {
+        restoreSourceFocus = false
         sourcePreview = TvSourcePreviewRequest(
             sourceUrl = entry.sourceUrl,
             session = resolvedSession,
@@ -406,20 +412,25 @@ fun TvDetailsScreen(
         }
 
         sourcePreview?.let { request ->
-            TvSourcesStage4Preview(
+            TvSourcesStage4Modal(
                 request = request,
                 onClose = {
                     sourcePreview = null
-                },
-                onRestoreFocus = {
-                    lastDetailsRequester?.let { requester ->
-                        runCatching { requester.requestFocus() }
-                    }
+                    restoreSourceFocus = true
                 },
                 modifier = Modifier
                     .fillMaxSize()
                     .zIndex(30f)
             )
+        }
+    }
+
+    LaunchedEffect(sourcePreview, restoreSourceFocus) {
+        if (sourcePreview == null && restoreSourceFocus) {
+            delay(70)
+            val requester = lastDetailsRequester ?: firstActionRequester
+            runCatching { requester.requestFocus() }
+            restoreSourceFocus = false
         }
     }
 
@@ -776,88 +787,519 @@ private fun TvEpisodeCard(
 }
 
 @Composable
-private fun TvSourcesStage4Preview(
+private fun TvSourcesStage4Modal(
     request: TvSourcePreviewRequest,
     onClose: () -> Unit,
-    onRestoreFocus: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val closeRequester = remember(request.item.id, request.episode?.id) {
-        FocusRequester()
+    val context = LocalContext.current
+    val engine = remember(context) { SourceEngine(context) }
+    val requestKey = remember(
+        request.sourceUrl,
+        request.item.id,
+        request.episode?.id
+    ) {
+        "${request.sourceUrl}|${request.item.id}|${request.episode?.id.orEmpty()}"
     }
 
-    BackHandler {
-        onClose()
-        onRestoreFocus()
+    var reloadToken by remember(requestKey) { mutableStateOf(0) }
+    var loading by remember(requestKey) { mutableStateOf(true) }
+    var errorMessage by remember(requestKey) { mutableStateOf<String?>(null) }
+    var streams by remember(requestKey) { mutableStateOf<List<StreamSource>>(emptyList()) }
+    var selectedStreamUrl by remember(requestKey) { mutableStateOf<String?>(null) }
+
+    val modalRequester = remember(requestKey) { FocusRequester() }
+    val retryRequester = remember(requestKey) { FocusRequester() }
+    val streamRequesters = remember(streams.map { it.url }) {
+        streams.map { FocusRequester() }
     }
+
+    fun acceptStreams(loaded: List<StreamSource>) {
+        val ranked = rankTvStreams(loaded)
+        streams = ranked
+        loading = false
+        errorMessage = if (ranked.isEmpty()) {
+            "No playable streams were returned by this source."
+        } else {
+            null
+        }
+        if (selectedStreamUrl !in ranked.map { it.url }) {
+            selectedStreamUrl = null
+        }
+    }
+
+    LaunchedEffect(requestKey, reloadToken) {
+        loading = true
+        errorMessage = null
+        streams = emptyList()
+        selectedStreamUrl = null
+
+        fun loadFrom(session: SourceSession) {
+            session.loadStreams(
+                item = request.item,
+                episode = request.episode,
+                onSuccess = { loaded ->
+                    acceptStreams(loaded)
+                },
+                onError = { error ->
+                    loading = false
+                    streams = emptyList()
+                    errorMessage = error.message
+                        ?.takeIf { it.isNotBlank() }
+                        ?: "Could not load streams."
+                }
+            )
+        }
+
+        val existing = request.session
+        if (existing != null) {
+            loadFrom(existing)
+        } else if (request.sourceUrl.isNotBlank()) {
+            engine.open(
+                request.sourceUrl,
+                onSuccess = { session ->
+                    loadFrom(session)
+                },
+                onError = { error ->
+                    loading = false
+                    streams = emptyList()
+                    errorMessage = error.message
+                        ?.takeIf { it.isNotBlank() }
+                        ?: "Could not open source."
+                }
+            )
+        } else {
+            loading = false
+            streams = emptyList()
+            errorMessage = "Source information is unavailable."
+        }
+    }
+
+    BackHandler(onBack = onClose)
 
     Box(
         modifier = modifier
-            .background(Color.Black.copy(alpha = 0.72f)),
+            .background(Color.Black.copy(alpha = 0.76f)),
         contentAlignment = Alignment.Center
     ) {
         Surface(
             modifier = Modifier
-                .width(560.dp)
-                .focusRequester(closeRequester)
-                .onPreviewKeyEvent { event ->
-                    if (
-                        event.type == KeyEventType.KeyDown &&
-                        (
-                            event.key == Key.DirectionCenter ||
-                                event.key == Key.Enter
-                            )
-                    ) {
-                        onClose()
-                        onRestoreFocus()
-                        true
-                    } else {
-                        false
-                    }
-                }
+                .width(760.dp)
+                .height(540.dp)
+                .focusRequester(modalRequester)
                 .focusable(),
             color = TvColors.BackgroundElevated,
-            shape = RoundedCornerShape(18.dp),
+            shape = RoundedCornerShape(20.dp),
             border = BorderStroke(
                 1.dp,
                 Color.White.copy(alpha = 0.14f)
             )
         ) {
             Column(
-                modifier = Modifier.padding(28.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(
+                        horizontal = 28.dp,
+                        vertical = 24.dp
+                    ),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Text(
-                    text = "Sources",
-                    color = TvColors.TextPrimary,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 24.sp
-                )
-                Text(
-                    text = request.episode?.displayTitle
-                        ?: request.item.title,
-                    color = TvColors.TextPrimary,
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 16.sp
-                )
-                Text(
-                    text = "Source window is ready. Stream loading and ranking will be connected in TV Stage 4.",
-                    color = TvColors.TextSecondary,
-                    fontSize = 14.sp,
-                    lineHeight = 19.sp
-                )
-                Text(
-                    text = "Press OK or Back to return",
-                    color = TvColors.Accent,
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 13.sp
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(3.dp)
+                    ) {
+                        Text(
+                            text = "Sources",
+                            color = TvColors.TextPrimary,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 25.sp
+                        )
+                        Text(
+                            text = request.episode?.displayTitle
+                                ?: request.item.title,
+                            color = TvColors.TextSecondary,
+                            fontSize = 14.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    if (!loading && streams.isNotEmpty()) {
+                        Text(
+                            text = "${streams.size} playable",
+                            color = TvColors.Accent,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 13.sp
+                        )
+                    }
+                }
+
+                when {
+                    loading -> {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(380.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(32.dp),
+                                    strokeWidth = 3.dp
+                                )
+                                Text(
+                                    text = "Finding playable streams...",
+                                    color = TvColors.TextSecondary,
+                                    fontSize = 14.sp
+                                )
+                            }
+                        }
+                    }
+
+                    errorMessage != null -> {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(380.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(
+                                modifier = Modifier.width(520.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(14.dp)
+                            ) {
+                                Text(
+                                    text = "No sources ready",
+                                    color = TvColors.TextPrimary,
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 20.sp
+                                )
+                                Text(
+                                    text = errorMessage.orEmpty(),
+                                    color = TvColors.TextSecondary,
+                                    fontSize = 14.sp,
+                                    lineHeight = 19.sp
+                                )
+                                TvSourcesRetryButton(
+                                    focusRequester = retryRequester,
+                                    onRetry = {
+                                        reloadToken += 1
+                                    }
+                                )
+                            }
+                        }
+                    }
+
+                    else -> {
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(380.dp),
+                            verticalArrangement = Arrangement.spacedBy(9.dp),
+                            contentPadding = PaddingValues(
+                                top = 2.dp,
+                                bottom = 8.dp
+                            )
+                        ) {
+                            itemsIndexed(
+                                items = streams,
+                                key = { _, stream ->
+                                    "${stream.name}|${stream.url}"
+                                }
+                            ) { index, stream ->
+                                TvStreamRow(
+                                    stream = stream,
+                                    index = index,
+                                    selected = selectedStreamUrl == stream.url,
+                                    focusRequester = streamRequesters[index],
+                                    onSelected = {
+                                        selectedStreamUrl = stream.url
+                                    }
+                                )
+                            }
+                        }
+
+                        Text(
+                            text = selectedStreamUrl
+                                ?.let {
+                                    "Source selected • Player connection comes in TV Stage 5"
+                                }
+                                ?: "Choose a source with OK • Back returns to Details",
+                            color = if (selectedStreamUrl != null) {
+                                TvColors.Accent
+                            } else {
+                                TvColors.TextSecondary
+                            },
+                            fontWeight = if (selectedStreamUrl != null) {
+                                FontWeight.SemiBold
+                            } else {
+                                FontWeight.Normal
+                            },
+                            fontSize = 12.sp
+                        )
+                    }
+                }
             }
         }
     }
 
-    LaunchedEffect(request.item.id, request.episode?.id) {
-        delay(60)
-        runCatching { closeRequester.requestFocus() }
+    LaunchedEffect(requestKey) {
+        delay(50)
+        runCatching { modalRequester.requestFocus() }
+    }
+
+    LaunchedEffect(loading, errorMessage, streams.size) {
+        delay(70)
+        when {
+            !loading && streams.isNotEmpty() -> {
+                streamRequesters.firstOrNull()?.let { requester ->
+                    runCatching { requester.requestFocus() }
+                }
+            }
+
+            !loading && errorMessage != null -> {
+                runCatching { retryRequester.requestFocus() }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TvSourcesRetryButton(
+    focusRequester: FocusRequester,
+    onRetry: () -> Unit
+) {
+    var focused by remember { mutableStateOf(false) }
+
+    Surface(
+        modifier = Modifier
+            .width(180.dp)
+            .height(48.dp)
+            .focusRequester(focusRequester)
+            .onFocusChanged { focused = it.hasFocus }
+            .onPreviewKeyEvent { event ->
+                if (
+                    event.type == KeyEventType.KeyDown &&
+                    (
+                        event.key == Key.DirectionCenter ||
+                            event.key == Key.Enter
+                        )
+                ) {
+                    onRetry()
+                    true
+                } else {
+                    false
+                }
+            }
+            .focusable(),
+        color = if (focused) {
+            TvColors.FocusRing
+        } else {
+            TvColors.FocusBackground
+        },
+        shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(
+            1.dp,
+            Color.White.copy(alpha = if (focused) 0.35f else 0.12f)
+        )
+    ) {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = "Retry",
+                color = if (focused) {
+                    TvColors.Background
+                } else {
+                    TvColors.TextPrimary
+                },
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 14.sp
+            )
+        }
+    }
+}
+
+@Composable
+private fun TvStreamRow(
+    stream: StreamSource,
+    index: Int,
+    selected: Boolean,
+    focusRequester: FocusRequester,
+    onSelected: () -> Unit
+) {
+    var focused by remember(stream.url) { mutableStateOf(false) }
+    val quality = tvStreamQualityLabel(stream)
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(72.dp)
+            .focusRequester(focusRequester)
+            .onFocusChanged { focused = it.hasFocus }
+            .onPreviewKeyEvent { event ->
+                if (
+                    event.type == KeyEventType.KeyDown &&
+                    (
+                        event.key == Key.DirectionCenter ||
+                            event.key == Key.Enter
+                        )
+                ) {
+                    onSelected()
+                    true
+                } else {
+                    false
+                }
+            }
+            .focusable(),
+        color = when {
+            focused -> TvColors.FocusRing
+            selected -> TvColors.FocusBackground
+            else -> TvColors.Surface
+        },
+        shape = RoundedCornerShape(13.dp),
+        border = when {
+            focused -> BorderStroke(
+                1.dp,
+                Color.White.copy(alpha = 0.42f)
+            )
+
+            selected -> BorderStroke(
+                1.dp,
+                TvColors.Accent.copy(alpha = 0.65f)
+            )
+
+            else -> BorderStroke(
+                1.dp,
+                Color.White.copy(alpha = 0.07f)
+            )
+        }
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 18.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Text(
+                text = "${index + 1}",
+                color = if (focused) {
+                    TvColors.Background
+                } else {
+                    TvColors.TextSecondary
+                },
+                fontWeight = FontWeight.Bold,
+                fontSize = 13.sp,
+                modifier = Modifier.width(28.dp)
+            )
+
+            Column(
+                modifier = Modifier.width(520.dp),
+                verticalArrangement = Arrangement.spacedBy(3.dp)
+            ) {
+                Text(
+                    text = stream.name.ifBlank {
+                        "Stream ${index + 1}"
+                    },
+                    color = if (focused) {
+                        TvColors.Background
+                    } else {
+                        TvColors.TextPrimary
+                    },
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 15.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+
+                Text(
+                    text = quality ?: "Auto quality",
+                    color = if (focused) {
+                        TvColors.Background.copy(alpha = 0.72f)
+                    } else {
+                        TvColors.TextSecondary
+                    },
+                    fontSize = 11.sp
+                )
+            }
+
+            if (selected) {
+                Text(
+                    text = "SELECTED",
+                    color = if (focused) {
+                        TvColors.Background
+                    } else {
+                        TvColors.Accent
+                    },
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 10.sp
+                )
+            }
+        }
+    }
+}
+
+private fun rankTvStreams(
+    streams: List<StreamSource>
+): List<StreamSource> {
+    return streams
+        .asSequence()
+        .filter { stream ->
+            stream.playable && stream.url.isNotBlank()
+        }
+        .distinctBy { stream ->
+            stream.url
+        }
+        .sortedWith(
+            compareByDescending<StreamSource> { stream ->
+                tvStreamQualityScore(stream)
+            }.thenBy { stream ->
+                stream.name.lowercase()
+            }
+        )
+        .toList()
+}
+
+private fun tvStreamQualityScore(
+    stream: StreamSource
+): Int {
+    val value = "${stream.name} ${stream.url}".lowercase()
+
+    return when {
+        "2160" in value || "4k" in value -> 2160
+        "1440" in value -> 1440
+        "1080" in value -> 1080
+        "720" in value -> 720
+        "576" in value -> 576
+        "480" in value -> 480
+        "360" in value -> 360
+        "240" in value -> 240
+        else -> 0
+    }
+}
+
+private fun tvStreamQualityLabel(
+    stream: StreamSource
+): String? {
+    return when (val score = tvStreamQualityScore(stream)) {
+        2160 -> "4K / 2160p"
+        1440 -> "1440p"
+        1080 -> "1080p"
+        720 -> "720p"
+        576 -> "576p"
+        480 -> "480p"
+        360 -> "360p"
+        240 -> "240p"
+        0 -> null
+        else -> "${score}p"
     }
 }
