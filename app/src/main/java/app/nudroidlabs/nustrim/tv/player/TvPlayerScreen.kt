@@ -1,6 +1,7 @@
 package app.nudroidlabs.nustrim.tv.player
 
 import android.net.Uri
+import android.text.format.DateFormat
 import android.view.ViewGroup
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
@@ -95,6 +96,7 @@ import kotlinx.coroutines.delay
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
+import java.util.Date
 import java.util.Locale
 
 private enum class TvPlayerTrackPanel {
@@ -198,6 +200,7 @@ fun TvPlayerScreen(
     var seekPreviewMs by remember(stream.url) { mutableStateOf<Long?>(null) }
     var seekRepeatDirection by remember(stream.url) { mutableIntStateOf(0) }
     var seekRepeatCount by remember(stream.url) { mutableIntStateOf(0) }
+    var pauseOverlayVisible by remember(stream.url) { mutableStateOf(false) }
 
     val preferredSubtitleLanguages = remember(stream.url) {
         listOf(
@@ -362,8 +365,20 @@ fun TvPlayerScreen(
         }
 
         cancelAutoNext()
+        pauseOverlayVisible = false
         if (player.isPlaying) player.pause() else player.play()
         revealControls()
+    }
+
+    fun resumeFromPauseOverlay() {
+        if (playbackError != null) return
+        pauseOverlayVisible = false
+        controlsVisible = false
+        moreExpanded = false
+        focusedControlId = null
+        interactionToken += 1
+        player.play()
+        runCatching { focusRequester.requestFocus() }
     }
 
     fun performSeek(deltaMs: Long, showControlsAfter: Boolean) {
@@ -498,7 +513,11 @@ fun TvPlayerScreen(
         val listener = object : Player.Listener {
             override fun onIsPlayingChanged(value: Boolean) {
                 isPlaying = value
-                if (!value) controlsVisible = true
+                if (value) {
+                    pauseOverlayVisible = false
+                } else {
+                    controlsVisible = true
+                }
             }
 
             override fun onPlaybackStateChanged(state: Int) {
@@ -645,6 +664,45 @@ fun TvPlayerScreen(
     }
 
     LaunchedEffect(
+        isPlaying,
+        buffering,
+        playbackError,
+        autoNextCountdown,
+        trackPanel,
+        speedPanelVisible,
+        stream.url
+    ) {
+        if (
+            !isPlaying &&
+            !buffering &&
+            playbackError == null &&
+            autoNextCountdown < 0 &&
+            trackPanel == null &&
+            !speedPanelVisible &&
+            player.playbackState == Player.STATE_READY
+        ) {
+            delay(5000)
+            if (
+                !isPlaying &&
+                !buffering &&
+                playbackError == null &&
+                autoNextCountdown < 0 &&
+                trackPanel == null &&
+                !speedPanelVisible &&
+                player.playbackState == Player.STATE_READY
+            ) {
+                pauseOverlayVisible = true
+                controlsVisible = false
+                moreExpanded = false
+                focusedControlId = null
+                runCatching { focusRequester.requestFocus() }
+            }
+        } else {
+            pauseOverlayVisible = false
+        }
+    }
+
+    LaunchedEffect(
         interactionToken,
         isPlaying,
         playbackError,
@@ -744,6 +802,11 @@ fun TvPlayerScreen(
 
     BackHandler {
         when {
+            pauseOverlayVisible -> {
+                pauseOverlayVisible = false
+                requestControlFocus()
+            }
+
             speedPanelVisible -> {
                 closeSpeedPanel()
             }
@@ -793,7 +856,20 @@ fun TvPlayerScreen(
             .background(Color.Black)
             .focusRequester(focusRequester)
             .onPreviewKeyEvent { event ->
-                if (event.type == KeyEventType.KeyUp &&
+                if (pauseOverlayVisible) {
+                    if (event.type == KeyEventType.KeyDown) {
+                        when (event.key) {
+                            Key.DirectionCenter,
+                            Key.Enter -> resumeFromPauseOverlay()
+
+                            else -> {
+                                pauseOverlayVisible = false
+                                requestControlFocus()
+                            }
+                        }
+                    }
+                    true
+                } else if (event.type == KeyEventType.KeyUp &&
                     focusedControlId == null &&
                     (event.key == Key.DirectionLeft || event.key == Key.DirectionRight) &&
                     seekPreviewMs != null
@@ -959,7 +1035,21 @@ fun TvPlayerScreen(
         }
 
         AnimatedVisibility(
-            visible = controlsVisible && playbackError == null,
+            visible = pauseOverlayVisible && playbackError == null && !buffering,
+            enter = fadeIn(animationSpec = tween(200)),
+            exit = fadeOut(animationSpec = tween(160)),
+            modifier = Modifier.fillMaxSize()
+        ) {
+            TvPlayerPauseOverlay(
+                title = title,
+                episodeTitle = episodeTitle,
+                positionMs = positionMs,
+                durationMs = durationMs
+            )
+        }
+
+        AnimatedVisibility(
+            visible = controlsVisible && playbackError == null && !pauseOverlayVisible,
             enter = fadeIn(animationSpec = tween(200)),
             exit = fadeOut(animationSpec = tween(200)),
             modifier = Modifier.fillMaxSize()
@@ -1919,6 +2009,94 @@ private fun TvPlayerProgress(
                     RoundedCornerShape(99.dp)
                 )
         )
+    }
+}
+
+@Composable
+private fun TvPlayerPauseOverlay(
+    title: String,
+    episodeTitle: String?,
+    positionMs: Long,
+    durationMs: Long
+) {
+    var nowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    val context = LocalContext.current
+    val formatter = remember(context) { DateFormat.getTimeFormat(context) }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            val current = System.currentTimeMillis()
+            nowMs = current
+            delay((60_000L - (current % 60_000L)).coerceAtLeast(1_000L))
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(
+                Brush.verticalGradient(
+                    colors = listOf(
+                        Color.Black.copy(alpha = 0.24f),
+                        Color.Black.copy(alpha = 0.50f),
+                        Color.Black.copy(alpha = 0.88f)
+                    )
+                )
+            )
+    ) {
+        Text(
+            text = formatter.format(Date(nowMs)),
+            color = Color.White.copy(alpha = 0.95f),
+            fontSize = 34.sp,
+            fontWeight = FontWeight.Normal,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = 40.dp, end = 64.dp)
+        )
+
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .fillMaxWidth(0.72f)
+                .padding(start = 64.dp, end = 48.dp, bottom = 120.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(
+                text = "You are watching",
+                color = Color.White.copy(alpha = 0.58f),
+                fontSize = 17.sp,
+                fontWeight = FontWeight.Medium
+            )
+            Text(
+                text = title,
+                color = Color.White,
+                fontSize = 34.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (!episodeTitle.isNullOrBlank()) {
+                Text(
+                    text = episodeTitle,
+                    color = Color.White.copy(alpha = 0.92f),
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Text(
+                text = "Paused  •  ${formatTvTime(positionMs)} / ${formatTvTime(durationMs)}",
+                color = Color.White.copy(alpha = 0.70f),
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium
+            )
+            Text(
+                text = "OK to resume  •  Any direction for controls",
+                color = Color.White.copy(alpha = 0.54f),
+                fontSize = 13.sp
+            )
+        }
     }
 }
 
