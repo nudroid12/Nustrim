@@ -80,7 +80,10 @@ data class TvSourcePreviewRequest(
     val sourceUrl: String,
     val session: SourceSession?,
     val item: MediaItem,
-    val episode: MediaEpisode?
+    val episode: MediaEpisode?,
+    val autoPlay: Boolean = false,
+    val preferredProviderId: String = "",
+    val preferredProviderName: String = ""
 )
 
 @Composable
@@ -198,13 +201,47 @@ fun TvDetailsScreen(
     val primaryEpisode = visibleEpisodes.firstOrNull() ?: sortedEpisodes.firstOrNull()
     val isSeries = detailedItem.type == MediaType.SERIES || sortedEpisodes.isNotEmpty()
 
-    fun openSources(episode: MediaEpisode?) {
+    fun openSources(
+        episode: MediaEpisode?,
+        autoPlay: Boolean = false,
+        preferredProviderId: String = "",
+        preferredProviderName: String = ""
+    ) {
         restoreSourceFocus = false
         sourcePreview = TvSourcePreviewRequest(
             sourceUrl = entry.sourceUrl,
             session = resolvedSession,
             item = detailedItem,
-            episode = episode
+            episode = episode,
+            autoPlay = autoPlay,
+            preferredProviderId = preferredProviderId,
+            preferredProviderName = preferredProviderName
+        )
+    }
+
+    val activeEpisode = sourcePreview?.episode
+    val activeEpisodeIndex = activeEpisode?.let { current ->
+        sortedEpisodes.indexOfFirst { candidate ->
+            candidate.id == current.id &&
+                candidate.season == current.season &&
+                candidate.episode == current.episode
+        }
+    } ?: -1
+    val previousEpisode = activeEpisodeIndex
+        .takeIf { it > 0 }
+        ?.let { sortedEpisodes[it - 1] }
+    val nextEpisode = activeEpisodeIndex
+        .takeIf { it >= 0 && it + 1 < sortedEpisodes.size }
+        ?.let { sortedEpisodes[it + 1] }
+
+    fun switchPlayerEpisode(episode: MediaEpisode) {
+        val currentStream = playingStream
+        playingStream = null
+        openSources(
+            episode = episode,
+            autoPlay = true,
+            preferredProviderId = currentStream?.providerId.orEmpty(),
+            preferredProviderName = currentStream?.providerName.orEmpty()
         )
     }
 
@@ -490,6 +527,18 @@ fun TvDetailsScreen(
                 stream = stream,
                 title = detailedItem.title,
                 episodeTitle = sourcePreview?.episode?.displayTitle,
+                previousEpisodeTitle = previousEpisode?.displayTitle,
+                nextEpisodeTitle = nextEpisode?.displayTitle,
+                onPreviousEpisode = previousEpisode?.let { episode ->
+                    {
+                        switchPlayerEpisode(episode)
+                    }
+                },
+                onNextEpisode = nextEpisode?.let { episode ->
+                    {
+                        switchPlayerEpisode(episode)
+                    }
+                },
                 onBack = {
                     playingStream = null
                     sourcePlayerReturnToken += 1
@@ -879,9 +928,24 @@ private fun TvSourcesStage4Modal(
     val requestKey = remember(
         request.sourceUrl,
         request.item.id,
-        request.episode?.id
+        request.episode?.id,
+        request.autoPlay,
+        request.preferredProviderId,
+        request.preferredProviderName
     ) {
-        "${request.sourceUrl}|${request.item.id}|${request.episode?.id.orEmpty()}"
+        buildString {
+            append(request.sourceUrl)
+            append('|')
+            append(request.item.id)
+            append('|')
+            append(request.episode?.id.orEmpty())
+            append('|')
+            append(request.autoPlay)
+            append('|')
+            append(request.preferredProviderId)
+            append('|')
+            append(request.preferredProviderName)
+        }
     }
 
     var reloadToken by remember(requestKey) { mutableStateOf(0) }
@@ -891,10 +955,12 @@ private fun TvSourcesStage4Modal(
     var aggregatedSubtitles by remember(requestKey) {
         mutableStateOf<List<SubtitleSource>>(emptyList())
     }
+    var subtitleScanComplete by remember(requestKey) { mutableStateOf(false) }
     var selectedStreamUrl by remember(requestKey) { mutableStateOf<String?>(null) }
     var scanStatus by remember(requestKey) {
         mutableStateOf("Preparing installed addons...")
     }
+    var autoPlayConsumed by remember(requestKey) { mutableStateOf(false) }
 
     val modalRequester = remember(requestKey) { FocusRequester() }
     val retryRequester = remember(requestKey) { FocusRequester() }
@@ -990,14 +1056,61 @@ private fun TvSourcesStage4Modal(
 
     LaunchedEffect(requestKey, reloadToken) {
         aggregatedSubtitles = emptyList()
+        subtitleScanComplete = false
         subtitleAggregator.load(
             item = request.item,
             episode = request.episode,
             preferredSession = request.session,
             onSuccess = { result ->
                 aggregatedSubtitles = result.subtitles
+                subtitleScanComplete = true
             }
         )
+    }
+
+    LaunchedEffect(
+        requestKey,
+        request.autoPlay,
+        streams,
+        aggregatedSubtitles,
+        subtitleScanComplete
+    ) {
+        if (
+            request.autoPlay &&
+            streams.isNotEmpty() &&
+            subtitleScanComplete &&
+            !autoPlayConsumed
+        ) {
+            delay(150)
+            if (!autoPlayConsumed) {
+                val preferred = streams.firstOrNull { stream ->
+                    request.preferredProviderId.isNotBlank() &&
+                        stream.providerId == request.preferredProviderId
+                } ?: streams.firstOrNull { stream ->
+                    request.preferredProviderName.isNotBlank() &&
+                        stream.providerName.equals(
+                            request.preferredProviderName,
+                            ignoreCase = true
+                        )
+                } ?: streams.first()
+
+                autoPlayConsumed = true
+                selectedStreamUrl = preferred.url
+
+                val mergedSubtitles = (
+                    preferred.subtitles + aggregatedSubtitles
+                    )
+                    .distinctBy { subtitle ->
+                        "${subtitle.url}|${subtitle.language}|${subtitle.label}"
+                    }
+
+                onPlayStream(
+                    preferred.copy(
+                        subtitles = mergedSubtitles
+                    )
+                )
+            }
+        }
     }
 
     BackHandler(onBack = onClose)

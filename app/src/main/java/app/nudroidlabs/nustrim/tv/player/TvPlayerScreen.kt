@@ -91,6 +91,10 @@ fun TvPlayerScreen(
     stream: StreamSource,
     title: String,
     episodeTitle: String?,
+    previousEpisodeTitle: String? = null,
+    nextEpisodeTitle: String? = null,
+    onPreviousEpisode: (() -> Unit)? = null,
+    onNextEpisode: (() -> Unit)? = null,
     onBack: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -136,6 +140,7 @@ fun TvPlayerScreen(
         mutableStateOf<List<TvPlayerTrackOption>>(emptyList())
     }
     var subtitlesDisabled by remember(stream.url) { mutableStateOf(false) }
+    var autoNextCountdown by remember(stream.url) { mutableIntStateOf(-1) }
 
     val preferredSubtitleLanguages = remember(stream.url) {
         listOf(
@@ -170,7 +175,26 @@ fun TvPlayerScreen(
         interactionToken += 1
     }
 
+    fun cancelAutoNext() {
+        if (autoNextCountdown >= 0) {
+            autoNextCountdown = -1
+        }
+    }
+
+    fun triggerPreviousEpisode() {
+        val callback = onPreviousEpisode ?: return
+        cancelAutoNext()
+        callback()
+    }
+
+    fun triggerNextEpisode() {
+        val callback = onNextEpisode ?: return
+        cancelAutoNext()
+        callback()
+    }
+
     fun retryPlayback() {
+        cancelAutoNext()
         playbackError = null
         buffering = true
         player.prepare()
@@ -179,17 +203,25 @@ fun TvPlayerScreen(
     }
 
     fun togglePlayback() {
+        if (autoNextCountdown >= 0 && onNextEpisode != null) {
+            triggerNextEpisode()
+            return
+        }
+
         if (playbackError != null) {
             retryPlayback()
             return
         }
 
+        cancelAutoNext()
         if (player.isPlaying) player.pause() else player.play()
         revealControls()
     }
 
     fun seekBy(deltaMs: Long) {
         if (playbackError != null) return
+
+        cancelAutoNext()
 
         val duration = player.duration
             .takeIf { it != C.TIME_UNSET && it > 0L }
@@ -208,6 +240,7 @@ fun TvPlayerScreen(
 
     fun openTrackPanel(panel: TvPlayerTrackPanel) {
         if (playbackError != null) return
+        cancelAutoNext()
         trackPanel = panel
         revealControls()
     }
@@ -265,6 +298,11 @@ fun TvPlayerScreen(
 
                 if (state == Player.STATE_ENDED) {
                     controlsVisible = true
+                    autoNextCountdown = if (onNextEpisode != null) {
+                        5
+                    } else {
+                        -1
+                    }
                 }
             }
 
@@ -366,6 +404,21 @@ fun TvPlayerScreen(
         }
     }
 
+    LaunchedEffect(autoNextCountdown, stream.url) {
+        when {
+            autoNextCountdown > 0 -> {
+                delay(1000)
+                if (autoNextCountdown > 0) {
+                    autoNextCountdown -= 1
+                }
+            }
+
+            autoNextCountdown == 0 -> {
+                triggerNextEpisode()
+            }
+        }
+    }
+
     LaunchedEffect(
         interactionToken,
         isPlaying,
@@ -405,11 +458,18 @@ fun TvPlayerScreen(
     }
 
     BackHandler {
-        if (trackPanel != null) {
-            trackPanel = null
-            revealControls()
-        } else {
-            onBack()
+        when {
+            trackPanel != null -> {
+                trackPanel = null
+                revealControls()
+            }
+
+            autoNextCountdown >= 0 -> {
+                cancelAutoNext()
+                revealControls()
+            }
+
+            else -> onBack()
         }
     }
 
@@ -425,13 +485,46 @@ fun TvPlayerScreen(
                     false
                 } else {
                     when (event.key) {
+                        Key.MediaPrevious -> {
+                            if (onPreviousEpisode != null) {
+                                triggerPreviousEpisode()
+                                true
+                            } else {
+                                revealControls()
+                                false
+                            }
+                        }
+
+                        Key.MediaNext -> {
+                            if (onNextEpisode != null) {
+                                triggerNextEpisode()
+                                true
+                            } else {
+                                revealControls()
+                                false
+                            }
+                        }
+
                         Key.DirectionLeft -> {
-                            seekBy(-10_000L)
+                            if (
+                                onPreviousEpisode != null &&
+                                positionMs <= 1_500L
+                            ) {
+                                triggerPreviousEpisode()
+                            } else {
+                                seekBy(-10_000L)
+                            }
                             true
                         }
 
                         Key.DirectionRight -> {
-                            seekBy(10_000L)
+                            val nearEnd = durationMs > 0L &&
+                                durationMs - positionMs <= 12_000L
+                            if (onNextEpisode != null && nearEnd) {
+                                triggerNextEpisode()
+                            } else {
+                                seekBy(10_000L)
+                            }
                             true
                         }
 
@@ -639,12 +732,100 @@ fun TvPlayerScreen(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
+                    if (
+                        previousEpisodeTitle != null ||
+                        nextEpisodeTitle != null
+                    ) {
+                        Text(
+                            text = buildString {
+                                previousEpisodeTitle
+                                    ?.takeIf { it.isNotBlank() }
+                                    ?.let { append("Previous: $it") }
+                                if (
+                                    previousEpisodeTitle != null &&
+                                    nextEpisodeTitle != null
+                                ) {
+                                    append("  •  ")
+                                }
+                                nextEpisodeTitle
+                                    ?.takeIf { it.isNotBlank() }
+                                    ?.let { append("Next: $it") }
+                            },
+                            color = Color.White.copy(alpha = 0.72f),
+                            fontSize = 11.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
                     Text(
-                        text = "${stream.name.ifBlank { "Source" }}  •  ▲ Audio  •  ▼ Subtitles  •  Left/Right seek  •  OK Play/Pause  •  Back Sources",
+                        text = buildString {
+                            append(stream.name.ifBlank { "Source" })
+                            append("  •  ▲ Audio  •  ▼ Subtitles")
+                            append("  •  Left/Right seek")
+                            if (onPreviousEpisode != null || onNextEpisode != null) {
+                                append("  •  Media Prev/Next episode")
+                            }
+                            append("  •  OK Play/Pause  •  Back Sources")
+                        },
                         color = Color.White.copy(alpha = 0.68f),
                         fontSize = 11.sp,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
+
+        if (
+            autoNextCountdown >= 0 &&
+            onNextEpisode != null &&
+            playbackError == null
+        ) {
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(
+                        end = 34.dp,
+                        bottom = 132.dp
+                    )
+                    .width(410.dp),
+                color = TvColors.BackgroundElevated.copy(alpha = 0.97f),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(
+                        horizontal = 20.dp,
+                        vertical = 16.dp
+                    ),
+                    verticalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    Text(
+                        text = if (autoNextCountdown > 0) {
+                            "Next episode in ${autoNextCountdown}s"
+                        } else {
+                            "Opening next episode..."
+                        },
+                        color = TvColors.TextPrimary,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    nextEpisodeTitle
+                        ?.takeIf { it.isNotBlank() }
+                        ?.let { nextTitle ->
+                            Text(
+                                text = nextTitle,
+                                color = TvColors.TextSecondary,
+                                fontSize = 13.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    Text(
+                        text = "OK Play now  •  Back Cancel",
+                        color = TvColors.Accent,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold
                     )
                 }
             }
