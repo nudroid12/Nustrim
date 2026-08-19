@@ -62,6 +62,8 @@ import app.nudroidlabs.nustrim.core.model.MediaType
 import app.nudroidlabs.nustrim.core.model.StreamSource
 import app.nudroidlabs.nustrim.core.source.SourceEngine
 import app.nudroidlabs.nustrim.core.source.SourceSession
+import app.nudroidlabs.nustrim.core.source.StreamAggregationPhase
+import app.nudroidlabs.nustrim.core.source.StreamSourceAggregator
 import app.nudroidlabs.nustrim.tv.home.TvHomeEntry
 import app.nudroidlabs.nustrim.tv.player.TvPlayerScreen
 import app.nudroidlabs.nustrim.tv.theme.TvColors
@@ -822,7 +824,7 @@ private fun TvSourcesStage4Modal(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val engine = remember(context) { SourceEngine(context) }
+    val aggregator = remember(context) { StreamSourceAggregator(context) }
     val requestKey = remember(
         request.sourceUrl,
         request.item.id,
@@ -836,7 +838,9 @@ private fun TvSourcesStage4Modal(
     var errorMessage by remember(requestKey) { mutableStateOf<String?>(null) }
     var streams by remember(requestKey) { mutableStateOf<List<StreamSource>>(emptyList()) }
     var selectedStreamUrl by remember(requestKey) { mutableStateOf<String?>(null) }
-    var sourceDiag by remember(requestKey) { mutableStateOf("WAITING") }
+    var scanStatus by remember(requestKey) {
+        mutableStateOf("Preparing installed addons...")
+    }
 
     val modalRequester = remember(requestKey) { FocusRequester() }
     val retryRequester = remember(requestKey) { FocusRequester() }
@@ -844,83 +848,90 @@ private fun TvSourcesStage4Modal(
         streams.map { FocusRequester() }
     }
 
-    fun acceptStreams(loaded: List<StreamSource>) {
-        val ranked = rankTvStreams(loaded)
-        val playableCount = loaded.count { stream ->
-            stream.playable && stream.url.isNotBlank()
-        }
-        val sample = loaded
-            .take(3)
-            .joinToString(" | ") { stream ->
-                "${stream.name.take(18)}:${stream.type}:play=${stream.playable}:url=${stream.url.isNotBlank()}"
-            }
-        sourceDiag = "SUCCESS raw=${loaded.size} playable=$playableCount ranked=${ranked.size}" +
-            if (sample.isBlank()) "" else " • $sample"
-        streams = ranked
-        loading = false
-        errorMessage = if (ranked.isEmpty()) {
-            "No playable streams were returned by this source."
-        } else {
-            null
-        }
-        if (selectedStreamUrl !in ranked.map { it.url }) {
-            selectedStreamUrl = null
-        }
-    }
-
     LaunchedEffect(requestKey, reloadToken) {
         loading = true
         errorMessage = null
         streams = emptyList()
         selectedStreamUrl = null
-        sourceDiag = "START session=${request.session?.id ?: "none"} source=${request.sourceUrl.take(48)} item=${request.item.id.take(40)} ep=${request.episode?.id?.take(30) ?: "none"}"
+        scanStatus = "Checking installed addons..."
 
-        fun loadFrom(session: SourceSession) {
-            sourceDiag = "LOAD session=${session.id} name=${session.displayName.take(28)} kind=${session.kind} item=${request.item.id.take(32)} ep=${request.episode?.id?.take(24) ?: "none"}"
-            session.loadStreams(
-                item = request.item,
-                episode = request.episode,
-                onSuccess = { loaded ->
-                    acceptStreams(loaded)
-                },
-                onError = { error ->
-                    loading = false
-                    streams = emptyList()
-                    val message = error.message
-                        ?.takeIf { it.isNotBlank() }
-                        ?: "Could not load streams."
-                    errorMessage = message
-                    sourceDiag = "LOAD_ERROR ${error::class.java.simpleName}: ${message.take(120)}"
-                }
-            )
-        }
+        aggregator.load(
+            item = request.item,
+            episode = request.episode,
+            preferredSession = request.session,
+            onProgress = { progress ->
+                scanStatus = when (progress.phase) {
+                    StreamAggregationPhase.DISCOVERING -> {
+                        val total = progress.total.coerceAtLeast(1)
+                        "Checking addons ${progress.current}/$total" +
+                            progress.sourceName
+                                .takeIf { it.isNotBlank() }
+                                ?.let { " · ${it.take(30)}" }
+                                .orEmpty()
+                    }
 
-        val existing = request.session
-        if (existing != null) {
-            loadFrom(existing)
-        } else if (request.sourceUrl.isNotBlank()) {
-            engine.open(
-                request.sourceUrl,
-                onSuccess = { session ->
-                    sourceDiag = "OPEN_OK session=${session.id} name=${session.displayName.take(28)} kind=${session.kind}"
-                    loadFrom(session)
-                },
-                onError = { error ->
-                    loading = false
-                    streams = emptyList()
-                    val message = error.message
-                        ?.takeIf { it.isNotBlank() }
-                        ?: "Could not open source."
-                    errorMessage = message
-                    sourceDiag = "OPEN_ERROR ${error::class.java.simpleName}: ${message.take(120)}"
+                    StreamAggregationPhase.SCANNING -> {
+                        val total = progress.total.coerceAtLeast(1)
+                        "Scanning ${progress.current}/$total" +
+                            progress.sourceName
+                                .takeIf { it.isNotBlank() }
+                                ?.let { " · ${it.take(30)}" }
+                                .orEmpty() +
+                            " · ${progress.foundStreams} found"
+                    }
                 }
-            )
-        } else {
-            loading = false
-            streams = emptyList()
-            errorMessage = "Source information is unavailable."
-            sourceDiag = "NO_SOURCE session=null sourceUrl=blank"
-        }
+            },
+            onSuccess = { result ->
+                val ranked = rankTvStreams(result.streams)
+                streams = ranked
+                loading = false
+
+                scanStatus = when {
+                    result.streamAddonCount == 0 -> {
+                        "${result.enabledSourceCount} enabled sources · 0 stream addons"
+                    }
+
+                    ranked.isEmpty() -> {
+                        "Scanned ${result.scannedStreamAddonCount}/${result.streamAddonCount} stream addons · 0 playable"
+                    }
+
+                    else -> {
+                        "Scanned ${result.scannedStreamAddonCount}/${result.streamAddonCount} stream addons · ${ranked.size} playable"
+                    }
+                }
+
+                errorMessage = when {
+                    result.streamAddonCount == 0 -> {
+                        "No stream addons are installed or enabled. " +
+                            "Add a Stremio addon that supports the stream resource, then retry."
+                    }
+
+                    ranked.isEmpty() -> {
+                        buildString {
+                            append(
+                                "All ${result.streamAddonCount} stream addons were scanned, " +
+                                    "but none returned playable streams for this title."
+                            )
+                            if (
+                                result.openFailureCount > 0 ||
+                                result.loadFailureCount > 0
+                            ) {
+                                append(
+                                    " Failures: open=${result.openFailureCount}, " +
+                                        "load=${result.loadFailureCount}."
+                                )
+                            }
+                        }
+                    }
+
+                    else -> null
+                }
+
+                if (selectedStreamUrl !in ranked.map { it.url }) {
+                    selectedStreamUrl = null
+                }
+            }
+        )
     }
 
     BackHandler(onBack = onClose)
@@ -987,7 +998,7 @@ private fun TvSourcesStage4Modal(
                 }
 
                 Text(
-                    text = "DIAG • $sourceDiag",
+                    text = scanStatus,
                     modifier = Modifier.fillMaxWidth(),
                     color = TvColors.TextSecondary,
                     fontSize = 10.sp,
@@ -1013,7 +1024,7 @@ private fun TvSourcesStage4Modal(
                                     strokeWidth = 3.dp
                                 )
                                 Text(
-                                    text = "Finding playable streams...",
+                                    text = "Scanning installed stream addons...",
                                     color = TvColors.TextSecondary,
                                     fontSize = 14.sp
                                 )
@@ -1088,7 +1099,7 @@ private fun TvSourcesStage4Modal(
                         Text(
                             text = selectedStreamUrl
                                 ?.let {
-                                    "Source selected • Player connection comes in TV Stage 5"
+                                    "Source selected • Opening TV player"
                                 }
                                 ?: "Choose a source with OK • Back returns to Details",
                             color = if (selectedStreamUrl != null) {
