@@ -1,4 +1,5 @@
 package app.nudroidlabs.nustrim.tv.details
+import android.view.KeyEvent as AndroidKeyEvent
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.animateFloatAsState
@@ -84,7 +85,8 @@ data class TvSourcePreviewRequest(
     val episode: MediaEpisode?,
     val autoPlay: Boolean = false,
     val preferredProviderId: String = "",
-    val preferredProviderName: String = ""
+    val preferredProviderName: String = "",
+    val startFromBeginning: Boolean = false
 )
 
 @Composable
@@ -148,6 +150,12 @@ fun TvDetailsScreen(
     }
     var sourcePlayerReturnToken by remember(entry.stableKey) {
         mutableIntStateOf(0)
+    }
+    var episodeWatchedRevision by remember(entry.stableKey) {
+        mutableIntStateOf(0)
+    }
+    var episodeOptions by remember(entry.stableKey) {
+        mutableStateOf<MediaEpisode?>(null)
     }
     var lastDetailsRequester by remember(entry.stableKey) {
         mutableStateOf<FocusRequester?>(null)
@@ -293,6 +301,17 @@ fun TvDetailsScreen(
     }
 
     val localPlaybackEntry = effectiveContinueEntry
+    val watchedEpisodeKeys = remember(
+        entry.stableKey,
+        sourcePlayerReturnToken,
+        episodeWatchedRevision
+    ) {
+        mediaStore.watchedEpisodeKeys(
+            sourceUrl = entry.sourceUrl,
+            item = detailedItem
+        )
+    }
+
 
     LaunchedEffect(selectedSeason) {
         if (
@@ -307,7 +326,8 @@ fun TvDetailsScreen(
         episode: MediaEpisode?,
         autoPlay: Boolean = false,
         preferredProviderId: String = "",
-        preferredProviderName: String = ""
+        preferredProviderName: String = "",
+        startFromBeginning: Boolean = false
     ) {
         restoreSourceFocus = false
         sourcePreview = TvSourcePreviewRequest(
@@ -317,7 +337,8 @@ fun TvDetailsScreen(
             episode = episode,
             autoPlay = autoPlay,
             preferredProviderId = preferredProviderId,
-            preferredProviderName = preferredProviderName
+            preferredProviderName = preferredProviderName,
+            startFromBeginning = startFromBeginning
         )
     }
 
@@ -604,6 +625,7 @@ fun TvDetailsScreen(
                             } else {
                                 0f
                             }
+                            val episodeWatched = episodeWatchKey(episode) in watchedEpisodeKeys
                             val statusLabel = when {
                                 isPlaybackEpisode &&
                                     localPlaybackEntry?.nextUp == true -> {
@@ -614,6 +636,7 @@ fun TvDetailsScreen(
                                     "Resume · ${(progressFraction * 100f).toInt()}%"
                                 }
 
+                                episodeWatched -> "Watched"
                                 else -> null
                             }
 
@@ -622,6 +645,7 @@ fun TvDetailsScreen(
                                 focusRequester = episodeRequester,
                                 progressFraction = progressFraction,
                                 statusLabel = statusLabel,
+                                watched = episodeWatched,
                                 onFocused = { requester ->
                                     lastDetailsRequester = requester
                                     lastFocusedEpisodeKey = focusKey
@@ -630,6 +654,11 @@ fun TvDetailsScreen(
                                     lastFocusedEpisodeKey = focusKey
                                     pendingEpisodeFocusRestoreKey = focusKey
                                     openSources(episode)
+                                },
+                                onLongPress = {
+                                    lastFocusedEpisodeKey = focusKey
+                                    pendingEpisodeFocusRestoreKey = focusKey
+                                    episodeOptions = episode
                                 }
                             )
                         }
@@ -667,6 +696,50 @@ fun TvDetailsScreen(
                     )
                 }
             }
+        }
+
+        episodeOptions?.let { episode ->
+            val watched = episodeWatchKey(episode) in watchedEpisodeKeys
+            val progress = mediaStore.resumePosition(
+                sourceUrl = entry.sourceUrl,
+                item = detailedItem,
+                episode = episode
+            )
+            TvEpisodeOptionsOverlay(
+                episode = episode,
+                watched = watched,
+                hasProgress = progress > 0L,
+                onDismiss = {
+                    episodeOptions = null
+                    restoreSourceFocus = true
+                },
+                onPlay = {
+                    episodeOptions = null
+                    openSources(episode)
+                },
+                onStartFromBeginning = {
+                    episodeOptions = null
+                    openSources(
+                        episode = episode,
+                        autoPlay = true,
+                        startFromBeginning = true
+                    )
+                },
+                onToggleWatched = {
+                    mediaStore.setEpisodeWatched(
+                        sourceUrl = entry.sourceUrl,
+                        item = detailedItem,
+                        episode = episode,
+                        watched = !watched
+                    )
+                    episodeWatchedRevision += 1
+                    episodeOptions = null
+                    restoreSourceFocus = true
+                },
+                modifier = Modifier
+                    .fillMaxSize()
+                    .zIndex(25f)
+            )
         }
 
         sourcePreview?.let { request ->
@@ -711,11 +784,15 @@ fun TvDetailsScreen(
                         switchPlayerEpisode(episode)
                     }
                 },
-                startPositionMs = mediaStore.resumePosition(
-                    sourceUrl = entry.sourceUrl,
-                    item = detailedItem,
-                    episode = sourcePreview?.episode
-                ),
+                startPositionMs = if (sourcePreview?.startFromBeginning == true) {
+                    0L
+                } else {
+                    mediaStore.resumePosition(
+                        sourceUrl = entry.sourceUrl,
+                        item = detailedItem,
+                        episode = sourcePreview?.episode
+                    )
+                },
                 onProgress = { position, duration, completed ->
                     mediaStore.recordProgress(
                         sourceUrl = entry.sourceUrl,
@@ -1033,6 +1110,15 @@ private fun TvSeasonChip(
     }
 }
 
+private fun episodeWatchKey(episode: MediaEpisode): String =
+    buildString {
+        append(episode.id)
+        append('|')
+        append(episode.season ?: -1)
+        append('|')
+        append(episode.episode ?: -1)
+    }
+
 private fun episodeFocusKey(episode: MediaEpisode): String =
     buildString {
         append(episode.id)
@@ -1048,10 +1134,15 @@ private fun TvEpisodeCard(
     focusRequester: FocusRequester,
     progressFraction: Float = 0f,
     statusLabel: String? = null,
+    watched: Boolean = false,
     onFocused: (FocusRequester) -> Unit,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onLongPress: () -> Unit
 ) {
     var focused by remember { mutableStateOf(false) }
+    var longPressTriggered by remember(episodeFocusKey(episode)) {
+        mutableStateOf(false)
+    }
     val scale by animateFloatAsState(
         targetValue = if (focused) 1.035f else 1f,
         label = "episodeScale"
@@ -1071,17 +1162,44 @@ private fun TvEpisodeCard(
                 if (it.hasFocus) onFocused(focusRequester)
             }
             .onPreviewKeyEvent { event ->
-                if (
-                    event.type == KeyEventType.KeyDown &&
-                    (
-                        event.key == Key.DirectionCenter ||
-                            event.key == Key.Enter
-                        )
-                ) {
-                    onClick()
-                    true
-                } else {
-                    false
+                val native = event.nativeKeyEvent
+                val isSelect = native.keyCode == AndroidKeyEvent.KEYCODE_DPAD_CENTER ||
+                    native.keyCode == AndroidKeyEvent.KEYCODE_ENTER ||
+                    native.keyCode == AndroidKeyEvent.KEYCODE_NUMPAD_ENTER
+
+                when {
+                    native.action == AndroidKeyEvent.ACTION_DOWN &&
+                        native.keyCode == AndroidKeyEvent.KEYCODE_MENU -> {
+                        longPressTriggered = true
+                        onLongPress()
+                        true
+                    }
+
+                    isSelect &&
+                        native.action == AndroidKeyEvent.ACTION_DOWN &&
+                        native.repeatCount >= 2 &&
+                        !longPressTriggered -> {
+                        longPressTriggered = true
+                        onLongPress()
+                        true
+                    }
+
+                    isSelect &&
+                        native.action == AndroidKeyEvent.ACTION_DOWN -> {
+                        true
+                    }
+
+                    isSelect &&
+                        native.action == AndroidKeyEvent.ACTION_UP -> {
+                        if (longPressTriggered) {
+                            longPressTriggered = false
+                        } else {
+                            onClick()
+                        }
+                        true
+                    }
+
+                    else -> false
                 }
             }
             .focusable(),
@@ -1140,6 +1258,31 @@ private fun TvEpisodeCard(
                         modifier = Modifier.padding(
                             horizontal = 8.dp,
                             vertical = 4.dp
+                        )
+                    )
+                }
+            }
+
+            if (watched) {
+                Surface(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(9.dp),
+                    color = Color.Black.copy(alpha = 0.72f),
+                    shape = RoundedCornerShape(99.dp),
+                    border = BorderStroke(
+                        1.dp,
+                        Color.White.copy(alpha = 0.14f)
+                    )
+                ) {
+                    Text(
+                        text = "✓",
+                        color = TvColors.TextPrimary,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(
+                            horizontal = 7.dp,
+                            vertical = 3.dp
                         )
                     )
                 }
@@ -1212,6 +1355,136 @@ private fun TvEpisodeCard(
                         .background(TvColors.FocusRing)
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun TvEpisodeOptionsOverlay(
+    episode: MediaEpisode,
+    watched: Boolean,
+    hasProgress: Boolean,
+    onDismiss: () -> Unit,
+    onPlay: () -> Unit,
+    onStartFromBeginning: () -> Unit,
+    onToggleWatched: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val playRequester = remember(episodeFocusKey(episode)) { FocusRequester() }
+    val startRequester = remember(episodeFocusKey(episode), hasProgress) { FocusRequester() }
+    val watchedRequester = remember(episodeFocusKey(episode), watched) { FocusRequester() }
+
+    BackHandler(onBack = onDismiss)
+
+    Box(
+        modifier = modifier
+            .background(Color.Black.copy(alpha = 0.64f)),
+        contentAlignment = Alignment.Center
+    ) {
+        Surface(
+            modifier = Modifier.width(410.dp),
+            color = TvColors.BackgroundElevated.copy(alpha = 0.98f),
+            shape = RoundedCornerShape(16.dp),
+            border = BorderStroke(
+                1.dp,
+                Color.White.copy(alpha = 0.12f)
+            )
+        ) {
+            Column(
+                modifier = Modifier.padding(22.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    text = episode.displayTitle,
+                    color = TvColors.TextPrimary,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 20.sp,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = "Episode options",
+                    color = TvColors.TextSecondary,
+                    fontSize = 12.sp
+                )
+
+                TvEpisodeOptionButton(
+                    label = if (hasProgress) "Resume" else "Play",
+                    focusRequester = playRequester,
+                    onClick = onPlay
+                )
+                TvEpisodeOptionButton(
+                    label = "Start from beginning",
+                    focusRequester = startRequester,
+                    onClick = onStartFromBeginning
+                )
+                TvEpisodeOptionButton(
+                    label = if (watched) "Mark as unwatched" else "Mark as watched",
+                    focusRequester = watchedRequester,
+                    onClick = onToggleWatched
+                )
+
+                Text(
+                    text = "Hold OK for options · Back to close",
+                    color = TvColors.TextSecondary.copy(alpha = 0.78f),
+                    fontSize = 11.sp
+                )
+            }
+        }
+    }
+
+    LaunchedEffect(episodeFocusKey(episode)) {
+        delay(80)
+        runCatching { playRequester.requestFocus() }
+    }
+}
+
+@Composable
+private fun TvEpisodeOptionButton(
+    label: String,
+    focusRequester: FocusRequester,
+    onClick: () -> Unit
+) {
+    var focused by remember { mutableStateOf(false) }
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(46.dp)
+            .focusRequester(focusRequester)
+            .onFocusChanged { focused = it.hasFocus }
+            .onPreviewKeyEvent { event ->
+                if (
+                    event.type == KeyEventType.KeyDown &&
+                    (
+                        event.key == Key.DirectionCenter ||
+                            event.key == Key.Enter
+                        )
+                ) {
+                    onClick()
+                    true
+                } else {
+                    false
+                }
+            }
+            .focusable(),
+        color = if (focused) TvColors.FocusRing else TvColors.SurfaceVariant,
+        shape = RoundedCornerShape(10.dp),
+        border = BorderStroke(
+            1.dp,
+            if (focused) TvColors.FocusRing else Color.White.copy(alpha = 0.10f)
+        )
+    ) {
+        Box(
+            modifier = Modifier.padding(horizontal = 16.dp),
+            contentAlignment = Alignment.CenterStart
+        ) {
+            Text(
+                text = label,
+                color = if (focused) TvColors.Background else TvColors.TextPrimary,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 14.sp
+            )
         }
     }
 }

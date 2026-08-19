@@ -98,6 +98,62 @@ class LocalMediaStore(context: Context) {
         preferences.edit().putStringSet(KEY_WATCHED, current).apply()
     }
 
+    fun watchedEpisodeKeys(sourceUrl: String, item: MediaItem): Set<String> {
+        if (sourceUrl.isBlank()) return emptySet()
+        val prefix = "${mediaKey(sourceUrl, item)}|episode|"
+        return preferences
+            .getStringSet(KEY_EPISODE_WATCHED, emptySet())
+            .orEmpty()
+            .asSequence()
+            .filter { it.startsWith(prefix) }
+            .map { it.removePrefix(prefix) }
+            .toSet()
+    }
+
+    fun isEpisodeWatched(
+        sourceUrl: String,
+        item: MediaItem,
+        episode: MediaEpisode
+    ): Boolean {
+        if (sourceUrl.isBlank()) return false
+        return episodeWatchedStorageKey(sourceUrl, item, episode) in
+            preferences.getStringSet(KEY_EPISODE_WATCHED, emptySet()).orEmpty()
+    }
+
+    fun setEpisodeWatched(
+        sourceUrl: String,
+        item: MediaItem,
+        episode: MediaEpisode,
+        watched: Boolean
+    ) {
+        if (sourceUrl.isBlank()) return
+        val key = episodeWatchedStorageKey(sourceUrl, item, episode)
+        val current = preferences
+            .getStringSet(KEY_EPISODE_WATCHED, emptySet())
+            .orEmpty()
+            .toMutableSet()
+        if (watched) current += key else current -= key
+        preferences.edit().putStringSet(KEY_EPISODE_WATCHED, current).apply()
+    }
+
+    fun setSeasonWatched(
+        sourceUrl: String,
+        item: MediaItem,
+        episodes: List<MediaEpisode>,
+        watched: Boolean
+    ) {
+        if (sourceUrl.isBlank()) return
+        val current = preferences
+            .getStringSet(KEY_EPISODE_WATCHED, emptySet())
+            .orEmpty()
+            .toMutableSet()
+        episodes.forEach { episode ->
+            val key = episodeWatchedStorageKey(sourceUrl, item, episode)
+            if (watched) current += key else current -= key
+        }
+        preferences.edit().putStringSet(KEY_EPISODE_WATCHED, current).apply()
+    }
+
     fun setSaved(sourceUrl: String, item: MediaItem, saved: Boolean) {
         if (sourceUrl.isBlank()) return
         val key = mediaKey(sourceUrl, item)
@@ -172,6 +228,15 @@ class LocalMediaStore(context: Context) {
         val continueEpisode = if (reachedEnd) nextEpisode else episode
         val shouldQueueNext = reachedEnd && nextEpisode != null
 
+        if (reachedEnd && episode != null) {
+            setEpisodeWatched(
+                sourceUrl = sourceUrl,
+                item = item,
+                episode = episode,
+                watched = true
+            )
+        }
+
         val updated = snapshot(
             sourceUrl = sourceUrl,
             item = item,
@@ -218,6 +283,21 @@ class LocalMediaStore(context: Context) {
         val type = item.ref?.mediaType?.takeIf { it.isNotBlank() } ?: item.type.name
         return "$sourceUrl|$type|$identity"
     }
+
+    private fun episodeWatchedStorageKey(
+        sourceUrl: String,
+        item: MediaItem,
+        episode: MediaEpisode
+    ): String = "${mediaKey(sourceUrl, item)}|episode|${episodeWatchIdentity(episode)}"
+
+    private fun episodeWatchIdentity(episode: MediaEpisode): String =
+        buildString {
+            append(episode.id)
+            append('|')
+            append(episode.season ?: -1)
+            append('|')
+            append(episode.episode ?: -1)
+        }
 
     private fun snapshot(sourceUrl: String, item: MediaItem, episode: MediaEpisode?): LocalMediaEntry = LocalMediaEntry(
         key = mediaKey(sourceUrl, item),
@@ -328,6 +408,7 @@ class LocalMediaStore(context: Context) {
     companion object {
         private const val KEY_ENTRIES = "entries_v1"
         private const val KEY_WATCHED = "watched_v1"
+        private const val KEY_EPISODE_WATCHED = "episode_watched_v1"
         private const val MIN_PROGRESS_MS = 15_000L
         private const val COMPLETE_FRACTION = 0.95
 
