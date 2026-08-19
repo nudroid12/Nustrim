@@ -49,6 +49,9 @@ import androidx.compose.ui.zIndex
 import app.nudroidlabs.nustrim.tv.details.TvDetailsScreen
 import app.nudroidlabs.nustrim.tv.home.TvHomeEntry
 import app.nudroidlabs.nustrim.tv.home.TvHomeScreen
+import app.nudroidlabs.nustrim.tv.library.TvLibraryScreen
+import app.nudroidlabs.nustrim.tv.search.TvSearchScreen
+import app.nudroidlabs.nustrim.tv.settings.TvSettingsScreen
 import app.nudroidlabs.nustrim.tv.navigation.TvDestination
 import app.nudroidlabs.nustrim.tv.theme.TvColors
 import kotlinx.coroutines.delay
@@ -61,8 +64,9 @@ fun TvShell(
     var sidebarExpanded by remember { mutableStateOf(true) }
     var contentFocusRequestToken by remember { mutableIntStateOf(0) }
     var openedDetailsEntry by remember { mutableStateOf<TvHomeEntry?>(null) }
-    var lastHomeFocusRequester by remember { mutableStateOf<FocusRequester?>(null) }
-    var restoreHomeFocusToken by remember { mutableIntStateOf(0) }
+    var lastContentFocusRequester by remember { mutableStateOf<FocusRequester?>(null) }
+    var restoreContentFocusToken by remember { mutableIntStateOf(0) }
+    var libraryRefreshToken by remember { mutableIntStateOf(0) }
 
     val sidebarRequesters = remember {
         TvDestination.entries.associateWith { FocusRequester() }
@@ -81,20 +85,21 @@ fun TvShell(
         contentFocusRequestToken += 1
     }
 
-    fun closeDetailsAndRestoreHome() {
+    fun closeDetailsAndRestoreContent() {
         openedDetailsEntry = null
         sidebarExpanded = false
-        restoreHomeFocusToken += 1
+        libraryRefreshToken += 1
+        restoreContentFocusToken += 1
     }
 
     LaunchedEffect(Unit) {
         sidebarRequesters.getValue(selected).requestFocus()
     }
 
-    LaunchedEffect(restoreHomeFocusToken) {
-        if (restoreHomeFocusToken > 0) {
+    LaunchedEffect(restoreContentFocusToken) {
+        if (restoreContentFocusToken > 0) {
             delay(70)
-            val requester = lastHomeFocusRequester
+            val requester = lastContentFocusRequester
             val restored = requester != null &&
                 runCatching { requester.requestFocus() }.isSuccess
 
@@ -128,7 +133,7 @@ fun TvShell(
                     firstContentRequester = firstContentRequester,
                     onContentFocused = { _, requester ->
                         sidebarExpanded = false
-                        lastHomeFocusRequester = requester
+                        lastContentFocusRequester = requester
                     },
                     onMoveLeft = { focusSidebar() },
                     onOpen = { entry ->
@@ -137,9 +142,42 @@ fun TvShell(
                     }
                 )
 
-                else -> TvStagePlaceholder(
-                    destination = selected,
-                    focusRequester = firstContentRequester,
+                TvDestination.SEARCH -> TvSearchScreen(
+                    contentFocusRequestToken = contentFocusRequestToken,
+                    firstContentRequester = firstContentRequester,
+                    onContentFocused = { requester ->
+                        sidebarExpanded = false
+                        lastContentFocusRequester = requester
+                    },
+                    onMoveLeft = { focusSidebar() },
+                    onOpen = { entry ->
+                        openedDetailsEntry = entry
+                        sidebarExpanded = false
+                    }
+                )
+
+                TvDestination.LIBRARY -> TvLibraryScreen(
+                    contentFocusRequestToken = contentFocusRequestToken,
+                    refreshToken = libraryRefreshToken,
+                    firstContentRequester = firstContentRequester,
+                    onContentFocused = { requester ->
+                        sidebarExpanded = false
+                        lastContentFocusRequester = requester
+                    },
+                    onMoveLeft = { focusSidebar() },
+                    onOpen = { entry ->
+                        openedDetailsEntry = entry
+                        sidebarExpanded = false
+                    }
+                )
+
+                TvDestination.SETTINGS -> TvSettingsScreen(
+                    contentFocusRequestToken = contentFocusRequestToken,
+                    firstContentRequester = firstContentRequester,
+                    onContentFocused = { requester ->
+                        sidebarExpanded = false
+                        lastContentFocusRequester = requester
+                    },
                     onMoveLeft = { focusSidebar() }
                 )
             }
@@ -170,7 +208,7 @@ fun TvShell(
                 TvDetailsScreen(
                     entry = entry,
                     onBack = {
-                        closeDetailsAndRestoreHome()
+                        closeDetailsAndRestoreContent()
                     }
                 )
             }

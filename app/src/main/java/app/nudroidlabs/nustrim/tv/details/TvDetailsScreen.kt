@@ -24,6 +24,8 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.BookmarkAdd
+import androidx.compose.material.icons.outlined.BookmarkRemove
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -44,6 +46,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -56,6 +59,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
+import app.nudroidlabs.nustrim.core.library.LocalMediaStore
 import app.nudroidlabs.nustrim.core.model.MediaEpisode
 import app.nudroidlabs.nustrim.core.model.MediaItem
 import app.nudroidlabs.nustrim.core.model.MediaType
@@ -84,7 +88,9 @@ fun TvDetailsScreen(
 ) {
     val context = LocalContext.current
     val engine = remember(context) { SourceEngine(context) }
+    val mediaStore = remember(context) { LocalMediaStore(context) }
     val firstActionRequester = remember { FocusRequester() }
+    val libraryActionRequester = remember { FocusRequester() }
 
     var resolvedSession by remember(entry.stableKey) {
         mutableStateOf<SourceSession?>(entry.session)
@@ -111,12 +117,17 @@ fun TvDetailsScreen(
         mutableStateOf<FocusRequester?>(null)
     }
 
+    var savedToLibrary by remember(entry.stableKey) {
+        mutableStateOf(mediaStore.isSaved(entry.sourceUrl, entry.item))
+    }
+
     fun loadWith(session: SourceSession) {
         resolvedSession = session
         session.loadDetails(
             item = entry.item,
             onSuccess = { loaded ->
                 detailedItem = loaded
+                savedToLibrary = mediaStore.isSaved(entry.sourceUrl, loaded)
                 loading = false
                 errorMessage = null
             },
@@ -318,6 +329,29 @@ fun TvDetailsScreen(
                             openSources(
                                 if (isSeries) primaryEpisode else null
                             )
+                        }
+                    )
+                    TvDetailsActionButton(
+                        label = if (savedToLibrary) {
+                            "Remove from Library"
+                        } else {
+                            "Add to Library"
+                        },
+                        icon = if (savedToLibrary) {
+                            Icons.Outlined.BookmarkRemove
+                        } else {
+                            Icons.Outlined.BookmarkAdd
+                        },
+                        focusRequester = libraryActionRequester,
+                        onFocused = { lastDetailsRequester = it },
+                        onClick = {
+                            val nextSaved = !savedToLibrary
+                            mediaStore.setSaved(
+                                entry.sourceUrl,
+                                detailedItem,
+                                nextSaved
+                            )
+                            savedToLibrary = nextSaved
                         }
                     )
                 }
@@ -573,6 +607,7 @@ private fun TvMetaPill(label: String) {
 @Composable
 private fun TvDetailsActionButton(
     label: String,
+    icon: ImageVector = Icons.Outlined.PlayArrow,
     focusRequester: FocusRequester,
     onFocused: (FocusRequester) -> Unit,
     onClick: () -> Unit
@@ -623,7 +658,7 @@ private fun TvDetailsActionButton(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
-                imageVector = Icons.Outlined.PlayArrow,
+                imageVector = icon,
                 contentDescription = null,
                 tint = if (focused) TvColors.Background else TvColors.TextPrimary,
                 modifier = Modifier.size(19.dp)
