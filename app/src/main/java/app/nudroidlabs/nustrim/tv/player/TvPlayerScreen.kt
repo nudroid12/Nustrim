@@ -34,6 +34,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.ClosedCaption
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Pause
@@ -54,6 +56,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -82,6 +85,7 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
+import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
@@ -89,11 +93,14 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+import app.nudroidlabs.nustrim.core.model.MediaEpisode
 import app.nudroidlabs.nustrim.core.model.StreamSource
+import app.nudroidlabs.nustrim.tv.sources.TvSourcePreviewRequest
 import app.nudroidlabs.nustrim.tv.theme.TvColors
 import app.nudroidlabs.nustrim.ui.SubtitleDisplayMode
 import app.nudroidlabs.nustrim.ui.UiPreferences
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -103,6 +110,12 @@ import java.util.Locale
 private enum class TvPlayerTrackPanel {
     AUDIO,
     SUBTITLES
+}
+
+private enum class TvPlayerSidePanel {
+    SOURCES,
+    EPISODES,
+    STREAM_INFO
 }
 
 private data class TvPlayerTrackOption(
@@ -121,8 +134,18 @@ fun TvPlayerScreen(
     episodeTitle: String?,
     previousEpisodeTitle: String? = null,
     nextEpisodeTitle: String? = null,
+    sourceRequest: TvSourcePreviewRequest? = null,
+    episodes: List<MediaEpisode> = emptyList(),
+    currentEpisode: MediaEpisode? = null,
+    isEpisodeWatched: (MediaEpisode) -> Boolean = { false },
+    onSelectSource: ((StreamSource) -> Unit)? = null,
+    onSelectEpisode: ((MediaEpisode) -> Unit)? = null,
+    onSelectEpisodeSource: ((MediaEpisode, StreamSource) -> Unit)? = null,
     onPreviousEpisode: (() -> Unit)? = null,
     onNextEpisode: (() -> Unit)? = null,
+    onAutoNextEpisode: (() -> Unit)? = null,
+    stillWatchingGate: Boolean = false,
+    onStillWatchingContinue: (() -> Unit)? = null,
     startPositionMs: Long = 0L,
     onProgress: ((Long, Long, Boolean) -> Unit)? = null,
     onBack: () -> Unit,
@@ -130,15 +153,25 @@ fun TvPlayerScreen(
 ) {
     val context = LocalContext.current
     val preferences = remember(context) { UiPreferences(context) }
+    val playerScope = rememberCoroutineScope()
     val latestOnProgress by rememberUpdatedState(onProgress)
+    val originalExternalSubtitles = remember(stream.url) { stream.subtitles }
     val focusRequester = remember(stream.url) { FocusRequester() }
     val playControlRequester = remember(stream.url) { FocusRequester() }
     val progressControlRequester = remember(stream.url) { FocusRequester() }
     val audioControlRequester = remember(stream.url) { FocusRequester() }
     val subtitleControlRequester = remember(stream.url) { FocusRequester() }
+    val episodesControlRequester = remember(stream.url) { FocusRequester() }
+    val sourcesControlRequester = remember(stream.url) { FocusRequester() }
+    val infoControlRequester = remember(stream.url) { FocusRequester() }
     val speedControlRequester = remember(stream.url) { FocusRequester() }
 
-    val player = remember(context, stream.url, stream.headers) {
+    val player = remember(
+        context,
+        stream.url,
+        stream.headers,
+        stream.subtitles.map { it.url }
+    ) {
         val httpFactory = DefaultHttpDataSource.Factory()
             .setAllowCrossProtocolRedirects(true)
 
@@ -202,6 +235,21 @@ fun TvPlayerScreen(
     var seekRepeatDirection by remember(stream.url) { mutableIntStateOf(0) }
     var seekRepeatCount by remember(stream.url) { mutableIntStateOf(0) }
     var pauseOverlayVisible by remember(stream.url) { mutableStateOf(false) }
+    var sidePanel by remember(stream.url) {
+        mutableStateOf<TvPlayerSidePanel?>(null)
+    }
+    var pendingSidePanelFocus by remember(stream.url) {
+        mutableStateOf<TvPlayerSidePanel?>(null)
+    }
+    var pendingEpisodeForSources by remember(stream.url) {
+        mutableStateOf<MediaEpisode?>(null)
+    }
+    var stillWatchingVisible by remember(stream.url) { mutableStateOf(false) }
+    var subtitleDelayMs by remember(stream.url) { mutableLongStateOf(0L) }
+    var subtitleDelayBusy by remember(stream.url) { mutableStateOf(false) }
+    var subtitleSizeIndex by remember(stream.url) { mutableIntStateOf(1) }
+    var playerVideoWidth by remember(stream.url) { mutableIntStateOf(0) }
+    var playerVideoHeight by remember(stream.url) { mutableIntStateOf(0) }
 
     val preferredSubtitleLanguages = remember(stream.url) {
         listOf(
@@ -233,6 +281,11 @@ fun TvPlayerScreen(
     val seekStepSeconds = preferences.tvSeekStepSeconds
     val seekStepMs = seekStepSeconds * 1_000L
     val controlsAutoHideMs = preferences.tvControlsAutoHideSeconds * 1_000L
+    val subtitleTextFraction = when (subtitleSizeIndex) {
+        0 -> 0.043f
+        2 -> 0.061f
+        else -> 0.052f
+    }
     val focusedControlLabel = when (focusedControlId) {
         "previous" -> previousEpisodeTitle
             ?.takeIf { it.isNotBlank() }
@@ -247,9 +300,12 @@ fun TvPlayerScreen(
             ?: "Next episode"
         "subtitles" -> "Subtitles · $selectedSubtitleLabel"
         "audio" -> "Audio · $selectedAudioLabel"
-        "sources" -> "Change source"
+        "episodes" -> "Episodes"
+        "sources" -> "Sources"
         "speed" -> "Playback speed · ${formatTvSpeed(playbackSpeed)}"
         "aspect" -> "Aspect ratio"
+        "subtitle-style" -> "Subtitle size · ${listOf("Small", "Medium", "Large")[subtitleSizeIndex]}"
+        "info" -> "Stream info"
         "more" -> if (moreExpanded) "Close more actions" else "More actions"
         else -> null
     }
@@ -364,6 +420,15 @@ fun TvPlayerScreen(
     fun triggerNextEpisode() {
         val callback = onNextEpisode ?: return
         cancelAutoNext()
+        stillWatchingVisible = false
+        reportProgress(force = true)
+        callback()
+    }
+
+    fun triggerAutoNextEpisode() {
+        val callback = onAutoNextEpisode ?: onNextEpisode ?: return
+        cancelAutoNext()
+        stillWatchingVisible = false
         reportProgress(force = true)
         callback()
     }
@@ -538,6 +603,78 @@ fun TvPlayerScreen(
         revealControls()
     }
 
+    fun openSidePanel(panel: TvPlayerSidePanel) {
+        cancelAutoNext()
+        stillWatchingVisible = false
+        if (panel != TvPlayerSidePanel.SOURCES) {
+            pendingEpisodeForSources = null
+        }
+        sidePanel = panel
+        controlsVisible = false
+        moreExpanded = false
+        focusedControlId = null
+        pendingControlFocus = false
+    }
+
+    fun closeSidePanel() {
+        if (
+            sidePanel == TvPlayerSidePanel.SOURCES &&
+            pendingEpisodeForSources != null
+        ) {
+            pendingEpisodeForSources = null
+            sidePanel = TvPlayerSidePanel.EPISODES
+            controlsVisible = false
+            return
+        }
+        val closing = sidePanel
+        pendingEpisodeForSources = null
+        sidePanel = null
+        pendingSidePanelFocus = closing
+        controlsVisible = true
+        interactionToken += 1
+    }
+
+    fun dismissSidePanelForPlayback() {
+        val closing = sidePanel
+        pendingEpisodeForSources = null
+        sidePanel = null
+        pendingSidePanelFocus = closing
+        controlsVisible = false
+        focusedControlId = null
+        interactionToken += 1
+    }
+
+    fun applySubtitleDelay(targetMs: Long) {
+        if (subtitleDelayBusy || onSelectSource == null) return
+        val safe = targetMs.coerceIn(-10_000L, 10_000L)
+        if (safe == subtitleDelayMs) return
+        if (originalExternalSubtitles.isEmpty()) {
+            subtitleDelayMs = 0L
+            return
+        }
+        subtitleDelayBusy = true
+        playerScope.launch {
+            val shifted = runCatching {
+                TvSubtitleShiftManager.shift(
+                    context = context,
+                    subtitles = originalExternalSubtitles,
+                    offsetMs = safe
+                )
+            }.getOrElse { originalExternalSubtitles }
+            reportProgress(force = true)
+            subtitleDelayMs = safe
+            subtitleDelayBusy = false
+            onSelectSource(
+                stream.copy(subtitles = shifted)
+            )
+        }
+    }
+
+    fun cycleSubtitleSize() {
+        subtitleSizeIndex = (subtitleSizeIndex + 1) % 3
+        revealControls()
+    }
+
     DisposableEffect(player, stream.url) {
         val listener = object : Player.Listener {
             override fun onIsPlayingChanged(value: Boolean) {
@@ -560,15 +697,18 @@ fun TvPlayerScreen(
                     )
                     val hasNextEpisode =
                         onNextEpisode != null && preferences.autoplayNextEpisode
-                    controlsVisible = !hasNextEpisode
+                    val needsStillWatching =
+                        hasNextEpisode && stillWatchingGate && onStillWatchingContinue != null
+                    stillWatchingVisible = needsStillWatching
+                    controlsVisible = !hasNextEpisode && !needsStillWatching
                     moreExpanded = false
                     focusedControlId = null
-                    autoNextCountdown = if (hasNextEpisode) {
+                    autoNextCountdown = if (hasNextEpisode && !needsStillWatching) {
                         5
                     } else {
                         -1
                     }
-                    if (hasNextEpisode) {
+                    if (hasNextEpisode || needsStillWatching) {
                         runCatching { focusRequester.requestFocus() }
                     }
                 }
@@ -583,6 +723,11 @@ fun TvPlayerScreen(
                     tracks = tracks,
                     trackType = C.TRACK_TYPE_TEXT
                 )
+            }
+
+            override fun onVideoSizeChanged(videoSize: VideoSize) {
+                playerVideoWidth = videoSize.width
+                playerVideoHeight = videoSize.height
             }
 
             override fun onPlayerError(error: PlaybackException) {
@@ -694,7 +839,7 @@ fun TvPlayerScreen(
             }
 
             autoNextCountdown == 0 -> {
-                triggerNextEpisode()
+                triggerAutoNextEpisode()
             }
         }
     }
@@ -706,6 +851,8 @@ fun TvPlayerScreen(
         autoNextCountdown,
         trackPanel,
         speedPanelVisible,
+        sidePanel,
+        stillWatchingVisible,
         stream.url
     ) {
         if (
@@ -715,6 +862,8 @@ fun TvPlayerScreen(
             autoNextCountdown < 0 &&
             trackPanel == null &&
             !speedPanelVisible &&
+            sidePanel == null &&
+            !stillWatchingVisible &&
             player.playbackState == Player.STATE_READY
         ) {
             delay(5000)
@@ -725,6 +874,8 @@ fun TvPlayerScreen(
                 autoNextCountdown < 0 &&
                 trackPanel == null &&
                 !speedPanelVisible &&
+                sidePanel == null &&
+                !stillWatchingVisible &&
                 player.playbackState == Player.STATE_READY
             ) {
                 pauseOverlayVisible = true
@@ -744,6 +895,8 @@ fun TvPlayerScreen(
         playbackError,
         trackPanel,
         speedPanelVisible,
+        sidePanel,
+        stillWatchingVisible,
         focusedControlId
     ) {
         if (
@@ -751,6 +904,8 @@ fun TvPlayerScreen(
             playbackError == null &&
             trackPanel == null &&
             !speedPanelVisible &&
+            sidePanel == null &&
+            !stillWatchingVisible &&
             focusedControlId == null
         ) {
             val token = interactionToken
@@ -761,6 +916,8 @@ fun TvPlayerScreen(
                 playbackError == null &&
                 trackPanel == null &&
                 !speedPanelVisible &&
+                sidePanel == null &&
+                !stillWatchingVisible &&
                 focusedControlId == null
             ) {
                 controlsVisible = false
@@ -769,6 +926,8 @@ fun TvPlayerScreen(
             playbackError != null ||
             trackPanel != null ||
             speedPanelVisible ||
+            sidePanel != null ||
+            stillWatchingVisible ||
             focusedControlId != null
         ) {
             controlsVisible = true
@@ -817,6 +976,22 @@ fun TvPlayerScreen(
         }
     }
 
+    LaunchedEffect(sidePanel, pendingSidePanelFocus, controlsVisible) {
+        if (sidePanel == null && pendingSidePanelFocus != null && controlsVisible) {
+            delay(80)
+            when (pendingSidePanelFocus) {
+                TvPlayerSidePanel.SOURCES ->
+                    runCatching { sourcesControlRequester.requestFocus() }
+                TvPlayerSidePanel.EPISODES ->
+                    runCatching { episodesControlRequester.requestFocus() }
+                TvPlayerSidePanel.STREAM_INFO ->
+                    runCatching { infoControlRequester.requestFocus() }
+                null -> Unit
+            }
+            pendingSidePanelFocus = null
+        }
+    }
+
     LaunchedEffect(aspectIndicatorText) {
         if (aspectIndicatorText != null) {
             delay(1600)
@@ -838,6 +1013,16 @@ fun TvPlayerScreen(
 
     BackHandler {
         when {
+            sidePanel != null -> {
+                closeSidePanel()
+            }
+
+            stillWatchingVisible -> {
+                stillWatchingVisible = false
+                controlsVisible = true
+                requestControlFocus()
+            }
+
             playbackError != null -> {
                 reportProgress(force = true)
                 onBack()
@@ -918,6 +1103,23 @@ fun TvPlayerScreen(
                         }
                     }
                     true
+                } else if (playbackError != null && event.type == KeyEventType.KeyDown) {
+                    when (event.key) {
+                        Key.DirectionCenter,
+                        Key.Enter -> {
+                            retryPlayback()
+                            true
+                        }
+                        Key.DirectionRight -> {
+                            if (sourceRequest != null && onSelectSource != null) {
+                                openSidePanel(TvPlayerSidePanel.SOURCES)
+                                true
+                            } else {
+                                false
+                            }
+                        }
+                        else -> false
+                    }
                 } else if (autoNextCountdown >= 0 && event.type == KeyEventType.KeyDown) {
                     when (event.key) {
                         Key.DirectionCenter,
@@ -946,7 +1148,12 @@ fun TvPlayerScreen(
                     true
                 } else if (event.type != KeyEventType.KeyDown) {
                     false
-                } else if (trackPanel != null || speedPanelVisible) {
+                } else if (
+                    trackPanel != null ||
+                    speedPanelVisible ||
+                    sidePanel != null ||
+                    stillWatchingVisible
+                ) {
                     false
                 } else if (focusedControlId != null) {
                     when (event.key) {
@@ -1040,6 +1247,7 @@ fun TvPlayerScreen(
                         android.graphics.Color.BLACK
                     )
                     this.player = player
+                    subtitleView?.setFractionalTextSize(subtitleTextFraction)
                 }
             },
             update = { view ->
@@ -1049,6 +1257,7 @@ fun TvPlayerScreen(
                 if (view.resizeMode != videoResizeMode) {
                     view.resizeMode = videoResizeMode
                 }
+                view.subtitleView?.setFractionalTextSize(subtitleTextFraction)
             }
         )
 
@@ -1092,7 +1301,11 @@ fun TvPlayerScreen(
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            text = "OK Retry  •  Back Sources",
+                            text = if (sourceRequest != null && onSelectSource != null) {
+                                "OK Retry  •  Right Sources  •  Back Exit"
+                            } else {
+                                "OK Retry  •  Back Exit"
+                            },
                             color = TvColors.Accent,
                             fontSize = 13.sp,
                             fontWeight = FontWeight.SemiBold
@@ -1319,20 +1532,36 @@ fun TvPlayerScreen(
                                 },
                                 onDownKey = ::hideControlsFromRow
                             )
-                            TvPlayerControlButton(
-                                id = "sources",
-                                icon = Icons.Default.SwapHoriz,
-                                label = "Sources",
-                                upFocusRequester = progressControlRequester,
-                                focusedId = focusedControlId,
-                                onFocusedIdChange = { focusedControlId = it },
-                                onClick = {
-                                    cancelAutoNext()
-                                    reportProgress(force = true)
-                                    onBack()
-                                },
-                                onDownKey = ::hideControlsFromRow
-                            )
+                            if (episodes.isNotEmpty() && currentEpisode != null && onSelectEpisode != null) {
+                                TvPlayerControlButton(
+                                    id = "episodes",
+                                    icon = Icons.Default.List,
+                                    label = "Episodes",
+                                    focusRequester = episodesControlRequester,
+                                    upFocusRequester = progressControlRequester,
+                                    focusedId = focusedControlId,
+                                    onFocusedIdChange = { focusedControlId = it },
+                                    onClick = {
+                                        openSidePanel(TvPlayerSidePanel.EPISODES)
+                                    },
+                                    onDownKey = ::hideControlsFromRow
+                                )
+                            }
+                            if (sourceRequest != null && onSelectSource != null) {
+                                TvPlayerControlButton(
+                                    id = "sources",
+                                    icon = Icons.Default.SwapHoriz,
+                                    label = "Sources",
+                                    focusRequester = sourcesControlRequester,
+                                    upFocusRequester = progressControlRequester,
+                                    focusedId = focusedControlId,
+                                    onFocusedIdChange = { focusedControlId = it },
+                                    onClick = {
+                                        openSidePanel(TvPlayerSidePanel.SOURCES)
+                                    },
+                                    onDownKey = ::hideControlsFromRow
+                                )
+                            }
                             AnimatedVisibility(
                                 visible = moreExpanded,
                                 enter = slideInHorizontally(
@@ -1367,6 +1596,29 @@ fun TvPlayerScreen(
                                         focusedId = focusedControlId,
                                         onFocusedIdChange = { focusedControlId = it },
                                         onClick = ::cycleAspectRatio,
+                                        onDownKey = ::hideControlsFromRow
+                                    )
+                                    TvPlayerControlButton(
+                                        id = "subtitle-style",
+                                        icon = Icons.Default.ClosedCaption,
+                                        label = "Subtitle size",
+                                        upFocusRequester = progressControlRequester,
+                                        focusedId = focusedControlId,
+                                        onFocusedIdChange = { focusedControlId = it },
+                                        onClick = ::cycleSubtitleSize,
+                                        onDownKey = ::hideControlsFromRow
+                                    )
+                                    TvPlayerControlButton(
+                                        id = "info",
+                                        icon = Icons.Default.Info,
+                                        label = "Stream info",
+                                        focusRequester = infoControlRequester,
+                                        upFocusRequester = progressControlRequester,
+                                        focusedId = focusedControlId,
+                                        onFocusedIdChange = { focusedControlId = it },
+                                        onClick = {
+                                            openSidePanel(TvPlayerSidePanel.STREAM_INFO)
+                                        },
                                         onDownKey = ::hideControlsFromRow
                                     )
                                 }
@@ -1496,6 +1748,24 @@ fun TvPlayerScreen(
                 options = panelOptions,
                 showOff = panel == TvPlayerTrackPanel.SUBTITLES,
                 offSelected = subtitlesDisabled,
+                subtitleDelayMs = if (panel == TvPlayerTrackPanel.SUBTITLES) {
+                    subtitleDelayMs
+                } else {
+                    null
+                },
+                subtitleDelayBusy = subtitleDelayBusy,
+                subtitleSizeLabel = if (panel == TvPlayerTrackPanel.SUBTITLES) {
+                    listOf("Small", "Medium", "Large")[subtitleSizeIndex]
+                } else {
+                    null
+                },
+                onSubtitleDelayAdjust = { delta ->
+                    applySubtitleDelay(subtitleDelayMs + delta)
+                },
+                onSubtitleDelayReset = {
+                    applySubtitleDelay(0L)
+                },
+                onSubtitleSizeCycle = ::cycleSubtitleSize,
                 onSelect = ::selectTrack,
                 onOff = ::disableSubtitles,
                 onClose = {
@@ -1505,6 +1775,95 @@ fun TvPlayerScreen(
                 modifier = Modifier
                     .align(Alignment.CenterEnd)
                     .padding(end = 28.dp)
+            )
+        }
+
+        when (sidePanel) {
+            TvPlayerSidePanel.SOURCES -> {
+                val request = sourceRequest
+                val select = onSelectSource
+                if (request != null && select != null) {
+                    val panelRequest = pendingEpisodeForSources?.let { episode ->
+                        request.copy(
+                            episode = episode,
+                            autoPlay = false,
+                            preferredProviderId = stream.providerId,
+                            preferredProviderName = stream.providerName
+                        )
+                    } ?: request
+                    TvPlayerSourcesPanel(
+                        request = panelRequest,
+                        currentStream = stream,
+                        onSelect = { selected ->
+                            val pendingEpisode = pendingEpisodeForSources
+                            reportProgress(force = true)
+                            dismissSidePanelForPlayback()
+                            if (pendingEpisode != null && onSelectEpisodeSource != null) {
+                                onSelectEpisodeSource(pendingEpisode, selected)
+                            } else {
+                                select(selected)
+                            }
+                        },
+                        onClose = ::closeSidePanel,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+            }
+
+            TvPlayerSidePanel.EPISODES -> {
+                val selectEpisode = onSelectEpisode
+                if (episodes.isNotEmpty() && currentEpisode != null && selectEpisode != null) {
+                    TvPlayerEpisodesPanel(
+                        episodes = episodes,
+                        currentEpisode = currentEpisode,
+                        isWatched = isEpisodeWatched,
+                        onSelect = { episode ->
+                            if (onSelectEpisodeSource != null && sourceRequest != null) {
+                                pendingEpisodeForSources = episode
+                                sidePanel = TvPlayerSidePanel.SOURCES
+                                controlsVisible = false
+                            } else {
+                                closeSidePanel()
+                                reportProgress(force = true)
+                                selectEpisode(episode)
+                            }
+                        },
+                        onClose = ::closeSidePanel,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+            }
+
+            TvPlayerSidePanel.STREAM_INFO -> {
+                TvPlayerStreamInfoPanel(
+                    stream = stream,
+                    videoWidth = playerVideoWidth,
+                    videoHeight = playerVideoHeight,
+                    audioLabel = selectedAudioLabel,
+                    subtitleLabel = selectedSubtitleLabel,
+                    playbackSpeed = playbackSpeed,
+                    onClose = ::closeSidePanel,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+
+            null -> Unit
+        }
+
+        if (stillWatchingVisible && onStillWatchingContinue != null) {
+            TvPlayerStillWatchingOverlay(
+                title = title,
+                nextEpisodeTitle = nextEpisodeTitle,
+                onContinue = {
+                    stillWatchingVisible = false
+                    onStillWatchingContinue()
+                },
+                onStop = {
+                    stillWatchingVisible = false
+                    controlsVisible = true
+                    requestControlFocus()
+                },
+                modifier = Modifier.fillMaxSize()
             )
         }
     }
@@ -1524,9 +1883,8 @@ private fun TvPlayerControlButton(
     onClick: () -> Unit,
     onDownKey: () -> Unit
 ) {
-    val requester = remember(id, focusRequester) {
-        focusRequester ?: FocusRequester()
-    }
+    val fallbackRequester = remember(id) { FocusRequester() }
+    val requester = focusRequester ?: fallbackRequester
     var focused by remember(id) { mutableStateOf(false) }
 
     Surface(
@@ -1630,7 +1988,11 @@ private fun TvPlayerSpeedPicker(
                 fontWeight = FontWeight.Bold
             )
             Text(
-                text = "OK Select  •  Left/Back Close",
+                text = if (hasSubtitleControls) {
+                    "Left/Right adjusts timing  •  OK selects or resets  •  Back closes"
+                } else {
+                    "OK Select  •  Left/Back Close"
+                },
                 color = TvColors.TextSecondary,
                 fontSize = 12.sp
             )
@@ -1741,15 +2103,22 @@ private fun TvPlayerTrackPicker(
     options: List<TvPlayerTrackOption>,
     showOff: Boolean,
     offSelected: Boolean,
+    subtitleDelayMs: Long? = null,
+    subtitleDelayBusy: Boolean = false,
+    subtitleSizeLabel: String? = null,
+    onSubtitleDelayAdjust: (Long) -> Unit = {},
+    onSubtitleDelayReset: () -> Unit = {},
+    onSubtitleSizeCycle: () -> Unit = {},
     onSelect: (TvPlayerTrackOption) -> Unit,
     onOff: () -> Unit,
     onClose: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val firstRequester = remember(title) { FocusRequester() }
-    val hasFirstTarget = showOff || options.isNotEmpty()
+    val hasSubtitleControls = subtitleDelayMs != null
+    val hasFirstTarget = hasSubtitleControls || showOff || options.isNotEmpty()
 
-    LaunchedEffect(title, options.size, showOff) {
+    LaunchedEffect(title, options.size, showOff, subtitleDelayMs) {
         if (hasFirstTarget) {
             delay(60)
             runCatching { firstRequester.requestFocus() }
@@ -1796,12 +2165,29 @@ private fun TvPlayerTrackPicker(
                     modifier = Modifier.fillMaxSize(),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
+                    if (subtitleDelayMs != null) {
+                        item(key = "subtitle-delay") {
+                            TvPlayerSubtitleDelayRow(
+                                delayMs = subtitleDelayMs,
+                                busy = subtitleDelayBusy,
+                                focusRequester = firstRequester,
+                                onAdjust = onSubtitleDelayAdjust,
+                                onReset = onSubtitleDelayReset
+                            )
+                        }
+                        item(key = "subtitle-size") {
+                            TvPlayerSubtitleSizeRow(
+                                label = subtitleSizeLabel ?: "Medium",
+                                onCycle = onSubtitleSizeCycle
+                            )
+                        }
+                    }
                     if (showOff) {
                         item(key = "off") {
                             TvPlayerTrackRow(
                                 label = "Off",
                                 selected = offSelected,
-                                focusRequester = firstRequester,
+                                focusRequester = if (hasSubtitleControls) null else firstRequester,
                                 onSelect = onOff,
                                 onClose = onClose
                             )
@@ -1816,7 +2202,7 @@ private fun TvPlayerTrackPicker(
                         TvPlayerTrackRow(
                             label = option.label,
                             selected = option.selected && !offSelected,
-                            focusRequester = if (!showOff && index == 0) {
+                            focusRequester = if (!hasSubtitleControls && !showOff && index == 0) {
                                 firstRequester
                             } else {
                                 null
@@ -1832,6 +2218,136 @@ private fun TvPlayerTrackPicker(
 }
 
 @Composable
+private fun TvPlayerSubtitleDelayRow(
+    delayMs: Long,
+    busy: Boolean,
+    focusRequester: FocusRequester,
+    onAdjust: (Long) -> Unit,
+    onReset: () -> Unit
+) {
+    var focused by remember { mutableStateOf(false) }
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(58.dp)
+            .focusRequester(focusRequester)
+            .onFocusChanged { focused = it.hasFocus }
+            .onPreviewKeyEvent { event ->
+                if (event.type != KeyEventType.KeyDown || busy) {
+                    busy
+                } else {
+                    when (event.key) {
+                        Key.DirectionLeft -> {
+                            onAdjust(-250L)
+                            true
+                        }
+                        Key.DirectionRight -> {
+                            onAdjust(250L)
+                            true
+                        }
+                        Key.DirectionCenter,
+                        Key.Enter -> {
+                            onReset()
+                            true
+                        }
+                        else -> false
+                    }
+                }
+            }
+            .focusable(),
+        color = if (focused) TvColors.FocusRing else TvColors.SurfaceVariant,
+        shape = RoundedCornerShape(10.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 15.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    text = "Subtitle timing",
+                    color = if (focused) TvColors.Background else TvColors.TextPrimary,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = if (busy) "Applying external subtitle timing..." else "Left earlier · Right later · OK reset",
+                    color = if (focused) {
+                        TvColors.Background.copy(alpha = 0.64f)
+                    } else {
+                        TvColors.TextSecondary
+                    },
+                    fontSize = 10.sp
+                )
+            }
+            Text(
+                text = formatTvSubtitleDelay(delayMs),
+                color = if (focused) TvColors.Background else TvColors.Accent,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold
+            )
+        }
+    }
+}
+
+@Composable
+private fun TvPlayerSubtitleSizeRow(
+    label: String,
+    onCycle: () -> Unit
+) {
+    var focused by remember { mutableStateOf(false) }
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(50.dp)
+            .onFocusChanged { focused = it.hasFocus }
+            .onPreviewKeyEvent { event ->
+                if (
+                    event.type == KeyEventType.KeyDown &&
+                    (event.key == Key.DirectionCenter || event.key == Key.Enter)
+                ) {
+                    onCycle()
+                    true
+                } else {
+                    false
+                }
+            }
+            .focusable(),
+        color = if (focused) TvColors.FocusRing else TvColors.SurfaceVariant,
+        shape = RoundedCornerShape(10.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 15.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                text = "Subtitle size",
+                color = if (focused) TvColors.Background else TvColors.TextPrimary,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium
+            )
+            Text(
+                text = label,
+                color = if (focused) TvColors.Background else TvColors.Accent,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+        }
+    }
+}
+
+private fun formatTvSubtitleDelay(delayMs: Long): String {
+    if (delayMs == 0L) return "0.00s"
+    val sign = if (delayMs > 0L) "+" else "-"
+    return "$sign${"%.2f".format(Locale.US, kotlin.math.abs(delayMs) / 1000.0)}s"
+}
+
+@Composable
 private fun TvPlayerTrackRow(
     label: String,
     selected: Boolean,
@@ -1839,9 +2355,8 @@ private fun TvPlayerTrackRow(
     onSelect: () -> Unit,
     onClose: () -> Unit
 ) {
-    val requester = remember(label, focusRequester) {
-        focusRequester ?: FocusRequester()
-    }
+    val fallbackRequester = remember(label) { FocusRequester() }
+    val requester = focusRequester ?: fallbackRequester
     var focused by remember(label) { mutableStateOf(false) }
 
     Surface(
