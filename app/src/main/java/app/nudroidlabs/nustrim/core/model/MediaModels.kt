@@ -17,7 +17,14 @@ data class MediaItem(
     val backgroundUrl: String = "",
     val releaseInfo: String = "",
     val episodes: List<MediaEpisode> = emptyList(),
-    val ref: MediaRef? = null
+    val ref: MediaRef? = null,
+    val genres: List<String> = emptyList(),
+    val runtime: String = "",
+    val rating: String = "",
+    val director: List<String> = emptyList(),
+    val writer: List<String> = emptyList(),
+    val cast: List<String> = emptyList(),
+    val logoUrl: String = ""
 )
 
 data class MediaEpisode(
