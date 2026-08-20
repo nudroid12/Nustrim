@@ -39,6 +39,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -78,6 +79,7 @@ import app.nudroidlabs.nustrim.tv.player.TvPlayerScreen
 import app.nudroidlabs.nustrim.tv.theme.TvColors
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 data class TvSourcePreviewRequest(
     val sourceUrl: String,
@@ -88,6 +90,11 @@ data class TvSourcePreviewRequest(
     val preferredProviderId: String = "",
     val preferredProviderName: String = "",
     val startFromBeginning: Boolean = false
+)
+
+private data class TvPersonCredit(
+    val name: String,
+    val role: String
 )
 
 private const val EPISODE_SCROLL_REPEAT_THROTTLE_MS = 80L
@@ -101,6 +108,7 @@ fun TvDetailsScreen(
     val context = LocalContext.current
     val engine = remember(context) { SourceEngine(context) }
     val mediaStore = remember(context) { LocalMediaStore(context) }
+    val detailsScope = rememberCoroutineScope()
     val firstActionRequester = remember { FocusRequester() }
     val manualPlayRequester = remember { FocusRequester() }
     val libraryActionRequester = remember { FocusRequester() }
@@ -111,6 +119,12 @@ fun TvDetailsScreen(
     var lastEpisodeRepeatAt by remember(entry.stableKey) { mutableStateOf(0L) }
     val episodeFocusRequesters = remember(entry.stableKey) {
         mutableMapOf<String, FocusRequester>()
+    }
+    val seasonFocusRequesters = remember(entry.stableKey) {
+        mutableMapOf<Int, FocusRequester>()
+    }
+    val episodeFocusKeyBySeason = remember(entry.stableKey) {
+        mutableMapOf<Int, String>()
     }
 
     var lastFocusedEpisodeKey by remember(entry.stableKey) {
@@ -141,9 +155,9 @@ fun TvDetailsScreen(
     LaunchedEffect(pendingSeasonSelection) {
         val targetSeason = pendingSeasonSelection
             ?: return@LaunchedEffect
-        delay(150)
+        delay(140)
         selectedSeason = targetSeason
-        lastFocusedEpisodeKey = null
+        lastFocusedEpisodeKey = episodeFocusKeyBySeason[targetSeason]
         pendingEpisodeFocusRestoreKey = null
         pendingSeasonSelection = null
     }
@@ -326,16 +340,12 @@ fun TvDetailsScreen(
     val heroTargetEpisode = if (isSeries) resumeEpisode ?: primaryEpisode else null
     val creditLine = remember(
         detailedItem.director,
-        detailedItem.writer,
-        isSeries
+        detailedItem.writer
     ) {
         val directors = detailedItem.director.joinToString(", ").takeIf { it.isNotBlank() }
         val writers = detailedItem.writer.joinToString(", ").takeIf { it.isNotBlank() }
         when {
-            directors != null -> {
-                val label = if (isSeries) "Creator" else "Director"
-                "$label: $directors"
-            }
+            directors != null -> "Director: $directors"
 
             writers != null -> "Writer: $writers"
             else -> null
@@ -548,12 +558,13 @@ fun TvDetailsScreen(
         }
     }
 
-    LaunchedEffect(selectedSeason) {
-        if (
-            pendingEpisodeFocusRestoreKey == null &&
-            visibleEpisodes.isNotEmpty()
-        ) {
-            episodeListState.scrollToItem(0)
+    LaunchedEffect(selectedSeason, visibleEpisodes.size) {
+        if (pendingEpisodeFocusRestoreKey == null && visibleEpisodes.isNotEmpty()) {
+            val rememberedKey = selectedSeason?.let(episodeFocusKeyBySeason::get)
+            val rememberedIndex = rememberedKey?.let { key ->
+                visibleEpisodes.indexOfFirst { episodeFocusKey(it) == key }
+            } ?: -1
+            episodeListState.scrollToItem(rememberedIndex.coerceAtLeast(0))
         }
     }
 
@@ -633,6 +644,47 @@ fun TvDetailsScreen(
         )
     }
 
+    fun focusFirstDetailContent() {
+        fun resolveTarget(): FocusRequester? {
+            val seasonRequester = selectedSeason?.let(seasonFocusRequesters::get)
+            val episodeRequester = lastFocusedEpisodeKey
+                ?.let(episodeFocusRequesters::get)
+                ?: visibleEpisodes.firstOrNull()
+                    ?.let(::episodeFocusKey)
+                    ?.let(episodeFocusRequesters::get)
+            return seasonRequester ?: episodeRequester
+        }
+
+        val immediate = resolveTarget()
+        if (immediate != null) {
+            runCatching { immediate.requestFocus() }
+            return
+        }
+
+        if (sortedEpisodes.isNotEmpty()) {
+            detailsScope.launch {
+                runCatching { detailsListState.animateScrollToItem(1) }
+                delay(80)
+                resolveTarget()?.let { requester ->
+                    runCatching { requester.requestFocus() }
+                }
+            }
+        }
+    }
+
+    fun focusSelectedEpisode() {
+        val remembered = selectedSeason
+            ?.let(episodeFocusKeyBySeason::get)
+            ?.let(episodeFocusRequesters::get)
+        val first = visibleEpisodes.firstOrNull()
+            ?.let(::episodeFocusKey)
+            ?.let(episodeFocusRequesters::get)
+        val target = remembered ?: first
+        if (target != null) {
+            runCatching { target.requestFocus() }
+        }
+    }
+
     BackHandler(enabled = sourcePreview == null) {
         onBack()
     }
@@ -651,20 +703,20 @@ fun TvDetailsScreen(
             state = detailsListState,
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(
-                start = 60.dp,
-                end = 54.dp,
-                bottom = 44.dp
+                start = 64.dp,
+                end = 56.dp,
+                bottom = 64.dp
             ),
-            verticalArrangement = Arrangement.spacedBy(18.dp)
+            verticalArrangement = Arrangement.spacedBy(30.dp)
         ) {
             item(key = "hero") {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(500.dp)
+                        .height(540.dp)
                         .padding(
-                            end = 270.dp,
-                            bottom = 26.dp
+                            end = 420.dp,
+                            bottom = 30.dp
                         ),
                     verticalArrangement = Arrangement.Bottom
                 ) {
@@ -677,24 +729,62 @@ fun TvDetailsScreen(
                             contentDescription = detailedItem.title,
                             onError = { logoLoadFailed = true },
                             modifier = Modifier
-                                .width(360.dp)
-                                .height(92.dp),
+                                .width(330.dp)
+                                .height(94.dp),
                             contentScale = ContentScale.Fit,
                             alignment = Alignment.CenterStart
                         )
-                        Spacer(Modifier.height(12.dp))
                     } else {
+                        val titleSize = when {
+                            detailedItem.title.length >= 42 -> 32.sp
+                            detailedItem.title.length >= 28 -> 37.sp
+                            else -> 44.sp
+                        }
                         Text(
                             text = detailedItem.title,
                             color = TvColors.TextPrimary,
                             fontWeight = FontWeight.Bold,
-                            fontSize = 38.sp,
-                            lineHeight = 43.sp,
+                            fontSize = titleSize,
+                            lineHeight = (titleSize.value + 5).sp,
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    Spacer(Modifier.height(14.dp))
+
+                    TvDetailsMetadataLine(
+                        labels = metaLabels,
+                        genreLine = genreLine
+                    )
+
+                    detailedItem.description
+                        .takeIf { it.isNotBlank() }
+                        ?.let { synopsis ->
+                            Spacer(Modifier.height(14.dp))
+                            Text(
+                                text = synopsis,
+                                color = TvColors.TextPrimary.copy(alpha = 0.84f),
+                                fontSize = 15.sp,
+                                lineHeight = 21.sp,
+                                maxLines = 5,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+
+                    creditLine?.let { credits ->
+                        Spacer(Modifier.height(10.dp))
+                        Text(
+                            text = credits,
+                            color = TvColors.TextSecondary,
+                            fontWeight = FontWeight.Medium,
+                            fontSize = 12.sp,
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis
                         )
-                        Spacer(Modifier.height(12.dp))
                     }
+
+                    Spacer(Modifier.height(20.dp))
 
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -705,6 +795,7 @@ fun TvDetailsScreen(
                             focusRequester = firstActionRequester,
                             onFocused = { lastDetailsRequester = it },
                             primary = true,
+                            onMoveDown = { focusFirstDetailContent() },
                             onLongPress = {
                                 if (!loading) {
                                     openSources(
@@ -728,6 +819,7 @@ fun TvDetailsScreen(
                             icon = Icons.Outlined.PlayArrow,
                             focusRequester = manualPlayRequester,
                             onFocused = { lastDetailsRequester = it },
+                            onMoveDown = { focusFirstDetailContent() },
                             onClick = {
                                 if (!loading) {
                                     openSources(
@@ -739,7 +831,7 @@ fun TvDetailsScreen(
                         )
 
                         TvDetailsActionButton(
-                            label = if (savedToLibrary) "In Library" else "Library",
+                            label = if (savedToLibrary) "My List ✓" else "+ My List",
                             icon = if (savedToLibrary) {
                                 Icons.Outlined.BookmarkRemove
                             } else {
@@ -747,6 +839,7 @@ fun TvDetailsScreen(
                             },
                             focusRequester = libraryActionRequester,
                             onFocused = { lastDetailsRequester = it },
+                            onMoveDown = { focusFirstDetailContent() },
                             onClick = {
                                 val nextSaved = !savedToLibrary
                                 mediaStore.setSaved(
@@ -760,10 +853,11 @@ fun TvDetailsScreen(
 
                         if (!isSeries) {
                             TvDetailsActionButton(
-                                label = if (movieWatched) "Watched" else "Mark watched",
+                                label = if (movieWatched) "Watched ✓" else "Mark watched",
                                 icon = null,
                                 focusRequester = watchedActionRequester,
                                 onFocused = { lastDetailsRequester = it },
+                                onMoveDown = { focusFirstDetailContent() },
                                 onClick = {
                                     val nextWatched = !movieWatched
                                     if (nextWatched) {
@@ -788,156 +882,21 @@ fun TvDetailsScreen(
                         }
                     }
 
-                    resumeContextLabel?.let {
-                        Spacer(Modifier.height(8.dp))
-                        Text(
-                            text = it,
-                            color = TvColors.TextSecondary,
-                            fontWeight = FontWeight.Medium,
-                            fontSize = 12.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-
-                    Spacer(Modifier.height(15.dp))
-
-                    creditLine?.let {
-                        Text(
-                            text = it,
-                            color = TvColors.TextSecondary,
-                            fontWeight = FontWeight.Medium,
-                            fontSize = 13.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Spacer(Modifier.height(8.dp))
-                    }
-
-                    detailedItem.description
-                        .takeIf { it.isNotBlank() }
-                        ?.let {
-                            Text(
-                                text = it,
-                                color = TvColors.TextPrimary.copy(alpha = 0.82f),
-                                fontSize = 14.sp,
-                                lineHeight = 19.sp,
-                                maxLines = 6,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Spacer(Modifier.height(10.dp))
-                        }
-
-                    if (metaLabels.isNotEmpty()) {
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            metaLabels.take(5).forEach { label ->
-                                TvMetaPill(label)
-                            }
-                        }
-                    }
-
-                    if (genreLine.isNotBlank()) {
-                        Spacer(Modifier.height(8.dp))
-                        Text(
-                            text = genreLine,
-                            color = TvColors.TextSecondary.copy(alpha = 0.92f),
-                            fontSize = 12.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-
-                    if (errorMessage != null) {
+                    resumeContextLabel?.let { contextLabel ->
                         Spacer(Modifier.height(10.dp))
-                        Surface(
-                            color = TvColors.BackgroundElevated.copy(alpha = 0.92f),
-                            shape = RoundedCornerShape(10.dp),
-                            border = BorderStroke(
-                                1.dp,
-                                Color.White.copy(alpha = 0.10f)
-                            )
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(
-                                    horizontal = 12.dp,
-                                    vertical = 8.dp
-                                ),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Outlined.Info,
-                                    contentDescription = null,
-                                    tint = TvColors.TextSecondary,
-                                    modifier = Modifier.size(17.dp)
-                                )
-                                Text(
-                                    text = errorMessage.orEmpty(),
-                                    color = TvColors.TextSecondary,
-                                    fontSize = 12.sp,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-
-            if (seasons.isNotEmpty()) {
-                item(key = "seasons") {
-                    Column(
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
                         Text(
-                            text = "Seasons",
-                            color = TvColors.TextPrimary,
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = 19.sp
+                            text = contextLabel,
+                            color = TvColors.TextSecondary,
+                            fontWeight = FontWeight.Medium,
+                            fontSize = 12.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
+                    }
 
-                        LazyRow(
-                            state = seasonListState,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            contentPadding = PaddingValues(end = 18.dp)
-                        ) {
-                            itemsIndexed(
-                                items = seasons,
-                                key = { _, season -> season }
-                            ) { _, season ->
-                                val seasonEpisodes = sortedEpisodes.filter { it.season == season }
-                                val seasonFullyWatched = seasonEpisodes.isNotEmpty() &&
-                                    seasonEpisodes.all { episode ->
-                                        episodeHasWatchedMark(episode, watchedEpisodeKeys)
-                                    }
-
-                                TvSeasonChip(
-                                    season = season,
-                                    selected = season == selectedSeason,
-                                    fullyWatched = seasonFullyWatched,
-                                    onFocused = { requester ->
-                                        lastDetailsRequester = requester
-                                        if (season != selectedSeason) {
-                                            pendingSeasonSelection = season
-                                        }
-                                    },
-                                    onClick = {
-                                        pendingSeasonSelection = null
-                                        selectedSeason = season
-                                        lastFocusedEpisodeKey = null
-                                        pendingEpisodeFocusRestoreKey = null
-                                    },
-                                    onLongPress = {
-                                        pendingSeasonSelection = null
-                                        selectedSeason = season
-                                        seasonOptions = season
-                                    }
-                                )
-                            }
-                        }
+                    errorMessage?.let { message ->
+                        Spacer(Modifier.height(12.dp))
+                        TvDetailsInlineMessage(message)
                     }
                 }
             }
@@ -945,26 +904,95 @@ fun TvDetailsScreen(
             if (sortedEpisodes.isNotEmpty()) {
                 item(key = "episodes_$selectedSeason") {
                     Column(
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                        verticalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
-                        Text(
-                            text = when {
-                                selectedSeason == null -> "Episodes"
-                                selectedSeason == 0 && selectedSeasonEpisodes.isEmpty() -> "Episodes · Specials"
-                                selectedSeason == 0 -> {
-                                    "Episodes · Specials · " +
-                                        "$selectedSeasonWatchedCount/${selectedSeasonEpisodes.size} watched"
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.Bottom
+                        ) {
+                            Column(
+                                verticalArrangement = Arrangement.spacedBy(3.dp)
+                            ) {
+                                Text(
+                                    text = "Episodes",
+                                    color = TvColors.TextPrimary,
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 24.sp
+                                )
+                                if (selectedSeasonEpisodes.isNotEmpty()) {
+                                    Text(
+                                        text = buildString {
+                                            if (selectedSeason == 0) {
+                                                append("Specials")
+                                            } else {
+                                                append("Season ${selectedSeason ?: 1}")
+                                            }
+                                            append("  •  ")
+                                            append(selectedSeasonWatchedCount)
+                                            append('/')
+                                            append(selectedSeasonEpisodes.size)
+                                            append(" watched")
+                                        },
+                                        color = TvColors.TextSecondary,
+                                        fontSize = 12.sp
+                                    )
                                 }
-                                selectedSeasonEpisodes.isEmpty() -> "Episodes · Season $selectedSeason"
-                                else -> {
-                                    "Episodes · Season $selectedSeason · " +
-                                        "$selectedSeasonWatchedCount/${selectedSeasonEpisodes.size} watched"
+                            }
+                        }
+
+                        if (seasons.isNotEmpty()) {
+                            LazyRow(
+                                state = seasonListState,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                contentPadding = PaddingValues(end = 18.dp)
+                            ) {
+                                itemsIndexed(
+                                    items = seasons,
+                                    key = { _, season -> season }
+                                ) { _, season ->
+                                    val seasonEpisodes = sortedEpisodes.filter { it.season == season }
+                                    val seasonFullyWatched = seasonEpisodes.isNotEmpty() &&
+                                        seasonEpisodes.all { episode ->
+                                            episodeHasWatchedMark(episode, watchedEpisodeKeys)
+                                        }
+
+                                    val seasonRequester = remember(season) {
+                                        FocusRequester().also { requester ->
+                                            seasonFocusRequesters[season] = requester
+                                        }
+                                    }
+
+                                    TvSeasonChip(
+                                        season = season,
+                                        focusRequester = seasonRequester,
+                                        onMoveUp = {
+                                            runCatching { firstActionRequester.requestFocus() }
+                                        },
+                                        onMoveDown = { focusSelectedEpisode() },
+                                        selected = season == selectedSeason,
+                                        fullyWatched = seasonFullyWatched,
+                                        onFocused = { requester ->
+                                            lastDetailsRequester = requester
+                                            if (season != selectedSeason) {
+                                                pendingSeasonSelection = season
+                                            }
+                                        },
+                                        onClick = {
+                                            pendingSeasonSelection = null
+                                            selectedSeason = season
+                                            lastFocusedEpisodeKey = episodeFocusKeyBySeason[season]
+                                            pendingEpisodeFocusRestoreKey = null
+                                        },
+                                        onLongPress = {
+                                            pendingSeasonSelection = null
+                                            selectedSeason = season
+                                            seasonOptions = season
+                                        }
+                                    )
                                 }
-                            },
-                            color = TvColors.TextPrimary,
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = 19.sp
-                        )
+                            }
+                        }
 
                         LazyRow(
                             state = episodeListState,
@@ -994,17 +1022,15 @@ fun TvDetailsScreen(
                                         false
                                     }
                                 },
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            horizontalArrangement = Arrangement.spacedBy(14.dp),
                             contentPadding = PaddingValues(
-                                end = 32.dp,
-                                bottom = 10.dp
+                                end = 38.dp,
+                                bottom = 12.dp
                             )
                         ) {
                             itemsIndexed(
                                 items = visibleEpisodes,
-                                key = { _, episode ->
-                                    episodeFocusKey(episode)
-                                }
+                                key = { _, episode -> episodeFocusKey(episode) }
                             ) { _, episode ->
                                 val focusKey = episodeFocusKey(episode)
                                 val episodeRequester = remember(focusKey) {
@@ -1027,14 +1053,9 @@ fun TvDetailsScreen(
                                     episodeHasWatchedMark(episode, watchedEpisodeKeys)
                                 val statusLabel = when {
                                     isPlaybackEpisode &&
-                                        localPlaybackEntry?.nextUp == true -> {
-                                        "Next up"
-                                    }
-
-                                    progressFraction > 0f -> {
-                                        "Resume · ${(progressFraction * 100f).toInt()}%"
-                                    }
-
+                                        localPlaybackEntry?.nextUp == true -> "Next up"
+                                    progressFraction > 0f ->
+                                        "Resume ${(progressFraction * 100f).toInt()}%"
                                     episodeWatched -> "Watched"
                                     else -> null
                                 }
@@ -1042,15 +1063,30 @@ fun TvDetailsScreen(
                                 TvEpisodeCard(
                                     episode = episode,
                                     focusRequester = episodeRequester,
-                                    progressFraction = progressFraction,
+                                    progressFraction = if (episodeWatched) 0f else progressFraction,
                                     statusLabel = statusLabel,
                                     watched = episodeWatched,
+                                    onMoveUp = {
+                                        val seasonRequester = selectedSeason
+                                            ?.let(seasonFocusRequesters::get)
+                                        if (seasonRequester != null) {
+                                            runCatching { seasonRequester.requestFocus() }
+                                        } else {
+                                            runCatching { firstActionRequester.requestFocus() }
+                                        }
+                                    },
                                     onFocused = { requester ->
                                         lastDetailsRequester = requester
                                         lastFocusedEpisodeKey = focusKey
+                                        selectedSeason?.let { season ->
+                                            episodeFocusKeyBySeason[season] = focusKey
+                                        }
                                     },
                                     onClick = {
                                         lastFocusedEpisodeKey = focusKey
+                                        selectedSeason?.let { season ->
+                                            episodeFocusKeyBySeason[season] = focusKey
+                                        }
                                         pendingEpisodeFocusRestoreKey = focusKey
                                         openSources(
                                             episode = episode,
@@ -1059,6 +1095,9 @@ fun TvDetailsScreen(
                                     },
                                     onLongPress = {
                                         lastFocusedEpisodeKey = focusKey
+                                        selectedSeason?.let { season ->
+                                            episodeFocusKeyBySeason[season] = focusKey
+                                        }
                                         pendingEpisodeFocusRestoreKey = focusKey
                                         episodeOptions = episode
                                     }
@@ -1069,47 +1108,43 @@ fun TvDetailsScreen(
                 }
             }
 
-            if (detailedItem.cast.isNotEmpty()) {
-                item(key = "cast") {
-                    TvCastSection(
-                        cast = detailedItem.cast
+            if (
+                detailedItem.director.isNotEmpty() ||
+                detailedItem.writer.isNotEmpty() ||
+                detailedItem.cast.isNotEmpty()
+            ) {
+                item(key = "people") {
+                    TvPeopleSection(
+                        item = detailedItem,
+                        onFocused = { requester ->
+                            lastDetailsRequester = requester
+                        }
                     )
                 }
             }
 
             item(key = "details_bottom_space") {
-                Spacer(Modifier.height(26.dp))
+                Spacer(Modifier.height(30.dp))
             }
         }
-
         if (loading) {
-            Surface(
-                modifier = Modifier.align(Alignment.Center),
-                color = TvColors.BackgroundElevated.copy(alpha = 0.96f),
-                shape = RoundedCornerShape(16.dp),
-                border = BorderStroke(
-                    1.dp,
-                    Color.White.copy(alpha = 0.10f)
-                )
+            Row(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 28.dp, end = 34.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(
-                    modifier = Modifier.padding(
-                        horizontal = 20.dp,
-                        vertical = 14.dp
-                    ),
-                    horizontalArrangement = Arrangement.spacedBy(11.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(21.dp),
-                        strokeWidth = 2.dp
-                    )
-                    Text(
-                        text = "Loading details...",
-                        color = TvColors.TextSecondary,
-                        fontSize = 14.sp
-                    )
-                }
+                CircularProgressIndicator(
+                    modifier = Modifier.size(16.dp),
+                    strokeWidth = 2.dp,
+                    color = TvColors.TextSecondary
+                )
+                Text(
+                    text = "Loading details",
+                    color = TvColors.TextSecondary.copy(alpha = 0.86f),
+                    fontSize = 11.sp
+                )
             }
         }
 
@@ -1375,7 +1410,7 @@ private fun TvDetailsBackdrop(
         .takeIf { it.isNotBlank() }
         ?: item.posterUrl
 
-    Box(modifier = modifier) {
+    Box(modifier = modifier.background(TvColors.Background)) {
         if (image.isNotBlank()) {
             AsyncImage(
                 model = image,
@@ -1392,8 +1427,9 @@ private fun TvDetailsBackdrop(
                     Brush.horizontalGradient(
                         colorStops = arrayOf(
                             0.00f to TvColors.Background.copy(alpha = 0.99f),
-                            0.54f to TvColors.Background.copy(alpha = 0.76f),
-                            1.00f to TvColors.Background.copy(alpha = 0.36f)
+                            0.38f to TvColors.Background.copy(alpha = 0.82f),
+                            0.66f to TvColors.Background.copy(alpha = 0.34f),
+                            1.00f to TvColors.Background.copy(alpha = 0.08f)
                         )
                     )
                 )
@@ -1405,8 +1441,9 @@ private fun TvDetailsBackdrop(
                 .background(
                     Brush.verticalGradient(
                         colorStops = arrayOf(
-                            0.00f to TvColors.Background.copy(alpha = 0.16f),
-                            0.65f to TvColors.Background.copy(alpha = 0.42f),
+                            0.00f to TvColors.Background.copy(alpha = 0.10f),
+                            0.56f to TvColors.Background.copy(alpha = 0.16f),
+                            0.78f to TvColors.Background.copy(alpha = 0.68f),
                             1.00f to TvColors.Background
                         )
                     )
@@ -1416,53 +1453,76 @@ private fun TvDetailsBackdrop(
 }
 
 @Composable
-private fun TvDetailsPoster(
-    item: MediaItem,
-    modifier: Modifier = Modifier
+private fun TvDetailsMetadataLine(
+    labels: List<String>,
+    genreLine: String
 ) {
-    val image = item.posterUrl
-        .takeIf { it.isNotBlank() }
-        ?: item.backgroundUrl
-
-    Surface(
-        modifier = modifier,
-        shape = RoundedCornerShape(12.dp),
-        color = TvColors.Surface,
-        border = BorderStroke(
-            1.dp,
-            Color.White.copy(alpha = 0.10f)
-        )
+    val primary = labels.take(5)
+    Column(
+        verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        if (image.isNotBlank()) {
-            AsyncImage(
-                model = image,
-                contentDescription = item.title,
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop
+        if (primary.isNotEmpty()) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                primary.forEachIndexed { index, label ->
+                    if (index > 0) {
+                        Text(
+                            text = "•",
+                            color = TvColors.TextSecondary.copy(alpha = 0.56f),
+                            fontSize = 11.sp
+                        )
+                    }
+                    Text(
+                        text = label,
+                        color = if (label.startsWith("IMDb")) {
+                            TvColors.TextPrimary
+                        } else {
+                            TvColors.TextSecondary
+                        },
+                        fontSize = 12.sp,
+                        fontWeight = if (label.startsWith("IMDb")) {
+                            FontWeight.SemiBold
+                        } else {
+                            FontWeight.Medium
+                        },
+                        maxLines = 1
+                    )
+                }
+            }
+        }
+
+        if (genreLine.isNotBlank()) {
+            Text(
+                text = genreLine,
+                color = TvColors.TextSecondary.copy(alpha = 0.88f),
+                fontSize = 12.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
         }
     }
 }
 
 @Composable
-private fun TvMetaPill(label: String) {
-    Surface(
-        color = TvColors.SurfaceVariant.copy(alpha = 0.82f),
-        shape = RoundedCornerShape(7.dp),
-        border = BorderStroke(
-            1.dp,
-            Color.White.copy(alpha = 0.08f)
-        )
+private fun TvDetailsInlineMessage(message: String) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
+        Icon(
+            imageVector = Icons.Outlined.Info,
+            contentDescription = null,
+            tint = TvColors.TextSecondary,
+            modifier = Modifier.size(16.dp)
+        )
         Text(
-            text = label,
-            color = TvColors.TextPrimary.copy(alpha = 0.84f),
-            fontSize = 12.sp,
-            fontWeight = FontWeight.Medium,
-            modifier = Modifier.padding(
-                horizontal = 9.dp,
-                vertical = 5.dp
-            )
+            text = message,
+            color = TvColors.TextSecondary,
+            fontSize = 11.sp,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
         )
     }
 }
@@ -1475,25 +1535,31 @@ private fun TvDetailsActionButton(
     onFocused: (FocusRequester) -> Unit,
     primary: Boolean = false,
     onLongPress: (() -> Unit)? = null,
+    onMoveDown: (() -> Unit)? = null,
     onClick: () -> Unit
 ) {
     var focused by remember { mutableStateOf(false) }
     var longPressTriggered by remember(label) { mutableStateOf(false) }
+    val scale by animateFloatAsState(
+        targetValue = if (focused) 1.045f else 1f,
+        label = "detailsActionScale"
+    )
 
-    val containerColor = when {
-        primary -> Color.White
-        focused -> TvColors.FocusRing
-        else -> TvColors.SurfaceVariant
+    val emphasized = primary || focused
+    val containerColor = if (emphasized) {
+        Color.White
+    } else {
+        Color.Black.copy(alpha = 0.46f)
     }
-    val contentColor = when {
-        primary -> Color.Black
-        focused -> TvColors.Background
-        else -> TvColors.TextPrimary
-    }
+    val contentColor = if (emphasized) Color.Black else TvColors.TextPrimary
 
     Surface(
         modifier = Modifier
             .height(46.dp)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
             .focusRequester(focusRequester)
             .onFocusChanged {
                 focused = it.hasFocus
@@ -1507,6 +1573,13 @@ private fun TvDetailsActionButton(
                         native.keyCode == AndroidKeyEvent.KEYCODE_NUMPAD_ENTER
 
                 when {
+                    onMoveDown != null &&
+                        native.action == AndroidKeyEvent.ACTION_DOWN &&
+                        native.keyCode == AndroidKeyEvent.KEYCODE_DPAD_DOWN -> {
+                        onMoveDown()
+                        true
+                    }
+
                     onLongPress != null &&
                         native.action == AndroidKeyEvent.ACTION_DOWN &&
                         native.keyCode == AndroidKeyEvent.KEYCODE_MENU -> {
@@ -1541,13 +1614,13 @@ private fun TvDetailsActionButton(
             }
             .focusable(),
         color = containerColor,
-        shape = RoundedCornerShape(23.dp),
+        shape = RoundedCornerShape(8.dp),
         border = BorderStroke(
             if (focused) 2.dp else 1.dp,
             when {
-                focused -> TvColors.FocusRing
-                primary -> Color.White.copy(alpha = 0.92f)
-                else -> Color.White.copy(alpha = 0.10f)
+                focused -> Color.White
+                primary -> Color.White.copy(alpha = 0.96f)
+                else -> Color.White.copy(alpha = 0.16f)
             }
         )
     ) {
@@ -1568,44 +1641,89 @@ private fun TvDetailsActionButton(
                 text = label,
                 color = contentColor,
                 fontWeight = FontWeight.SemiBold,
-                fontSize = 14.sp
+                fontSize = 13.sp,
+                maxLines = 1
             )
         }
     }
 }
 
-
 @Composable
-private fun TvCastSection(
-    cast: List<String>
+private fun TvPeopleSection(
+    item: MediaItem,
+    onFocused: (FocusRequester) -> Unit
 ) {
+    val people = remember(item.director, item.writer, item.cast) {
+        buildList {
+            item.director
+                .filter { it.isNotBlank() }
+                .take(3)
+                .forEach { add(TvPersonCredit(it, "Director")) }
+            item.writer
+                .filter { it.isNotBlank() }
+                .take(3)
+                .forEach { add(TvPersonCredit(it, "Writer")) }
+            item.cast
+                .filter { it.isNotBlank() }
+                .take(20)
+                .forEach { add(TvPersonCredit(it, "Cast")) }
+        }.distinctBy { "${it.name.lowercase()}|${it.role}" }
+    }
+
+    if (people.isEmpty()) return
+
     Column(
-        verticalArrangement = Arrangement.spacedBy(10.dp)
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Text(
-            text = "Cast",
+            text = "Cast & crew",
             color = TvColors.TextPrimary,
             fontWeight = FontWeight.SemiBold,
-            fontSize = 19.sp
+            fontSize = 24.sp
         )
 
         LazyRow(
             horizontalArrangement = Arrangement.spacedBy(10.dp),
-            contentPadding = PaddingValues(end = 28.dp)
+            contentPadding = PaddingValues(end = 30.dp, bottom = 10.dp)
         ) {
             itemsIndexed(
-                items = cast.take(20),
-                key = { index, name -> "$index|$name" }
-            ) { _, name ->
+                items = people,
+                key = { index, person -> "$index|${person.role}|${person.name}" }
+            ) { _, person ->
+                val requester = remember(person.name, person.role) { FocusRequester() }
+                var focused by remember(person.name, person.role) { mutableStateOf(false) }
+                val scale by animateFloatAsState(
+                    targetValue = if (focused) 1.035f else 1f,
+                    label = "personScale"
+                )
+
                 Surface(
                     modifier = Modifier
-                        .width(156.dp)
-                        .height(56.dp),
-                    color = TvColors.SurfaceVariant.copy(alpha = 0.90f),
-                    shape = RoundedCornerShape(12.dp),
+                        .width(184.dp)
+                        .height(68.dp)
+                        .graphicsLayer {
+                            scaleX = scale
+                            scaleY = scale
+                        }
+                        .focusRequester(requester)
+                        .onFocusChanged { state ->
+                            focused = state.hasFocus
+                            if (state.hasFocus) onFocused(requester)
+                        }
+                        .focusable(),
+                    color = if (focused) {
+                        Color.White
+                    } else {
+                        Color.Black.copy(alpha = 0.42f)
+                    },
+                    shape = RoundedCornerShape(10.dp),
                     border = BorderStroke(
-                        1.dp,
-                        Color.White.copy(alpha = 0.08f)
+                        if (focused) 2.dp else 1.dp,
+                        if (focused) {
+                            Color.White
+                        } else {
+                            Color.White.copy(alpha = 0.12f)
+                        }
                     )
                 ) {
                     Row(
@@ -1614,36 +1732,50 @@ private fun TvCastSection(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Surface(
-                            modifier = Modifier.size(32.dp),
-                            color = TvColors.BackgroundElevated,
-                            shape = RoundedCornerShape(16.dp),
-                            border = BorderStroke(
-                                1.dp,
-                                Color.White.copy(alpha = 0.08f)
-                            )
+                            modifier = Modifier.size(34.dp),
+                            color = if (focused) {
+                                Color.Black.copy(alpha = 0.10f)
+                            } else {
+                                TvColors.BackgroundElevated.copy(alpha = 0.94f)
+                            },
+                            shape = RoundedCornerShape(17.dp)
                         ) {
                             Box(contentAlignment = Alignment.Center) {
                                 Text(
-                                    text = name
+                                    text = person.name
                                         .trim()
                                         .firstOrNull()
                                         ?.uppercase()
                                         .orEmpty(),
-                                    color = TvColors.TextPrimary,
+                                    color = if (focused) Color.Black else TvColors.TextPrimary,
                                     fontWeight = FontWeight.Bold,
-                                    fontSize = 13.sp
+                                    fontSize = 12.sp
                                 )
                             }
                         }
 
-                        Text(
-                            text = name,
-                            color = TvColors.TextPrimary.copy(alpha = 0.90f),
-                            fontWeight = FontWeight.Medium,
-                            fontSize = 12.sp,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            Text(
+                                text = person.name,
+                                color = if (focused) Color.Black else TvColors.TextPrimary,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 12.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = person.role,
+                                color = if (focused) {
+                                    Color.Black.copy(alpha = 0.62f)
+                                } else {
+                                    TvColors.TextSecondary
+                                },
+                                fontSize = 10.sp,
+                                maxLines = 1
+                            )
+                        }
                     }
                 }
             }
@@ -1651,26 +1783,29 @@ private fun TvCastSection(
     }
 }
 
+
 @Composable
 private fun TvSeasonChip(
     season: Int,
+    focusRequester: FocusRequester,
     selected: Boolean,
     fullyWatched: Boolean,
     onFocused: (FocusRequester) -> Unit,
+    onMoveUp: () -> Unit,
+    onMoveDown: () -> Unit,
     onClick: () -> Unit,
     onLongPress: () -> Unit
 ) {
     var focused by remember { mutableStateOf(false) }
     var longPressTriggered by remember(season) { mutableStateOf(false) }
-    val requester = remember(season) { FocusRequester() }
 
     Surface(
         modifier = Modifier
-            .height(38.dp)
-            .focusRequester(requester)
+            .height(36.dp)
+            .focusRequester(focusRequester)
             .onFocusChanged {
                 focused = it.hasFocus
-                if (it.hasFocus) onFocused(requester)
+                if (it.hasFocus) onFocused(focusRequester)
             }
             .onPreviewKeyEvent { event ->
                 val native = event.nativeKeyEvent
@@ -1679,6 +1814,18 @@ private fun TvSeasonChip(
                     native.keyCode == AndroidKeyEvent.KEYCODE_NUMPAD_ENTER
 
                 when {
+                    native.action == AndroidKeyEvent.ACTION_DOWN &&
+                        native.keyCode == AndroidKeyEvent.KEYCODE_DPAD_UP -> {
+                        onMoveUp()
+                        true
+                    }
+
+                    native.action == AndroidKeyEvent.ACTION_DOWN &&
+                        native.keyCode == AndroidKeyEvent.KEYCODE_DPAD_DOWN -> {
+                        onMoveDown()
+                        true
+                    }
+
                     native.action == AndroidKeyEvent.ACTION_DOWN &&
                         native.keyCode == AndroidKeyEvent.KEYCODE_MENU -> {
                         longPressTriggered = true
@@ -1713,17 +1860,17 @@ private fun TvSeasonChip(
             }
             .focusable(),
         color = when {
-            focused -> TvColors.FocusRing
-            selected -> TvColors.Accent.copy(alpha = 0.82f)
-            else -> TvColors.SurfaceVariant
+            focused -> Color.White
+            selected -> Color.White.copy(alpha = 0.14f)
+            else -> Color.Black.copy(alpha = 0.36f)
         },
-        shape = RoundedCornerShape(9.dp),
+        shape = RoundedCornerShape(8.dp),
         border = BorderStroke(
-            1.dp,
-            if (focused || selected) {
-                Color.White.copy(alpha = 0.52f)
-            } else {
-                Color.White.copy(alpha = 0.08f)
+            if (focused) 2.dp else 1.dp,
+            when {
+                focused -> Color.White
+                selected -> Color.White.copy(alpha = 0.34f)
+                else -> Color.White.copy(alpha = 0.10f)
             }
         )
     ) {
@@ -1734,7 +1881,7 @@ private fun TvSeasonChip(
         ) {
             Text(
                 text = if (season == 0) "Specials" else "Season $season",
-                color = if (focused) TvColors.Background else TvColors.TextPrimary,
+                color = if (focused) Color.Black else TvColors.TextPrimary,
                 fontSize = 13.sp,
                 fontWeight = if (focused || selected) {
                     FontWeight.SemiBold
@@ -1745,7 +1892,7 @@ private fun TvSeasonChip(
             if (fullyWatched) {
                 Text(
                     text = "✓",
-                    color = if (focused) TvColors.Background else TvColors.TextSecondary,
+                    color = if (focused) Color.Black else TvColors.TextSecondary,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold
                 )
@@ -1789,6 +1936,7 @@ private fun TvEpisodeCard(
     progressFraction: Float = 0f,
     statusLabel: String? = null,
     watched: Boolean = false,
+    onMoveUp: () -> Unit,
     onFocused: (FocusRequester) -> Unit,
     onClick: () -> Unit,
     onLongPress: () -> Unit
@@ -1798,14 +1946,14 @@ private fun TvEpisodeCard(
         mutableStateOf(false)
     }
     val scale by animateFloatAsState(
-        targetValue = if (focused) 1.035f else 1f,
+        targetValue = if (focused) 1.045f else 1f,
         label = "episodeScale"
     )
 
     Surface(
         modifier = Modifier
-            .width(278.dp)
-            .height(154.dp)
+            .width(310.dp)
+            .height(174.dp)
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
@@ -1822,6 +1970,12 @@ private fun TvEpisodeCard(
                     native.keyCode == AndroidKeyEvent.KEYCODE_NUMPAD_ENTER
 
                 when {
+                    native.action == AndroidKeyEvent.ACTION_DOWN &&
+                        native.keyCode == AndroidKeyEvent.KEYCODE_DPAD_UP -> {
+                        onMoveUp()
+                        true
+                    }
+
                     native.action == AndroidKeyEvent.ACTION_DOWN &&
                         native.keyCode == AndroidKeyEvent.KEYCODE_MENU -> {
                         longPressTriggered = true
@@ -1858,11 +2012,11 @@ private fun TvEpisodeCard(
             }
             .focusable(),
         color = TvColors.Surface,
-        shape = RoundedCornerShape(11.dp),
+        shape = RoundedCornerShape(10.dp),
         border = BorderStroke(
             if (focused) 2.dp else 1.dp,
             if (focused) {
-                TvColors.FocusRing
+                Color.White
             } else {
                 Color.White.copy(alpha = 0.08f)
             }
@@ -1897,8 +2051,8 @@ private fun TvEpisodeCard(
                     modifier = Modifier
                         .align(Alignment.TopStart)
                         .padding(9.dp),
-                    color = Color.Black.copy(alpha = 0.72f),
-                    shape = RoundedCornerShape(6.dp),
+                    color = Color.Black.copy(alpha = 0.58f),
+                    shape = RoundedCornerShape(5.dp),
                     border = BorderStroke(
                         1.dp,
                         Color.White.copy(alpha = 0.12f)
@@ -2006,7 +2160,7 @@ private fun TvEpisodeCard(
                         .align(Alignment.BottomStart)
                         .fillMaxWidth(progressFraction.coerceIn(0f, 1f))
                         .height(4.dp)
-                        .background(TvColors.FocusRing)
+                        .background(Color.White)
                 )
             }
         }
@@ -2029,55 +2183,92 @@ private fun TvEpisodeOptionsOverlay(
     onMarkPreviousEpisodesWatched: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val playRequester = remember(episodeFocusKey(episode), hasProgress) { FocusRequester() }
+    val manualRequester = remember(episodeFocusKey(episode)) { FocusRequester() }
+    val startRequester = remember(episodeFocusKey(episode), hasProgress) { FocusRequester() }
     val watchedRequester = remember(episodeFocusKey(episode), watched) { FocusRequester() }
+    val previousRequester = remember(episodeFocusKey(episode)) { FocusRequester() }
     val seasonRequester = remember(
         episodeFocusKey(episode),
         seasonFullyWatched
     ) { FocusRequester() }
-    val previousRequester = remember(episodeFocusKey(episode)) { FocusRequester() }
-    val playRequester = remember(episodeFocusKey(episode), hasProgress) { FocusRequester() }
-    val manualRequester = remember(episodeFocusKey(episode)) { FocusRequester() }
-    val startRequester = remember(episodeFocusKey(episode), hasProgress) { FocusRequester() }
 
     BackHandler(onBack = onDismiss)
 
     Box(
-        modifier = modifier
-            .background(Color.Black.copy(alpha = 0.64f)),
-        contentAlignment = Alignment.Center
+        modifier = modifier.background(Color.Black.copy(alpha = 0.56f)),
+        contentAlignment = Alignment.CenterEnd
     ) {
         Surface(
-            modifier = Modifier.width(430.dp),
-            color = TvColors.BackgroundElevated.copy(alpha = 0.98f),
-            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier
+                .width(420.dp)
+                .fillMaxHeight(),
+            color = TvColors.BackgroundElevated.copy(alpha = 0.985f),
+            shape = RoundedCornerShape(
+                topStart = 22.dp,
+                bottomStart = 22.dp
+            ),
             border = BorderStroke(
                 1.dp,
-                Color.White.copy(alpha = 0.12f)
+                Color.White.copy(alpha = 0.10f)
             )
         ) {
             Column(
-                modifier = Modifier.padding(22.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                modifier = Modifier.padding(30.dp),
+                verticalArrangement = Arrangement.Center
             ) {
                 Text(
                     text = episode.displayTitle,
                     color = TvColors.TextPrimary,
                     fontWeight = FontWeight.Bold,
-                    fontSize = 20.sp,
-                    maxLines = 2,
+                    fontSize = 23.sp,
+                    lineHeight = 28.sp,
+                    maxLines = 3,
                     overflow = TextOverflow.Ellipsis
                 )
+                Spacer(Modifier.height(5.dp))
                 Text(
                     text = "Episode options",
                     color = TvColors.TextSecondary,
                     fontSize = 12.sp
                 )
+                Spacer(Modifier.height(22.dp))
 
+                TvEpisodeOptionButton(
+                    label = if (hasProgress) "Resume" else "Play",
+                    focusRequester = playRequester,
+                    onClick = onPlay
+                )
+                Spacer(Modifier.height(8.dp))
+                TvEpisodeOptionButton(
+                    label = "Play manually",
+                    focusRequester = manualRequester,
+                    onClick = onManualPlay
+                )
+                if (hasProgress) {
+                    Spacer(Modifier.height(8.dp))
+                    TvEpisodeOptionButton(
+                        label = "Start from beginning",
+                        focusRequester = startRequester,
+                        onClick = onStartFromBeginning
+                    )
+                }
+
+                Spacer(Modifier.height(16.dp))
                 TvEpisodeOptionButton(
                     label = if (watched) "Mark as unwatched" else "Mark as watched",
                     focusRequester = watchedRequester,
                     onClick = onToggleWatched
                 )
+                if (hasPreviousEpisodes) {
+                    Spacer(Modifier.height(8.dp))
+                    TvEpisodeOptionButton(
+                        label = "Mark previous episodes watched",
+                        focusRequester = previousRequester,
+                        onClick = onMarkPreviousEpisodesWatched
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
                 TvEpisodeOptionButton(
                     label = if (seasonFullyWatched) {
                         "Mark season as unwatched"
@@ -2087,43 +2278,20 @@ private fun TvEpisodeOptionsOverlay(
                     focusRequester = seasonRequester,
                     onClick = onToggleSeasonWatched
                 )
-                if (hasPreviousEpisodes) {
-                    TvEpisodeOptionButton(
-                        label = "Mark previous episodes watched",
-                        focusRequester = previousRequester,
-                        onClick = onMarkPreviousEpisodesWatched
-                    )
-                }
-                TvEpisodeOptionButton(
-                    label = if (hasProgress) "Resume" else "Play",
-                    focusRequester = playRequester,
-                    onClick = onPlay
-                )
-                TvEpisodeOptionButton(
-                    label = "Play manually",
-                    focusRequester = manualRequester,
-                    onClick = onManualPlay
-                )
-                if (hasProgress) {
-                    TvEpisodeOptionButton(
-                        label = "Start from beginning",
-                        focusRequester = startRequester,
-                        onClick = onStartFromBeginning
-                    )
-                }
 
+                Spacer(Modifier.height(18.dp))
                 Text(
-                    text = "Hold OK for options · Back to close",
-                    color = TvColors.TextSecondary.copy(alpha = 0.78f),
-                    fontSize = 11.sp
+                    text = "Back to close",
+                    color = TvColors.TextSecondary.copy(alpha = 0.72f),
+                    fontSize = 10.sp
                 )
             }
         }
     }
 
-    LaunchedEffect(episodeFocusKey(episode), watched) {
+    LaunchedEffect(episodeFocusKey(episode), hasProgress) {
         delay(80)
-        runCatching { watchedRequester.requestFocus() }
+        runCatching { playRequester.requestFocus() }
     }
 }
 
@@ -2143,34 +2311,40 @@ private fun TvSeasonOptionsOverlay(
     BackHandler(onBack = onDismiss)
 
     Box(
-        modifier = modifier
-            .background(Color.Black.copy(alpha = 0.64f)),
-        contentAlignment = Alignment.Center
+        modifier = modifier.background(Color.Black.copy(alpha = 0.56f)),
+        contentAlignment = Alignment.CenterEnd
     ) {
         Surface(
-            modifier = Modifier.width(410.dp),
-            color = TvColors.BackgroundElevated.copy(alpha = 0.98f),
-            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier
+                .width(400.dp)
+                .fillMaxHeight(),
+            color = TvColors.BackgroundElevated.copy(alpha = 0.985f),
+            shape = RoundedCornerShape(
+                topStart = 22.dp,
+                bottomStart = 22.dp
+            ),
             border = BorderStroke(
                 1.dp,
-                Color.White.copy(alpha = 0.12f)
+                Color.White.copy(alpha = 0.10f)
             )
         ) {
             Column(
-                modifier = Modifier.padding(22.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                modifier = Modifier.padding(30.dp),
+                verticalArrangement = Arrangement.Center
             ) {
                 Text(
                     text = if (season == 0) "Specials" else "Season $season",
                     color = TvColors.TextPrimary,
                     fontWeight = FontWeight.Bold,
-                    fontSize = 20.sp
+                    fontSize = 24.sp
                 )
+                Spacer(Modifier.height(5.dp))
                 Text(
                     text = "Season options",
                     color = TvColors.TextSecondary,
                     fontSize = 12.sp
                 )
+                Spacer(Modifier.height(22.dp))
 
                 TvEpisodeOptionButton(
                     label = if (fullyWatched) {
@@ -2182,6 +2356,7 @@ private fun TvSeasonOptionsOverlay(
                     onClick = onToggleSeasonWatched
                 )
                 if (hasPreviousSeasons && season > 0) {
+                    Spacer(Modifier.height(8.dp))
                     TvEpisodeOptionButton(
                         label = "Mark previous seasons watched",
                         focusRequester = previousRequester,
@@ -2189,10 +2364,11 @@ private fun TvSeasonOptionsOverlay(
                     )
                 }
 
+                Spacer(Modifier.height(18.dp))
                 Text(
-                    text = "Hold OK on a season for options · Back to close",
-                    color = TvColors.TextSecondary.copy(alpha = 0.78f),
-                    fontSize = 11.sp
+                    text = "Back to close",
+                    color = TvColors.TextSecondary.copy(alpha = 0.72f),
+                    fontSize = 10.sp
                 )
             }
         }
@@ -2211,11 +2387,19 @@ private fun TvEpisodeOptionButton(
     onClick: () -> Unit
 ) {
     var focused by remember { mutableStateOf(false) }
+    val scale by animateFloatAsState(
+        targetValue = if (focused) 1.025f else 1f,
+        label = "detailOptionScale"
+    )
 
     Surface(
         modifier = Modifier
             .fillMaxWidth()
             .height(46.dp)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
             .focusRequester(focusRequester)
             .onFocusChanged { focused = it.hasFocus }
             .onPreviewKeyEvent { event ->
@@ -2233,11 +2417,11 @@ private fun TvEpisodeOptionButton(
                 }
             }
             .focusable(),
-        color = if (focused) TvColors.FocusRing else TvColors.SurfaceVariant,
-        shape = RoundedCornerShape(10.dp),
+        color = if (focused) Color.White else Color.White.copy(alpha = 0.08f),
+        shape = RoundedCornerShape(8.dp),
         border = BorderStroke(
-            1.dp,
-            if (focused) TvColors.FocusRing else Color.White.copy(alpha = 0.10f)
+            if (focused) 2.dp else 1.dp,
+            if (focused) Color.White else Color.White.copy(alpha = 0.10f)
         )
     ) {
         Box(
@@ -2246,9 +2430,9 @@ private fun TvEpisodeOptionButton(
         ) {
             Text(
                 text = label,
-                color = if (focused) TvColors.Background else TvColors.TextPrimary,
+                color = if (focused) Color.Black else TvColors.TextPrimary,
                 fontWeight = FontWeight.SemiBold,
-                fontSize = 14.sp
+                fontSize = 13.sp
             )
         }
     }
