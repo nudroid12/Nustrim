@@ -37,7 +37,8 @@ class StreamSourceAggregator(
         episode: MediaEpisode?,
         preferredSession: SourceSession? = null,
         onProgress: (StreamAggregationProgress) -> Unit,
-        onSuccess: (StreamAggregationResult) -> Unit
+        onSuccess: (StreamAggregationResult) -> Unit,
+        onStreamsUpdated: (List<StreamSource>) -> Unit = {}
     ) {
         val enabledUrls = store.sources()
             .asSequence()
@@ -64,7 +65,8 @@ class StreamSourceAggregator(
                 enabledSourceCount = 0,
                 openFailures = 0,
                 onProgress = onProgress,
-                onSuccess = onSuccess
+                onSuccess = onSuccess,
+                onStreamsUpdated = onStreamsUpdated
             )
             return
         }
@@ -83,7 +85,8 @@ class StreamSourceAggregator(
                 enabledSourceCount = enabledUrls.size,
                 openFailures = openFailures,
                 onProgress = onProgress,
-                onSuccess = onSuccess
+                onSuccess = onSuccess,
+                onStreamsUpdated = onStreamsUpdated
             )
         }
 
@@ -135,7 +138,8 @@ class StreamSourceAggregator(
         enabledSourceCount: Int,
         openFailures: Int,
         onProgress: (StreamAggregationProgress) -> Unit,
-        onSuccess: (StreamAggregationResult) -> Unit
+        onSuccess: (StreamAggregationResult) -> Unit,
+        onStreamsUpdated: (List<StreamSource>) -> Unit
     ) {
         if (sessions.isEmpty()) {
             onSuccess(
@@ -185,6 +189,7 @@ class StreamSourceAggregator(
                             }
                         )
                     }
+                    onStreamsUpdated(collected.toList())
 
                     completed += 1
                     onProgress(
