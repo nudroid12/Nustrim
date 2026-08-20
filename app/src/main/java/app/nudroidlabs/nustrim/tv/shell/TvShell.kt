@@ -1,29 +1,15 @@
 package app.nudroidlabs.nustrim.tv.shell
 
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.foundation.BorderStroke
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.focusable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -31,403 +17,203 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.focus.FocusDirection
+import androidx.compose.ui.focus.FocusManager
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import androidx.compose.ui.zIndex
-import app.nudroidlabs.nustrim.tv.details.TvDetailsScreen
+import app.nudroidlabs.nustrim.tv.common.TvFoundationScreen
+import app.nudroidlabs.nustrim.tv.focus.TvFocusRegistry
 import app.nudroidlabs.nustrim.tv.home.TvHomeEntry
-import app.nudroidlabs.nustrim.tv.home.TvHomeScreen
-import app.nudroidlabs.nustrim.tv.library.TvLibraryScreen
-import app.nudroidlabs.nustrim.tv.search.TvSearchScreen
-import app.nudroidlabs.nustrim.tv.settings.TvSettingsScreen
-import app.nudroidlabs.nustrim.tv.navigation.TvDestination
-import app.nudroidlabs.nustrim.tv.theme.TvColors
-import kotlinx.coroutines.delay
-
-private data class TvDetailsRoute(
-    val entry: TvHomeEntry,
-    val autoPlayOnLaunch: Boolean = false,
-    val restoreRelatedFocusKey: String? = null
-)
+import app.nudroidlabs.nustrim.tv.library.TvLibraryEntry
+import app.nudroidlabs.nustrim.tv.navigation.TvBackAction
+import app.nudroidlabs.nustrim.tv.navigation.TvNavigator
+import app.nudroidlabs.nustrim.tv.navigation.TvRootDestination
+import app.nudroidlabs.nustrim.tv.navigation.TvRoute
+import app.nudroidlabs.nustrim.tv.navigation.resolveTvBackAction
+import app.nudroidlabs.nustrim.tv.search.TvSearchEntry
+import app.nudroidlabs.nustrim.tv.settings.TvSettingsEntry
+import app.nudroidlabs.nustrim.tv.theme.TvTokens
 
 @Composable
 fun TvShell(
-    onExit: () -> Unit
+    navigator: TvNavigator,
+    focusRegistry: TvFocusRegistry,
+    onExit: () -> Unit,
 ) {
-    var selected by remember { mutableStateOf(TvDestination.HOME) }
-    var sidebarExpanded by remember { mutableStateOf(true) }
+    val focusManager = LocalFocusManager.current
+    var sidebarOpen by remember { mutableStateOf(false) }
+    var sidebarFocusRequestToken by remember { mutableIntStateOf(0) }
     var contentFocusRequestToken by remember { mutableIntStateOf(0) }
-    var detailsStack by remember { mutableStateOf<List<TvDetailsRoute>>(emptyList()) }
-    var lastContentFocusRequester by remember { mutableStateOf<FocusRequester?>(null) }
-    var restoreContentFocusToken by remember { mutableIntStateOf(0) }
-    var libraryRefreshToken by remember { mutableIntStateOf(0) }
 
-    val sidebarRequesters = remember {
-        TvDestination.entries.associateWith { FocusRequester() }
-    }
-    val firstContentRequester = remember { FocusRequester() }
+    val currentRoute = navigator.currentRoute
+    val rootRoute = currentRoute as? TvRoute.Root
+    val showSidebar = rootRoute != null
 
-    fun focusSidebar() {
-        sidebarExpanded = true
-        runCatching {
-            sidebarRequesters.getValue(selected).requestFocus()
-        }
+    fun openSidebar() {
+        if (!showSidebar) return
+        sidebarOpen = true
+        sidebarFocusRequestToken += 1
     }
 
-    fun focusContent() {
-        sidebarExpanded = false
+    fun closeSidebarAndRestoreContent() {
+        if (!sidebarOpen) return
+        sidebarOpen = false
         contentFocusRequestToken += 1
     }
 
-    fun openRootDetails(
-        entry: TvHomeEntry,
-        autoPlay: Boolean
-    ) {
-        detailsStack = listOf(
-            TvDetailsRoute(
-                entry = entry,
-                autoPlayOnLaunch = autoPlay
+    LaunchedEffect(currentRoute.stableKey) {
+        sidebarOpen = false
+        contentFocusRequestToken += 1
+    }
+
+    BackHandler {
+        when (
+            resolveTvBackAction(
+                currentRoute = currentRoute,
+                canPop = navigator.canPop,
+                sidebarOpen = sidebarOpen,
             )
-        )
-        sidebarExpanded = false
-    }
-
-    fun pushRelatedDetails(
-        entry: TvHomeEntry,
-        returnFocusKey: String
-    ) {
-        val current = detailsStack.lastOrNull()
-        val preparedStack = if (current != null) {
-            detailsStack.dropLast(1) + current.copy(
-                restoreRelatedFocusKey = returnFocusKey
-            )
-        } else {
-            detailsStack
-        }
-
-        val alreadyCurrent =
-            preparedStack.lastOrNull()?.entry?.stableKey == entry.stableKey
-
-        detailsStack = if (alreadyCurrent) {
-            preparedStack
-        } else {
-            preparedStack + TvDetailsRoute(entry = entry)
-        }
-        sidebarExpanded = false
-    }
-
-    fun closeDetailsOrRestoreContent() {
-        if (detailsStack.size > 1) {
-            detailsStack = detailsStack.dropLast(1)
-            sidebarExpanded = false
-            return
-        }
-
-        detailsStack = emptyList()
-        sidebarExpanded = false
-        libraryRefreshToken += 1
-        restoreContentFocusToken += 1
-    }
-
-    LaunchedEffect(Unit) {
-        sidebarRequesters.getValue(selected).requestFocus()
-    }
-
-    LaunchedEffect(restoreContentFocusToken) {
-        if (restoreContentFocusToken > 0) {
-            delay(70)
-            val requester = lastContentFocusRequester
-            val restored = requester != null &&
-                runCatching { requester.requestFocus() }.isSuccess
-
-            if (!restored) {
+        ) {
+            TvBackAction.POP_ROUTE -> {
+                navigator.pop()
                 contentFocusRequestToken += 1
             }
-        }
-    }
 
-    BackHandler(enabled = detailsStack.isEmpty()) {
-        if (sidebarExpanded) {
-            onExit()
-        } else {
-            focusSidebar()
+            TvBackAction.OPEN_SIDEBAR -> openSidebar()
+            TvBackAction.EXIT_APP -> onExit()
         }
     }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(TvColors.Background)
+            .background(androidx.compose.material3.MaterialTheme.colorScheme.background),
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(start = 72.dp)
-        ) {
-            when (selected) {
-                TvDestination.HOME -> TvHomeScreen(
-                    contentFocusRequestToken = contentFocusRequestToken,
-                    refreshToken = libraryRefreshToken,
-                    firstContentRequester = firstContentRequester,
-                    onContentFocused = { _, requester ->
-                        sidebarExpanded = false
-                        lastContentFocusRequester = requester
-                    },
-                    onMoveLeft = { focusSidebar() },
-                    onOpen = { entry ->
-                        openRootDetails(
-                            entry = entry,
-                            autoPlay = false
-                        )
-                    },
-                    onPlay = { entry ->
-                        openRootDetails(
-                            entry = entry,
-                            autoPlay = true
-                        )
-                    }
-                )
-
-                TvDestination.SEARCH -> TvSearchScreen(
-                    contentFocusRequestToken = contentFocusRequestToken,
-                    firstContentRequester = firstContentRequester,
-                    onContentFocused = { requester ->
-                        sidebarExpanded = false
-                        lastContentFocusRequester = requester
-                    },
-                    onMoveLeft = { focusSidebar() },
-                    onOpen = { entry ->
-                        openRootDetails(
-                            entry = entry,
-                            autoPlay = false
-                        )
-                    }
-                )
-
-                TvDestination.LIBRARY -> TvLibraryScreen(
-                    contentFocusRequestToken = contentFocusRequestToken,
-                    refreshToken = libraryRefreshToken,
-                    firstContentRequester = firstContentRequester,
-                    onContentFocused = { requester ->
-                        sidebarExpanded = false
-                        lastContentFocusRequester = requester
-                    },
-                    onMoveLeft = { focusSidebar() },
-                    onOpen = { entry ->
-                        openRootDetails(
-                            entry = entry,
-                            autoPlay = false
-                        )
-                    }
-                )
-
-                TvDestination.SETTINGS -> TvSettingsScreen(
-                    contentFocusRequestToken = contentFocusRequestToken,
-                    firstContentRequester = firstContentRequester,
-                    onContentFocused = { requester ->
-                        sidebarExpanded = false
-                        lastContentFocusRequester = requester
-                    },
-                    onMoveLeft = { focusSidebar() }
-                )
-            }
-        }
-
-        if (detailsStack.isEmpty()) {
-            TvSidebar(
-                selected = selected,
-                expanded = sidebarExpanded,
-                requesters = sidebarRequesters,
-                onSelected = { destination ->
-                    selected = destination
-                    sidebarExpanded = true
-                },
-                onMoveRight = { focusContent() },
-                modifier = Modifier
-                    .align(Alignment.CenterStart)
-                    .zIndex(10f)
-            )
-        }
-
-        detailsStack.lastOrNull()?.let { route ->
-            Box(
+        AnimatedContent(
+            targetState = currentRoute,
+            transitionSpec = {
+                fadeIn(tween(TvTokens.MediumMotionMillis)) togetherWith
+                    fadeOut(tween(TvTokens.FastMotionMillis))
+            },
+            contentKey = { route -> route.stableKey },
+            label = "tv-route-transition",
+        ) { route ->
+            TvRouteContent(
+                route = route,
+                focusRegistry = focusRegistry,
+                focusRequestToken = contentFocusRequestToken,
+                focusManager = focusManager,
+                sidebarOpen = sidebarOpen,
+                onOpenSidebar = ::openSidebar,
                 modifier = Modifier
                     .fillMaxSize()
-                    .zIndex(20f)
-            ) {
-                TvDetailsScreen(
-                    entry = route.entry,
-                    autoPlayOnLaunch = route.autoPlayOnLaunch,
-                    restoreRelatedFocusKey = route.restoreRelatedFocusKey,
-                    onOpenRelated = { relatedEntry, returnFocusKey ->
-                        pushRelatedDetails(
-                            entry = relatedEntry,
-                            returnFocusKey = returnFocusKey
-                        )
-                    },
-                    onBack = {
-                        closeDetailsOrRestoreContent()
+                    .padding(start = if (route is TvRoute.Root) TvTokens.SidebarCollapsedWidth else 0.dp),
+            )
+        }
+
+        if (showSidebar) {
+            TvSidebar(
+                expanded = sidebarOpen,
+                selected = rootRoute.destination,
+                focusRequestToken = sidebarFocusRequestToken,
+                onSelect = { destination ->
+                    val changed = destination != navigator.activeRoot
+                    if (changed) {
+                        navigator.navigateRoot(destination)
                     }
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun TvSidebar(
-    selected: TvDestination,
-    expanded: Boolean,
-    requesters: Map<TvDestination, FocusRequester>,
-    onSelected: (TvDestination) -> Unit,
-    onMoveRight: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val width by animateDpAsState(
-        targetValue = if (expanded) 224.dp else 72.dp,
-        label = "tvSidebarWidth"
-    )
-
-    Column(
-        modifier = modifier
-            .width(width)
-            .fillMaxHeight()
-            .background(
-                if (expanded) {
-                    TvColors.BackgroundElevated.copy(alpha = 0.98f)
-                } else {
-                    TvColors.BackgroundElevated.copy(alpha = 0.72f)
-                }
-            )
-            .padding(
-                horizontal = if (expanded) 12.dp else 9.dp,
-                vertical = 28.dp
-            ),
-        verticalArrangement = Arrangement.spacedBy(9.dp)
-    ) {
-        if (expanded) {
-            Text(
-                text = "NUSTRIM",
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-                color = TvColors.TextPrimary,
-                modifier = Modifier.padding(
-                    horizontal = 12.dp,
-                    vertical = 5.dp
-                )
-            )
-            Spacer(Modifier.height(14.dp))
-        } else {
-            Spacer(Modifier.height(46.dp))
-        }
-
-        TvDestination.entries.forEach { destination ->
-            TvSidebarItem(
-                destination = destination,
-                selected = destination == selected,
-                expanded = expanded,
-                focusRequester = requesters.getValue(destination),
-                onSelected = { onSelected(destination) },
-                onMoveRight = onMoveRight
+                    sidebarOpen = false
+                    contentFocusRequestToken += 1
+                },
+                onCloseToContent = ::closeSidebarAndRestoreContent,
             )
         }
     }
 }
 
 @Composable
-private fun TvSidebarItem(
-    destination: TvDestination,
-    selected: Boolean,
-    expanded: Boolean,
-    focusRequester: FocusRequester,
-    onSelected: () -> Unit,
-    onMoveRight: () -> Unit
+private fun TvRouteContent(
+    route: TvRoute,
+    focusRegistry: TvFocusRegistry,
+    focusRequestToken: Int,
+    focusManager: FocusManager,
+    sidebarOpen: Boolean,
+    onOpenSidebar: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
-    var focused by remember { mutableStateOf(false) }
-
-    val background by animateColorAsState(
-        targetValue = when {
-            focused -> TvColors.FocusRing
-            selected -> TvColors.FocusBackground
-            else -> Color.Transparent
-        },
-        label = "tvSidebarItemBackground"
-    )
-
-    val foreground = when {
-        focused -> TvColors.Background
-        selected -> TvColors.TextPrimary
-        else -> TvColors.TextSecondary
-    }
-
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(50.dp)
-            .focusRequester(focusRequester)
-            .onFocusChanged { state -> focused = state.hasFocus }
-            .onPreviewKeyEvent { event ->
-                if (
-                    event.type == KeyEventType.KeyDown &&
-                    event.key == Key.DirectionRight
-                ) {
-                    onMoveRight()
-                    true
-                } else {
-                    false
-                }
-            }
-            .clickable(onClick = onSelected)
-            .focusable(),
-        shape = RoundedCornerShape(12.dp),
-        color = background,
-        border = if (selected && !focused) {
-            BorderStroke(
-                1.dp,
-                Color.White.copy(alpha = 0.10f)
-            )
-        } else {
-            null
-        }
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 13.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(13.dp)
+    val rootModifier = modifier.onKeyEvent { event ->
+        if (
+            route is TvRoute.Root &&
+            !sidebarOpen &&
+            event.type == KeyEventType.KeyDown &&
+            event.key == Key.DirectionLeft
         ) {
-            Icon(
-                imageVector = destination.icon,
-                contentDescription = destination.label,
-                tint = foreground,
-                modifier = Modifier.size(22.dp)
+            val moved = focusManager.moveFocus(FocusDirection.Left)
+            if (!moved) onOpenSidebar()
+            true
+        } else {
+            false
+        }
+    }
+
+    when (route) {
+        is TvRoute.Root -> when (route.destination) {
+            TvRootDestination.HOME -> TvHomeEntry(
+                scopeKey = route.focusScope,
+                focusRegistry = focusRegistry,
+                focusRequestToken = focusRequestToken,
+                modifier = rootModifier,
             )
 
-            if (expanded) {
-                Text(
-                    text = destination.label,
-                    color = foreground,
-                    fontWeight = if (focused || selected) {
-                        FontWeight.SemiBold
-                    } else {
-                        FontWeight.Normal
-                    },
-                    fontSize = 15.sp
-                )
-            }
+            TvRootDestination.SEARCH -> TvSearchEntry(
+                scopeKey = route.focusScope,
+                focusRegistry = focusRegistry,
+                focusRequestToken = focusRequestToken,
+                modifier = rootModifier,
+            )
+
+            TvRootDestination.LIBRARY -> TvLibraryEntry(
+                scopeKey = route.focusScope,
+                focusRegistry = focusRegistry,
+                focusRequestToken = focusRequestToken,
+                modifier = rootModifier,
+            )
+
+            TvRootDestination.SETTINGS -> TvSettingsEntry(
+                scopeKey = route.focusScope,
+                focusRegistry = focusRegistry,
+                focusRequestToken = focusRequestToken,
+                modifier = rootModifier,
+            )
         }
+
+        is TvRoute.Details -> TvFoundationScreen(
+            title = "Details route foundation",
+            scopeKey = route.focusScope,
+            focusRegistry = focusRegistry,
+            focusRequestToken = focusRequestToken,
+            modifier = rootModifier,
+        )
+
+        is TvRoute.Sources -> TvFoundationScreen(
+            title = "Sources route foundation",
+            scopeKey = route.focusScope,
+            focusRegistry = focusRegistry,
+            focusRequestToken = focusRequestToken,
+            modifier = rootModifier,
+        )
+
+        is TvRoute.Player -> TvFoundationScreen(
+            title = "Player route foundation",
+            scopeKey = route.focusScope,
+            focusRegistry = focusRegistry,
+            focusRequestToken = focusRequestToken,
+            modifier = rootModifier,
+        )
     }
 }
