@@ -1,0 +1,982 @@
+name: Nustrim TV V2.8 Updater and Mode Selector Auto Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nustrim-tv-v2-8-updater-mode-selector
+  cancel-in-progress: false
+
+env:
+  BASE_VERSION_NAME: "0.34.1-tv-v2.7-episode-engine-polish"
+  BASE_VERSION_CODE: "90"
+  TARGET_VERSION_NAME: "0.35.0-tv-v2.8-updater-interface-mode"
+  TARGET_VERSION_CODE: "91"
+  BASE_BUILD_SHA256: "5ad15a3e1f52f965a3881ed74a60c9966f1fb2bc347a98e7dd01baaaeb54e220"
+  BASE_NUSTRIM_APP_SHA256: "55c9624164ae8dad443c94a4fe27e01f093f0c5a72f5cc925985b0b46628833c"
+  BASE_UI_PREFS_SHA256: "68d587223c61085222b069d55396211007111b13317b1ca6a55d2c33ea5ee37c"
+  BASE_TV_SETTINGS_SHA256: "99d7a2eedfe5676243a74f047505b23602daf99e680d13be28765fdd4ae6ef56"
+  TARGET_BUILD_SHA256: "347118f4cad5c34e3e6aac2e21e1943bd85432169ad877a802712beddaadc6e4"
+  TARGET_NUSTRIM_APP_SHA256: "c78e75260632c37c76e793c53bf446da3aada2572612b70a3180afc73d062eab"
+  TARGET_UI_PREFS_SHA256: "05bbf79ed13c73cf25876ba512e1c653e59200e86bb11558e5ba2728d7a39116"
+  TARGET_TV_SETTINGS_SHA256: "298d0ddd1d75da2ba11a41c2778152c915ef06fee960c7ca26569d7b6b8cb505"
+
+jobs:
+  v28:
+    name: Build and publish V2.8
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout exact main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Initialise diagnose bundle
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          D="$RUNNER_TEMP/nustrim-v28-updater-mode"
+          mkdir -p "$D"
+          {
+            echo "workflow=Nustrim TV V2.8 Updater and Mode Selector"
+            echo "run_id=$GITHUB_RUN_ID"
+            echo "initial_sha=${GITHUB_SHA:-unknown}"
+          } > "$D/run-info.txt"
+
+      - name: Sync origin main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          git checkout -B main origin/main
+          git reset --hard origin/main
+          git rev-parse HEAD > "$RUNNER_TEMP/nustrim-v28-updater-mode/base-commit.txt"
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle 9.5.0
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "9.5.0"
+
+      - name: Exact V2.7 baseline preflight
+        id: preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUILD="app/build.gradle.kts"
+          APP="app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt"
+          PREFS="app/src/main/java/app/nudroidlabs/nustrim/ui/UiPreferences.kt"
+          TVSET="app/src/main/java/app/nudroidlabs/nustrim/tv/settings/TvSettingsScreen.kt"
+
+          for file in "$BUILD" "$APP" "$PREFS" "$TVSET"; do
+            test -f "$file"
+          done
+
+          code="$(sed -n -E 's/.*versionCode[[:space:]]*=[[:space:]]*([0-9]+).*/\1/p' "$BUILD" | head -1)"
+          name="$(sed -n -E 's/.*versionName[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "$BUILD" | head -1)"
+          build_sha="$(sha256sum "$BUILD" | awk '{print $1}')"
+          app_sha="$(sha256sum "$APP" | awk '{print $1}')"
+          prefs_sha="$(sha256sum "$PREFS" | awk '{print $1}')"
+          tvset_sha="$(sha256sum "$TVSET" | awk '{print $1}')"
+
+          {
+            echo "version=$name ($code)"
+            echo "build=$build_sha"
+            echo "NustrimApp=$app_sha"
+            echo "UiPreferences=$prefs_sha"
+            echo "TvSettingsScreen=$tvset_sha"
+          } | tee "$RUNNER_TEMP/nustrim-v28-updater-mode/preflight.txt"
+
+          if [ "$name" = "$TARGET_VERSION_NAME" ] && \
+             [ "$code" = "$TARGET_VERSION_CODE" ] && \
+             [ "$build_sha" = "$TARGET_BUILD_SHA256" ] && \
+             [ "$app_sha" = "$TARGET_NUSTRIM_APP_SHA256" ] && \
+             [ "$prefs_sha" = "$TARGET_UI_PREFS_SHA256" ] && \
+             [ "$tvset_sha" = "$TARGET_TV_SETTINGS_SHA256" ]; then
+            echo "already_applied=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "already_applied=false" >> "$GITHUB_OUTPUT"
+
+          test "$name" = "$BASE_VERSION_NAME" || {
+            echo "::error::Expected baseline $BASE_VERSION_NAME, got $name"
+            exit 20
+          }
+          test "$code" = "$BASE_VERSION_CODE" || {
+            echo "::error::Expected versionCode $BASE_VERSION_CODE, got $code"
+            exit 21
+          }
+          test "$build_sha" = "$BASE_BUILD_SHA256" || {
+            echo "::error::build.gradle.kts baseline mismatch"
+            exit 22
+          }
+          test "$app_sha" = "$BASE_NUSTRIM_APP_SHA256" || {
+            echo "::error::NustrimApp.kt baseline mismatch"
+            exit 23
+          }
+          test "$prefs_sha" = "$BASE_UI_PREFS_SHA256" || {
+            echo "::error::UiPreferences.kt baseline mismatch"
+            exit 24
+          }
+          test "$tvset_sha" = "$BASE_TV_SETTINGS_SHA256" || {
+            echo "::error::TvSettingsScreen.kt baseline mismatch"
+            exit 25
+          }
+
+      - name: Save exact before state
+        if: steps.preflight.outputs.already_applied != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          D="$RUNNER_TEMP/nustrim-v28-updater-mode"
+          cp app/build.gradle.kts "$D/build.gradle.before.kts"
+          cp app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt "$D/NustrimApp.before.kt"
+          cp app/src/main/java/app/nudroidlabs/nustrim/ui/UiPreferences.kt "$D/UiPreferences.before.kt"
+          cp app/src/main/java/app/nudroidlabs/nustrim/tv/settings/TvSettingsScreen.kt "$D/TvSettingsScreen.before.kt"
+
+      - name: Apply interface mode persistence fix
+        if: steps.preflight.outputs.already_applied != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt")
+          text = path.read_text(encoding="utf-8")
+
+          old = """    var interfaceMode by remember { mutableStateOf<InterfaceMode?>(InterfaceMode.MOBILE) }
+          """
+          new = """    var interfaceMode by remember {
+              mutableStateOf<InterfaceMode?>(
+                  preferences.interfaceMode.takeIf { preferences.interfaceModeConfirmed }
+              )
+          }
+          """
+          if old not in text:
+              raise SystemExit("interfaceMode startup anchor missing")
+          text = text.replace(old, new, 1)
+
+          old = """    var tvModeSessionActive by rememberSaveable {
+              mutableStateOf(preferences.interfaceMode == InterfaceMode.TV)
+          }
+
+          fun switchInterfaceMode(selected: InterfaceMode) {
+              tvModeSessionActive = selected == InterfaceMode.TV
+              preferences.interfaceMode = InterfaceMode.MOBILE
+              interfaceMode = InterfaceMode.MOBILE
+              screen = Screen.Main(MainSection.HOME)
+          }
+          """
+          new = """    var tvModeSessionActive by rememberSaveable {
+              mutableStateOf(
+                  preferences.interfaceModeConfirmed &&
+                      preferences.interfaceMode == InterfaceMode.TV
+              )
+          }
+
+          fun switchInterfaceMode(selected: InterfaceMode) {
+              tvModeSessionActive = selected == InterfaceMode.TV
+              preferences.interfaceMode = selected
+              preferences.interfaceModeConfirmed = true
+              interfaceMode = selected
+              screen = Screen.Main(MainSection.HOME)
+          }
+          """
+          if old not in text:
+              raise SystemExit("switchInterfaceMode anchor missing")
+          text = text.replace(old, new, 1)
+
+          path.write_text(text, encoding="utf-8")
+          PY
+
+          test "$(sha256sum app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt | awk '{print $1}')" = "$TARGET_NUSTRIM_APP_SHA256"
+
+      - name: Apply V2.8 UI preferences
+        if: steps.preflight.outputs.already_applied != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          FILE="app/src/main/java/app/nudroidlabs/nustrim/ui/UiPreferences.kt"
+          base64 --decode > "$FILE" <<'EOF'
+          cGFja2FnZSBhcHAubnVkcm9pZGxhYnMubnVzdHJpbS51aQoKaW1wb3J0IGFuZHJvaWQuY29udGVudC5Db250ZXh0CgplbnVtIGNs
+          YXNzIEludGVyZmFjZU1vZGUgewogICAgTU9CSUxFLAogICAgVFYKfQoKZW51bSBjbGFzcyBTdWJ0aXRsZURpc3BsYXlNb2RlIHsK
+          ICAgIFBSRUZFUlJFRF9PTkxZLAogICAgU0hPV19BTEwKfQoKY2xhc3MgVWlQcmVmZXJlbmNlcyhjb250ZXh0OiBDb250ZXh0KSB7
+          CiAgICBwcml2YXRlIHZhbCBwcmVmZXJlbmNlcyA9IGNvbnRleHQuZ2V0U2hhcmVkUHJlZmVyZW5jZXMoIm51c3RyaW1fdWkiLCBD
+          b250ZXh0Lk1PREVfUFJJVkFURSkKCiAgICB2YXIgaW50ZXJmYWNlTW9kZTogSW50ZXJmYWNlTW9kZT8KICAgICAgICBnZXQoKSA9
+          IHByZWZlcmVuY2VzLmdldFN0cmluZyhLRVlfSU5URVJGQUNFX01PREUsIG51bGwpCiAgICAgICAgICAgID8ubGV0IHsgc3RvcmVk
+          IC0+IHJ1bkNhdGNoaW5nIHsgSW50ZXJmYWNlTW9kZS52YWx1ZU9mKHN0b3JlZCkgfS5nZXRPck51bGwoKSB9CiAgICAgICAgc2V0
+          KHZhbHVlKSB7CiAgICAgICAgICAgIGlmICh2YWx1ZSA9PSBudWxsKSB7CiAgICAgICAgICAgICAgICBwcmVmZXJlbmNlcy5lZGl0
+          KCkucmVtb3ZlKEtFWV9JTlRFUkZBQ0VfTU9ERSkuY29tbWl0KCkKICAgICAgICAgICAgfSBlbHNlIHsKICAgICAgICAgICAgICAg
+          IHByZWZlcmVuY2VzLmVkaXQoKS5wdXRTdHJpbmcoS0VZX0lOVEVSRkFDRV9NT0RFLCB2YWx1ZS5uYW1lKS5jb21taXQoKQogICAg
+          ICAgICAgICB9CiAgICAgICAgfQoKICAgIHZhciBpbnRlcmZhY2VNb2RlQ29uZmlybWVkOiBCb29sZWFuCiAgICAgICAgZ2V0KCkg
+          PSBwcmVmZXJlbmNlcy5nZXRCb29sZWFuKEtFWV9JTlRFUkZBQ0VfTU9ERV9DT05GSVJNRUQsIGZhbHNlKQogICAgICAgIHNldCh2
+          YWx1ZSkgPSBwcmVmZXJlbmNlcy5lZGl0KCkucHV0Qm9vbGVhbihLRVlfSU5URVJGQUNFX01PREVfQ09ORklSTUVELCB2YWx1ZSku
+          YXBwbHkoKQoKICAgIHZhciByZW1vdGVUZXN0RW5hYmxlZDogQm9vbGVhbgogICAgICAgIGdldCgpID0gcHJlZmVyZW5jZXMuZ2V0
+          Qm9vbGVhbihLRVlfUkVNT1RFX1RFU1RfRU5BQkxFRCwgZmFsc2UpCiAgICAgICAgc2V0KHZhbHVlKSA9IHByZWZlcmVuY2VzLmVk
+          aXQoKS5wdXRCb29sZWFuKEtFWV9SRU1PVEVfVEVTVF9FTkFCTEVELCB2YWx1ZSkuYXBwbHkoKQoKICAgIHZhciBkZXZlbG9wZXJN
+          b2RlOiBCb29sZWFuCiAgICAgICAgZ2V0KCkgPSBwcmVmZXJlbmNlcy5nZXRCb29sZWFuKEtFWV9ERVZFTE9QRVJfTU9ERSwgZmFs
+          c2UpCiAgICAgICAgc2V0KHZhbHVlKSA9IHByZWZlcmVuY2VzLmVkaXQoKS5wdXRCb29sZWFuKEtFWV9ERVZFTE9QRVJfTU9ERSwg
+          dmFsdWUpLmFwcGx5KCkKCiAgICB2YXIgZGV2ZWxvcGVyRGlhZ25vc3RpY3M6IEJvb2xlYW4KICAgICAgICBnZXQoKSA9IHByZWZl
+          cmVuY2VzLmdldEJvb2xlYW4oS0VZX0RFVkVMT1BFUl9ESUFHTk9TVElDUywgZmFsc2UpCiAgICAgICAgc2V0KHZhbHVlKSA9IHBy
+          ZWZlcmVuY2VzLmVkaXQoKS5wdXRCb29sZWFuKEtFWV9ERVZFTE9QRVJfRElBR05PU1RJQ1MsIHZhbHVlKS5hcHBseSgpCgogICAg
+          dmFyIGF1dG9wbGF5Rmlyc3RTb3VyY2U6IEJvb2xlYW4KICAgICAgICBnZXQoKSA9IHByZWZlcmVuY2VzLmdldEJvb2xlYW4oS0VZ
+          X0FVVE9QTEFZX0ZJUlNUX1NPVVJDRSwgZmFsc2UpCiAgICAgICAgc2V0KHZhbHVlKSA9IHByZWZlcmVuY2VzLmVkaXQoKS5wdXRC
+          b29sZWFuKEtFWV9BVVRPUExBWV9GSVJTVF9TT1VSQ0UsIHZhbHVlKS5hcHBseSgpCgogICAgdmFyIGF1dG9wbGF5TmV4dEVwaXNv
+          ZGU6IEJvb2xlYW4KICAgICAgICBnZXQoKSA9IHByZWZlcmVuY2VzLmdldEJvb2xlYW4oS0VZX0FVVE9QTEFZX05FWFRfRVBJU09E
+          RSwgdHJ1ZSkKICAgICAgICBzZXQodmFsdWUpID0gcHJlZmVyZW5jZXMuZWRpdCgpLnB1dEJvb2xlYW4oS0VZX0FVVE9QTEFZX05F
+          WFRfRVBJU09ERSwgdmFsdWUpLmFwcGx5KCkKCiAgICB2YXIgc3VidGl0bGVQcmVmZXJyZWRMYW5ndWFnZTogU3RyaW5nCiAgICAg
+          ICAgZ2V0KCkgPSBwcmVmZXJlbmNlcy5nZXRTdHJpbmcoS0VZX1NVQlRJVExFX1BSRUZFUlJFRF9MQU5HVUFHRSwgIm1zIikub3JF
+          bXB0eSgpLmlmQmxhbmsgeyAibXMiIH0KICAgICAgICBzZXQodmFsdWUpID0gcHJlZmVyZW5jZXMuZWRpdCgpLnB1dFN0cmluZyhL
+          RVlfU1VCVElUTEVfUFJFRkVSUkVEX0xBTkdVQUdFLCB2YWx1ZS50cmltKCkpLmFwcGx5KCkKCiAgICB2YXIgc3VidGl0bGVTZWNv
+          bmRQcmVmZXJyZWRMYW5ndWFnZTogU3RyaW5nCiAgICAgICAgZ2V0KCkgPSBwcmVmZXJlbmNlcy5nZXRTdHJpbmcoS0VZX1NVQlRJ
+          VExFX1NFQ09ORF9QUkVGRVJSRURfTEFOR1VBR0UsICJlbiIpLm9yRW1wdHkoKS5pZkJsYW5rIHsgImVuIiB9CiAgICAgICAgc2V0
+          KHZhbHVlKSA9IHByZWZlcmVuY2VzLmVkaXQoKS5wdXRTdHJpbmcoS0VZX1NVQlRJVExFX1NFQ09ORF9QUkVGRVJSRURfTEFOR1VB
+          R0UsIHZhbHVlLnRyaW0oKSkuYXBwbHkoKQoKICAgIHZhciBzdWJ0aXRsZURpc3BsYXlNb2RlOiBTdWJ0aXRsZURpc3BsYXlNb2Rl
+          CiAgICAgICAgZ2V0KCkgPSBwcmVmZXJlbmNlcy5nZXRTdHJpbmcoS0VZX1NVQlRJVExFX0RJU1BMQVlfTU9ERSwgU3VidGl0bGVE
+          aXNwbGF5TW9kZS5TSE9XX0FMTC5uYW1lKQogICAgICAgICAgICA/LmxldCB7IHN0b3JlZCAtPiBydW5DYXRjaGluZyB7IFN1YnRp
+          dGxlRGlzcGxheU1vZGUudmFsdWVPZihzdG9yZWQpIH0uZ2V0T3JOdWxsKCkgfQogICAgICAgICAgICA/OiBTdWJ0aXRsZURpc3Bs
+          YXlNb2RlLlNIT1dfQUxMCiAgICAgICAgc2V0KHZhbHVlKSA9IHByZWZlcmVuY2VzLmVkaXQoKS5wdXRTdHJpbmcoS0VZX1NVQlRJ
+          VExFX0RJU1BMQVlfTU9ERSwgdmFsdWUubmFtZSkuYXBwbHkoKQoKICAgIHZhciBjYXRhbG9nT3JkZXI6IExpc3Q8U3RyaW5nPgog
+          ICAgICAgIGdldCgpID0gcHJlZmVyZW5jZXMuZ2V0U3RyaW5nKEtFWV9DQVRBTE9HX09SREVSLCAiIikKICAgICAgICAgICAgLm9y
+          RW1wdHkoKQogICAgICAgICAgICAubGluZVNlcXVlbmNlKCkKICAgICAgICAgICAgLm1hcChTdHJpbmc6OnRyaW0pCiAgICAgICAg
+          ICAgIC5maWx0ZXIoU3RyaW5nOjppc05vdEJsYW5rKQogICAgICAgICAgICAudG9MaXN0KCkKICAgICAgICBzZXQodmFsdWUpID0g
+          cHJlZmVyZW5jZXMuZWRpdCgpLnB1dFN0cmluZyhLRVlfQ0FUQUxPR19PUkRFUiwgdmFsdWUuZGlzdGluY3QoKS5qb2luVG9TdHJp
+          bmcoIlxuIikpLmFwcGx5KCkKCiAgICB2YWwgaGlkZGVuQ2F0YWxvZ0tleXM6IFNldDxTdHJpbmc+CiAgICAgICAgZ2V0KCkgPSBw
+          cmVmZXJlbmNlcy5nZXRTdHJpbmdTZXQoS0VZX0hJRERFTl9DQVRBTE9HUywgZW1wdHlTZXQoKSkub3JFbXB0eSgpLnRvU2V0KCkK
+          CiAgICBmdW4gc2V0Q2F0YWxvZ0hpZGRlbihrZXk6IFN0cmluZywgaGlkZGVuOiBCb29sZWFuKSB7CiAgICAgICAgdmFsIGtleXMg
+          PSBoaWRkZW5DYXRhbG9nS2V5cy50b011dGFibGVTZXQoKQogICAgICAgIGlmIChoaWRkZW4pIGtleXMgKz0ga2V5IGVsc2Uga2V5
+          cyAtPSBrZXkKICAgICAgICBwcmVmZXJlbmNlcy5lZGl0KCkucHV0U3RyaW5nU2V0KEtFWV9ISURERU5fQ0FUQUxPR1MsIGtleXMp
+          LmFwcGx5KCkKICAgIH0KCiAgICBmdW4gcmVzZXRDYXRhbG9nTGF5b3V0KCkgewogICAgICAgIHByZWZlcmVuY2VzLmVkaXQoKQog
+          ICAgICAgICAgICAucmVtb3ZlKEtFWV9DQVRBTE9HX09SREVSKQogICAgICAgICAgICAucmVtb3ZlKEtFWV9ISURERU5fQ0FUQUxP
+          R1MpCiAgICAgICAgICAgIC5hcHBseSgpCiAgICB9CgogICAgdmFyIHRtZGJBcGlLZXk6IFN0cmluZwogICAgICAgIGdldCgpID0g
+          cHJlZmVyZW5jZXMuZ2V0U3RyaW5nKEtFWV9UTURCX0FQSV9LRVksICIiKS5vckVtcHR5KCkKICAgICAgICBzZXQodmFsdWUpID0g
+          cHJlZmVyZW5jZXMuZWRpdCgpLnB1dFN0cmluZyhLRVlfVE1EQl9BUElfS0VZLCB2YWx1ZS50cmltKCkpLmFwcGx5KCkKCiAgICB2
+          YXIgdG1kYkVucmljaG1lbnRFbmFibGVkOiBCb29sZWFuCiAgICAgICAgZ2V0KCkgPSBwcmVmZXJlbmNlcy5nZXRCb29sZWFuKEtF
+          WV9UTURCX0VOUklDSE1FTlRfRU5BQkxFRCwgZmFsc2UpCiAgICAgICAgc2V0KHZhbHVlKSA9IHByZWZlcmVuY2VzLmVkaXQoKS5w
+          dXRCb29sZWFuKEtFWV9UTURCX0VOUklDSE1FTlRfRU5BQkxFRCwgdmFsdWUpLmFwcGx5KCkKCiAgICB2YXIgbWRiTGlzdEFwaUtl
+          eTogU3RyaW5nCiAgICAgICAgZ2V0KCkgPSBwcmVmZXJlbmNlcy5nZXRTdHJpbmcoS0VZX01EQkxJU1RfQVBJX0tFWSwgIiIpLm9y
+          RW1wdHkoKQogICAgICAgIHNldCh2YWx1ZSkgPSBwcmVmZXJlbmNlcy5lZGl0KCkucHV0U3RyaW5nKEtFWV9NREJMSVNUX0FQSV9L
+          RVksIHZhbHVlLnRyaW0oKSkuYXBwbHkoKQoKICAgIHZhciBtZGJMaXN0UmF0aW5nc0VuYWJsZWQ6IEJvb2xlYW4KICAgICAgICBn
+          ZXQoKSA9IHByZWZlcmVuY2VzLmdldEJvb2xlYW4oS0VZX01EQkxJU1RfUkFUSU5HU19FTkFCTEVELCBmYWxzZSkKICAgICAgICBz
+          ZXQodmFsdWUpID0gcHJlZmVyZW5jZXMuZWRpdCgpLnB1dEJvb2xlYW4oS0VZX01EQkxJU1RfUkFUSU5HU19FTkFCTEVELCB2YWx1
+          ZSkuYXBwbHkoKQoKICAgIGZ1biBpc01kYkxpc3RQcm92aWRlckVuYWJsZWQocHJvdmlkZXJJZDogU3RyaW5nKTogQm9vbGVhbiB7
+          CiAgICAgICAgcmV0dXJuIHByZWZlcmVuY2VzLmdldFN0cmluZ1NldChLRVlfTURCTElTVF9QUk9WSURFUlMsIERFRkFVTFRfTURC
+          TElTVF9QUk9WSURFUlMpCiAgICAgICAgICAgID8uY29udGFpbnMocHJvdmlkZXJJZCkKICAgICAgICAgICAgPzogREVGQVVMVF9N
+          REJMSVNUX1BST1ZJREVSUy5jb250YWlucyhwcm92aWRlcklkKQogICAgfQoKICAgIGZ1biBzZXRNZGJMaXN0UHJvdmlkZXJFbmFi
+          bGVkKHByb3ZpZGVySWQ6IFN0cmluZywgZW5hYmxlZDogQm9vbGVhbikgewogICAgICAgIHZhbCBwcm92aWRlcnMgPSBwcmVmZXJl
+          bmNlcwogICAgICAgICAgICAuZ2V0U3RyaW5nU2V0KEtFWV9NREJMSVNUX1BST1ZJREVSUywgREVGQVVMVF9NREJMSVNUX1BST1ZJ
+          REVSUykKICAgICAgICAgICAgLm9yRW1wdHkoKQogICAgICAgICAgICAudG9NdXRhYmxlU2V0KCkKCiAgICAgICAgaWYgKGVuYWJs
+          ZWQpIHByb3ZpZGVycyArPSBwcm92aWRlcklkIGVsc2UgcHJvdmlkZXJzIC09IHByb3ZpZGVySWQKICAgICAgICBwcmVmZXJlbmNl
+          cy5lZGl0KCkucHV0U3RyaW5nU2V0KEtFWV9NREJMSVNUX1BST1ZJREVSUywgcHJvdmlkZXJzKS5hcHBseSgpCiAgICB9CgogICAg
+          dmFyIHRyYWt0Q2xpZW50SWQ6IFN0cmluZwogICAgICAgIGdldCgpID0gcHJlZmVyZW5jZXMuZ2V0U3RyaW5nKEtFWV9UUkFLVF9D
+          TElFTlRfSUQsICIiKS5vckVtcHR5KCkKICAgICAgICBzZXQodmFsdWUpID0gcHJlZmVyZW5jZXMuZWRpdCgpLnB1dFN0cmluZyhL
+          RVlfVFJBS1RfQ0xJRU5UX0lELCB2YWx1ZS50cmltKCkpLmFwcGx5KCkKCiAgICB2YXIgdHJha3RDbGllbnRTZWNyZXQ6IFN0cmlu
+          ZwogICAgICAgIGdldCgpID0gcHJlZmVyZW5jZXMuZ2V0U3RyaW5nKEtFWV9UUkFLVF9DTElFTlRfU0VDUkVULCAiIikub3JFbXB0
+          eSgpCiAgICAgICAgc2V0KHZhbHVlKSA9IHByZWZlcmVuY2VzLmVkaXQoKS5wdXRTdHJpbmcoS0VZX1RSQUtUX0NMSUVOVF9TRUNS
+          RVQsIHZhbHVlLnRyaW0oKSkuYXBwbHkoKQoKICAgIHZhciB0cmFrdEFjY2Vzc1Rva2VuOiBTdHJpbmcKICAgICAgICBnZXQoKSA9
+          IHByZWZlcmVuY2VzLmdldFN0cmluZyhLRVlfVFJBS1RfQUNDRVNTX1RPS0VOLCAiIikub3JFbXB0eSgpCiAgICAgICAgc2V0KHZh
+          bHVlKSA9IHByZWZlcmVuY2VzLmVkaXQoKS5wdXRTdHJpbmcoS0VZX1RSQUtUX0FDQ0VTU19UT0tFTiwgdmFsdWUudHJpbSgpKS5h
+          cHBseSgpCgogICAgdmFyIHRyYWt0UmVmcmVzaFRva2VuOiBTdHJpbmcKICAgICAgICBnZXQoKSA9IHByZWZlcmVuY2VzLmdldFN0
+          cmluZyhLRVlfVFJBS1RfUkVGUkVTSF9UT0tFTiwgIiIpLm9yRW1wdHkoKQogICAgICAgIHNldCh2YWx1ZSkgPSBwcmVmZXJlbmNl
+          cy5lZGl0KCkucHV0U3RyaW5nKEtFWV9UUkFLVF9SRUZSRVNIX1RPS0VOLCB2YWx1ZS50cmltKCkpLmFwcGx5KCkKCiAgICB2YXIg
+          dHJha3RFeHBpcmVzQXRTZWNvbmRzOiBMb25nCiAgICAgICAgZ2V0KCkgPSBwcmVmZXJlbmNlcy5nZXRMb25nKEtFWV9UUkFLVF9F
+          WFBJUkVTX0FULCAwTCkKICAgICAgICBzZXQodmFsdWUpID0gcHJlZmVyZW5jZXMuZWRpdCgpLnB1dExvbmcoS0VZX1RSQUtUX0VY
+          UElSRVNfQVQsIHZhbHVlKS5hcHBseSgpCgogICAgdmFyIHRyYWt0VXNlcm5hbWU6IFN0cmluZwogICAgICAgIGdldCgpID0gcHJl
+          ZmVyZW5jZXMuZ2V0U3RyaW5nKEtFWV9UUkFLVF9VU0VSTkFNRSwgIiIpLm9yRW1wdHkoKQogICAgICAgIHNldCh2YWx1ZSkgPSBw
+          cmVmZXJlbmNlcy5lZGl0KCkucHV0U3RyaW5nKEtFWV9UUkFLVF9VU0VSTkFNRSwgdmFsdWUudHJpbSgpKS5hcHBseSgpCgogICAg
+          dmFsIHRyYWt0Q29ubmVjdGVkOiBCb29sZWFuCiAgICAgICAgZ2V0KCkgPSB0cmFrdEFjY2Vzc1Rva2VuLmlzTm90QmxhbmsoKSAm
+          JiB0cmFrdENsaWVudElkLmlzTm90QmxhbmsoKQoKICAgIGZ1biBzYXZlVHJha3RUb2tlbihhY2Nlc3NUb2tlbjogU3RyaW5nLCBy
+          ZWZyZXNoVG9rZW46IFN0cmluZywgZXhwaXJlc0F0U2Vjb25kczogTG9uZykgewogICAgICAgIHByZWZlcmVuY2VzLmVkaXQoKQog
+          ICAgICAgICAgICAucHV0U3RyaW5nKEtFWV9UUkFLVF9BQ0NFU1NfVE9LRU4sIGFjY2Vzc1Rva2VuLnRyaW0oKSkKICAgICAgICAg
+          ICAgLnB1dFN0cmluZyhLRVlfVFJBS1RfUkVGUkVTSF9UT0tFTiwgcmVmcmVzaFRva2VuLnRyaW0oKSkKICAgICAgICAgICAgLnB1
+          dExvbmcoS0VZX1RSQUtUX0VYUElSRVNfQVQsIGV4cGlyZXNBdFNlY29uZHMpCiAgICAgICAgICAgIC5hcHBseSgpCiAgICB9Cgog
+          ICAgZnVuIGNsZWFyVHJha3RDb25uZWN0aW9uKCkgewogICAgICAgIHByZWZlcmVuY2VzLmVkaXQoKQogICAgICAgICAgICAucmVt
+          b3ZlKEtFWV9UUkFLVF9BQ0NFU1NfVE9LRU4pCiAgICAgICAgICAgIC5yZW1vdmUoS0VZX1RSQUtUX1JFRlJFU0hfVE9LRU4pCiAg
+          ICAgICAgICAgIC5yZW1vdmUoS0VZX1RSQUtUX0VYUElSRVNfQVQpCiAgICAgICAgICAgIC5yZW1vdmUoS0VZX1RSQUtUX1VTRVJO
+          QU1FKQogICAgICAgICAgICAuYXBwbHkoKQogICAgfQoKICAgIGNvbXBhbmlvbiBvYmplY3QgewogICAgICAgIHByaXZhdGUgY29u
+          c3QgdmFsIEtFWV9JTlRFUkZBQ0VfTU9ERSA9ICJpbnRlcmZhY2VfbW9kZSIKICAgICAgICBwcml2YXRlIGNvbnN0IHZhbCBLRVlf
+          SU5URVJGQUNFX01PREVfQ09ORklSTUVEID0gImludGVyZmFjZV9tb2RlX2NvbmZpcm1lZF92MiIKICAgICAgICBwcml2YXRlIGNv
+          bnN0IHZhbCBLRVlfUkVNT1RFX1RFU1RfRU5BQkxFRCA9ICJyZW1vdGVfdGVzdF9lbmFibGVkIgogICAgICAgIHByaXZhdGUgY29u
+          c3QgdmFsIEtFWV9ERVZFTE9QRVJfTU9ERSA9ICJkZXZlbG9wZXJfbW9kZSIKICAgICAgICBwcml2YXRlIGNvbnN0IHZhbCBLRVlf
+          REVWRUxPUEVSX0RJQUdOT1NUSUNTID0gImRldmVsb3Blcl9kaWFnbm9zdGljcyIKICAgICAgICBwcml2YXRlIGNvbnN0IHZhbCBL
+          RVlfQVVUT1BMQVlfRklSU1RfU09VUkNFID0gImF1dG9wbGF5X2ZpcnN0X3NvdXJjZSIKICAgICAgICBwcml2YXRlIGNvbnN0IHZh
+          bCBLRVlfQVVUT1BMQVlfTkVYVF9FUElTT0RFID0gImF1dG9wbGF5X25leHRfZXBpc29kZSIKICAgICAgICBwcml2YXRlIGNvbnN0
+          IHZhbCBLRVlfU1VCVElUTEVfUFJFRkVSUkVEX0xBTkdVQUdFID0gInN1YnRpdGxlX3ByZWZlcnJlZF9sYW5ndWFnZSIKICAgICAg
+          ICBwcml2YXRlIGNvbnN0IHZhbCBLRVlfU1VCVElUTEVfU0VDT05EX1BSRUZFUlJFRF9MQU5HVUFHRSA9ICJzdWJ0aXRsZV9zZWNv
+          bmRfcHJlZmVycmVkX2xhbmd1YWdlIgogICAgICAgIHByaXZhdGUgY29uc3QgdmFsIEtFWV9TVUJUSVRMRV9ESVNQTEFZX01PREUg
+          PSAic3VidGl0bGVfZGlzcGxheV9tb2RlIgogICAgICAgIHByaXZhdGUgY29uc3QgdmFsIEtFWV9DQVRBTE9HX09SREVSID0gImNh
+          dGFsb2dfb3JkZXIiCiAgICAgICAgcHJpdmF0ZSBjb25zdCB2YWwgS0VZX0hJRERFTl9DQVRBTE9HUyA9ICJoaWRkZW5fY2F0YWxv
+          Z3MiCiAgICAgICAgcHJpdmF0ZSBjb25zdCB2YWwgS0VZX1RNREJfQVBJX0tFWSA9ICJ0bWRiX2FwaV9rZXkiCiAgICAgICAgcHJp
+          dmF0ZSBjb25zdCB2YWwgS0VZX1RNREJfRU5SSUNITUVOVF9FTkFCTEVEID0gInRtZGJfZW5yaWNobWVudF9lbmFibGVkIgogICAg
+          ICAgIHByaXZhdGUgY29uc3QgdmFsIEtFWV9NREJMSVNUX0FQSV9LRVkgPSAibWRibGlzdF9hcGlfa2V5IgogICAgICAgIHByaXZh
+          dGUgY29uc3QgdmFsIEtFWV9NREJMSVNUX1JBVElOR1NfRU5BQkxFRCA9ICJtZGJsaXN0X3JhdGluZ3NfZW5hYmxlZCIKICAgICAg
+          ICBwcml2YXRlIGNvbnN0IHZhbCBLRVlfTURCTElTVF9QUk9WSURFUlMgPSAibWRibGlzdF9yYXRpbmdfcHJvdmlkZXJzIgogICAg
+          ICAgIHByaXZhdGUgY29uc3QgdmFsIEtFWV9UUkFLVF9DTElFTlRfSUQgPSAidHJha3RfY2xpZW50X2lkIgogICAgICAgIHByaXZh
+          dGUgY29uc3QgdmFsIEtFWV9UUkFLVF9DTElFTlRfU0VDUkVUID0gInRyYWt0X2NsaWVudF9zZWNyZXQiCiAgICAgICAgcHJpdmF0
+          ZSBjb25zdCB2YWwgS0VZX1RSQUtUX0FDQ0VTU19UT0tFTiA9ICJ0cmFrdF9hY2Nlc3NfdG9rZW4iCiAgICAgICAgcHJpdmF0ZSBj
+          b25zdCB2YWwgS0VZX1RSQUtUX1JFRlJFU0hfVE9LRU4gPSAidHJha3RfcmVmcmVzaF90b2tlbiIKICAgICAgICBwcml2YXRlIGNv
+          bnN0IHZhbCBLRVlfVFJBS1RfRVhQSVJFU19BVCA9ICJ0cmFrdF9leHBpcmVzX2F0IgogICAgICAgIHByaXZhdGUgY29uc3QgdmFs
+          IEtFWV9UUkFLVF9VU0VSTkFNRSA9ICJ0cmFrdF91c2VybmFtZSIKCiAgICAgICAgcHJpdmF0ZSB2YWwgREVGQVVMVF9NREJMSVNU
+          X1BST1ZJREVSUyA9IHNldE9mKAogICAgICAgICAgICAiaW1kYiIsCiAgICAgICAgICAgICJ0bWRiIiwKICAgICAgICAgICAgInRv
+          bWF0b2VzIiwKICAgICAgICAgICAgIm1ldGFjcml0aWMiLAogICAgICAgICAgICAidHJha3QiLAogICAgICAgICAgICAibGV0dGVy
+          Ym94ZCIsCiAgICAgICAgICAgICJhdWRpZW5jZSIsCiAgICAgICAgICAgICJtYWwiLAogICAgICAgICAgICAibWV0YWNyaXRpY3Vz
+          ZXIiLAogICAgICAgICAgICAicm9nZXJlYmVydCIKICAgICAgICApCiAgICB9Cn0K
+          EOF
+          test "$(sha256sum "$FILE" | awk '{print $1}')" = "$TARGET_UI_PREFS_SHA256"
+
+      - name: Apply TV updater settings
+        if: steps.preflight.outputs.already_applied != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          FILE="app/src/main/java/app/nudroidlabs/nustrim/tv/settings/TvSettingsScreen.kt"
+          base64 --decode > "$FILE" <<'EOF'
+          cGFja2FnZSBhcHAubnVkcm9pZGxhYnMubnVzdHJpbS50di5zZXR0aW5ncwoKaW1wb3J0IGFuZHJvaWR4LmNvbXBvc2UuZm91bmRh
+          dGlvbi5Cb3JkZXJTdHJva2UKaW1wb3J0IGFuZHJvaWR4LmNvbXBvc2UuZm91bmRhdGlvbi5iYWNrZ3JvdW5kCmltcG9ydCBhbmRy
+          b2lkeC5jb21wb3NlLmZvdW5kYXRpb24uZm9jdXNhYmxlCmltcG9ydCBhbmRyb2lkeC5jb21wb3NlLmZvdW5kYXRpb24ubGF5b3V0
+          LkFycmFuZ2VtZW50CmltcG9ydCBhbmRyb2lkeC5jb21wb3NlLmZvdW5kYXRpb24ubGF5b3V0LkNvbHVtbgppbXBvcnQgYW5kcm9p
+          ZHguY29tcG9zZS5mb3VuZGF0aW9uLmxheW91dC5Sb3cKaW1wb3J0IGFuZHJvaWR4LmNvbXBvc2UuZm91bmRhdGlvbi5sYXlvdXQu
+          ZmlsbE1heFNpemUKaW1wb3J0IGFuZHJvaWR4LmNvbXBvc2UuZm91bmRhdGlvbi5sYXlvdXQuZmlsbE1heFdpZHRoCmltcG9ydCBh
+          bmRyb2lkeC5jb21wb3NlLmZvdW5kYXRpb24ubGF5b3V0LnBhZGRpbmcKaW1wb3J0IGFuZHJvaWR4LmNvbXBvc2UuZm91bmRhdGlv
+          bi5sYXlvdXQuc2l6ZQppbXBvcnQgYW5kcm9pZHguY29tcG9zZS5mb3VuZGF0aW9uLmxheW91dC53aWR0aAppbXBvcnQgYW5kcm9p
+          ZHguY29tcG9zZS5mb3VuZGF0aW9uLmxhenkuTGF6eUNvbHVtbgppbXBvcnQgYW5kcm9pZHguY29tcG9zZS5mb3VuZGF0aW9uLmxh
+          enkucmVtZW1iZXJMYXp5TGlzdFN0YXRlCmltcG9ydCBhbmRyb2lkeC5jb21wb3NlLmZvdW5kYXRpb24uc2hhcGUuUm91bmRlZENv
+          cm5lclNoYXBlCmltcG9ydCBhbmRyb2lkeC5jb21wb3NlLm1hdGVyaWFsLmljb25zLkljb25zCmltcG9ydCBhbmRyb2lkeC5jb21w
+          b3NlLm1hdGVyaWFsLmljb25zLm91dGxpbmVkLkluZm8KaW1wb3J0IGFuZHJvaWR4LmNvbXBvc2UubWF0ZXJpYWwuaWNvbnMub3V0
+          bGluZWQuUGxheUFycm93CmltcG9ydCBhbmRyb2lkeC5jb21wb3NlLm1hdGVyaWFsLmljb25zLm91dGxpbmVkLlJlZnJlc2gKaW1w
+          b3J0IGFuZHJvaWR4LmNvbXBvc2UubWF0ZXJpYWwuaWNvbnMub3V0bGluZWQuU2V0dGluZ3MKaW1wb3J0IGFuZHJvaWR4LmNvbXBv
+          c2UubWF0ZXJpYWwzLkljb24KaW1wb3J0IGFuZHJvaWR4LmNvbXBvc2UubWF0ZXJpYWwzLlN3aXRjaAppbXBvcnQgYW5kcm9pZHgu
+          Y29tcG9zZS5tYXRlcmlhbDMuVGV4dAppbXBvcnQgYW5kcm9pZHguY29tcG9zZS5tYXRlcmlhbDMuU3VyZmFjZQppbXBvcnQgYW5k
+          cm9pZHguY29tcG9zZS5ydW50aW1lLkNvbXBvc2FibGUKaW1wb3J0IGFuZHJvaWR4LmNvbXBvc2UucnVudGltZS5MYXVuY2hlZEVm
+          ZmVjdAppbXBvcnQgYW5kcm9pZHguY29tcG9zZS5ydW50aW1lLmdldFZhbHVlCmltcG9ydCBhbmRyb2lkeC5jb21wb3NlLnJ1bnRp
+          bWUubXV0YWJsZVN0YXRlT2YKaW1wb3J0IGFuZHJvaWR4LmNvbXBvc2UucnVudGltZS5yZW1lbWJlcgppbXBvcnQgYW5kcm9pZHgu
+          Y29tcG9zZS5ydW50aW1lLnJlbWVtYmVyQ29yb3V0aW5lU2NvcGUKaW1wb3J0IGFuZHJvaWR4LmNvbXBvc2UucnVudGltZS5zZXRW
+          YWx1ZQppbXBvcnQgYW5kcm9pZHguY29tcG9zZS51aS5BbGlnbm1lbnQKaW1wb3J0IGFuZHJvaWR4LmNvbXBvc2UudWkuTW9kaWZp
+          ZXIKaW1wb3J0IGFuZHJvaWR4LmNvbXBvc2UudWkuZm9jdXMuRm9jdXNSZXF1ZXN0ZXIKaW1wb3J0IGFuZHJvaWR4LmNvbXBvc2Uu
+          dWkuZm9jdXMuZm9jdXNSZXF1ZXN0ZXIKaW1wb3J0IGFuZHJvaWR4LmNvbXBvc2UudWkuZm9jdXMub25Gb2N1c0NoYW5nZWQKaW1w
+          b3J0IGFuZHJvaWR4LmNvbXBvc2UudWkuZ3JhcGhpY3MuQ29sb3IKaW1wb3J0IGFuZHJvaWR4LmNvbXBvc2UudWkuZ3JhcGhpY3Mu
+          dmVjdG9yLkltYWdlVmVjdG9yCmltcG9ydCBhbmRyb2lkeC5jb21wb3NlLnVpLmlucHV0LmtleS5LZXkKaW1wb3J0IGFuZHJvaWR4
+          LmNvbXBvc2UudWkuaW5wdXQua2V5LktleUV2ZW50VHlwZQppbXBvcnQgYW5kcm9pZHguY29tcG9zZS51aS5pbnB1dC5rZXkua2V5
+          CmltcG9ydCBhbmRyb2lkeC5jb21wb3NlLnVpLmlucHV0LmtleS5vblByZXZpZXdLZXlFdmVudAppbXBvcnQgYW5kcm9pZHguY29t
+          cG9zZS51aS5pbnB1dC5rZXkudHlwZQppbXBvcnQgYW5kcm9pZHguY29tcG9zZS51aS5wbGF0Zm9ybS5Mb2NhbENvbnRleHQKaW1w
+          b3J0IGFuZHJvaWR4LmNvbXBvc2UudWkudGV4dC5mb250LkZvbnRXZWlnaHQKaW1wb3J0IGFuZHJvaWR4LmNvbXBvc2UudWkudW5p
+          dC5kcAppbXBvcnQgYW5kcm9pZHguY29tcG9zZS51aS51bml0LnNwCmltcG9ydCBhcHAubnVkcm9pZGxhYnMubnVzdHJpbS5CdWls
+          ZENvbmZpZwppbXBvcnQgYXBwLm51ZHJvaWRsYWJzLm51c3RyaW0uY29yZS5zb3VyY2UuSW5zdGFsbGVkU291cmNlU3RvcmUKaW1w
+          b3J0IGFwcC5udWRyb2lkbGFicy5udXN0cmltLmNvcmUudXBkYXRlLkFwcFVwZGF0ZXIKaW1wb3J0IGFwcC5udWRyb2lkbGFicy5u
+          dXN0cmltLmNvcmUudXBkYXRlLlVwZGF0ZUluZm8KaW1wb3J0IGFwcC5udWRyb2lkbGFicy5udXN0cmltLnR2LnRoZW1lLlR2Q29s
+          b3JzCmltcG9ydCBhcHAubnVkcm9pZGxhYnMubnVzdHJpbS51aS5TdWJ0aXRsZURpc3BsYXlNb2RlCmltcG9ydCBhcHAubnVkcm9p
+          ZGxhYnMubnVzdHJpbS51aS5VaVByZWZlcmVuY2VzCmltcG9ydCBrb3RsaW54LmNvcm91dGluZXMuZGVsYXkKaW1wb3J0IGtvdGxp
+          bnguY29yb3V0aW5lcy5sYXVuY2gKCkBDb21wb3NhYmxlCmZ1biBUdlNldHRpbmdzU2NyZWVuKAogICAgY29udGVudEZvY3VzUmVx
+          dWVzdFRva2VuOiBJbnQsCiAgICBmaXJzdENvbnRlbnRSZXF1ZXN0ZXI6IEZvY3VzUmVxdWVzdGVyLAogICAgb25Db250ZW50Rm9j
+          dXNlZDogKEZvY3VzUmVxdWVzdGVyKSAtPiBVbml0LAogICAgb25Nb3ZlTGVmdDogKCkgLT4gVW5pdAopIHsKICAgIHZhbCBjb250
+          ZXh0ID0gTG9jYWxDb250ZXh0LmN1cnJlbnQKICAgIHZhbCBwcmVmZXJlbmNlcyA9IHJlbWVtYmVyKGNvbnRleHQpIHsgVWlQcmVm
+          ZXJlbmNlcyhjb250ZXh0KSB9CiAgICB2YWwgc291cmNlU3RvcmUgPSByZW1lbWJlcihjb250ZXh0KSB7IEluc3RhbGxlZFNvdXJj
+          ZVN0b3JlKGNvbnRleHQpIH0KICAgIHZhbCB1cGRhdGVyID0gcmVtZW1iZXIoY29udGV4dCkgeyBBcHBVcGRhdGVyKGNvbnRleHQp
+          IH0KICAgIHZhbCB1cGRhdGVTY29wZSA9IHJlbWVtYmVyQ29yb3V0aW5lU2NvcGUoKQogICAgdmFyIGF2YWlsYWJsZVVwZGF0ZSBi
+          eSByZW1lbWJlciB7IG11dGFibGVTdGF0ZU9mPFVwZGF0ZUluZm8/PihudWxsKSB9CiAgICB2YXIgdXBkYXRlQnVzeSBieSByZW1l
+          bWJlciB7IG11dGFibGVTdGF0ZU9mKGZhbHNlKSB9CiAgICB2YXIgdXBkYXRlUHJvZ3Jlc3MgYnkgcmVtZW1iZXIgeyBtdXRhYmxl
+          U3RhdGVPZjxJbnQ/PihudWxsKSB9CiAgICB2YXIgdXBkYXRlU3RhdHVzIGJ5IHJlbWVtYmVyIHsKICAgICAgICBtdXRhYmxlU3Rh
+          dGVPZigiQ3VycmVudCAke0J1aWxkQ29uZmlnLlZFUlNJT05fTkFNRX0uIFByZXNzIE9LIHRvIGNoZWNrIGZvciB1cGRhdGVzLiIp
+          CiAgICB9CgogICAgdmFyIGF1dG9wbGF5Rmlyc3QgYnkgcmVtZW1iZXIgewogICAgICAgIG11dGFibGVTdGF0ZU9mKHByZWZlcmVu
+          Y2VzLmF1dG9wbGF5Rmlyc3RTb3VyY2UpCiAgICB9CiAgICB2YXIgYXV0b3BsYXlOZXh0IGJ5IHJlbWVtYmVyIHsKICAgICAgICBt
+          dXRhYmxlU3RhdGVPZihwcmVmZXJlbmNlcy5hdXRvcGxheU5leHRFcGlzb2RlKQogICAgfQogICAgdmFyIHNob3dBbGxTdWJ0aXRs
+          ZXMgYnkgcmVtZW1iZXIgewogICAgICAgIG11dGFibGVTdGF0ZU9mKAogICAgICAgICAgICBwcmVmZXJlbmNlcy5zdWJ0aXRsZURp
+          c3BsYXlNb2RlID09IFN1YnRpdGxlRGlzcGxheU1vZGUuU0hPV19BTEwKICAgICAgICApCiAgICB9CgogICAgdmFsIGxpc3RTdGF0
+          ZSA9IHJlbWVtYmVyTGF6eUxpc3RTdGF0ZSgpCiAgICB2YXIgaW5zdGFsbGVkU291cmNlcyBieSByZW1lbWJlciB7CiAgICAgICAg
+          bXV0YWJsZVN0YXRlT2Yoc291cmNlU3RvcmUuc291cmNlcygpKQogICAgfQogICAgdmFyIHNvdXJjZVN0YXRlcyBieSByZW1lbWJl
+          ciB7CiAgICAgICAgbXV0YWJsZVN0YXRlT2YoCiAgICAgICAgICAgIGluc3RhbGxlZFNvdXJjZXMuYXNzb2NpYXRlIHsgc291cmNl
+          IC0+CiAgICAgICAgICAgICAgICBzb3VyY2UudXJsIHRvIHNvdXJjZS5lbmFibGVkCiAgICAgICAgICAgIH0KICAgICAgICApCiAg
+          ICB9CiAgICB2YXIgbGFzdEZvY3VzZWRSZXF1ZXN0ZXIgYnkgcmVtZW1iZXIgewogICAgICAgIG11dGFibGVTdGF0ZU9mPEZvY3Vz
+          UmVxdWVzdGVyPz4obnVsbCkKICAgIH0KCiAgICBmdW4gcmVwb3J0Rm9jdXMocmVxdWVzdGVyOiBGb2N1c1JlcXVlc3Rlcikgewog
+          ICAgICAgIGxhc3RGb2N1c2VkUmVxdWVzdGVyID0gcmVxdWVzdGVyCiAgICAgICAgb25Db250ZW50Rm9jdXNlZChyZXF1ZXN0ZXIp
+          CiAgICB9CgogICAgZnVuIHJ1blVwZGF0ZUFjdGlvbigpIHsKICAgICAgICBpZiAodXBkYXRlQnVzeSkgcmV0dXJuCgogICAgICAg
+          IHZhbCBpbmZvID0gYXZhaWxhYmxlVXBkYXRlCiAgICAgICAgaWYgKGluZm8gPT0gbnVsbCkgewogICAgICAgICAgICB1cGRhdGVT
+          Y29wZS5sYXVuY2ggewogICAgICAgICAgICAgICAgdXBkYXRlQnVzeSA9IHRydWUKICAgICAgICAgICAgICAgIHVwZGF0ZVByb2dy
+          ZXNzID0gbnVsbAogICAgICAgICAgICAgICAgdXBkYXRlU3RhdHVzID0gIkNoZWNraW5nIEdpdEh1YiByZWxlYXNlIGZvciBhIG5l
+          d2VyIE51c3RyaW0gYnVpbGQuLi4iCgogICAgICAgICAgICAgICAgdXBkYXRlci5jaGVjaygpCiAgICAgICAgICAgICAgICAgICAg
+          Lm9uU3VjY2VzcyB7IHJlc3VsdCAtPgogICAgICAgICAgICAgICAgICAgICAgICBhdmFpbGFibGVVcGRhdGUgPSByZXN1bHQKICAg
+          ICAgICAgICAgICAgICAgICAgICAgdXBkYXRlU3RhdHVzID0gaWYgKHJlc3VsdCA9PSBudWxsKSB7CiAgICAgICAgICAgICAgICAg
+          ICAgICAgICAgICAiTnVzdHJpbSBpcyB1cCB0byBkYXRlLiIKICAgICAgICAgICAgICAgICAgICAgICAgfSBlbHNlIHsKICAgICAg
+          ICAgICAgICAgICAgICAgICAgICAgIGJ1aWxkU3RyaW5nIHsKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBhcHBlbmQo
+          IlZlcnNpb24gJHtyZXN1bHQudmVyc2lvbk5hbWV9IGlzIGF2YWlsYWJsZS4iKQogICAgICAgICAgICAgICAgICAgICAgICAgICAg
+          ICAgIGlmIChyZXN1bHQuY2hhbmdlbG9nLmlzTm90QmxhbmsoKSkgewogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg
+          ICBhcHBlbmQoIiAiKQogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBhcHBlbmQocmVzdWx0LmNoYW5nZWxvZykK
+          ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgYXBwZW5kKCIg
+          UHJlc3MgT0sgdG8gZG93bmxvYWQgYW5kIGluc3RhbGwuIikKICAgICAgICAgICAgICAgICAgICAgICAgICAgIH0KICAgICAgICAg
+          ICAgICAgICAgICAgICAgfQogICAgICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgICAgICAgICAub25GYWlsdXJlIHsgZXJy
+          b3IgLT4KICAgICAgICAgICAgICAgICAgICAgICAgdXBkYXRlU3RhdHVzID0gIlVwZGF0ZSBjaGVjayBmYWlsZWQ6ICR7ZXJyb3Iu
+          bWVzc2FnZSA/OiBlcnJvci5qYXZhQ2xhc3Muc2ltcGxlTmFtZX0iCiAgICAgICAgICAgICAgICAgICAgfQoKICAgICAgICAgICAg
+          ICAgIHVwZGF0ZUJ1c3kgPSBmYWxzZQogICAgICAgICAgICB9CiAgICAgICAgICAgIHJldHVybgogICAgICAgIH0KCiAgICAgICAg
+          aWYgKCF1cGRhdGVyLmNhblJlcXVlc3RQYWNrYWdlSW5zdGFsbCgpKSB7CiAgICAgICAgICAgIHVwZGF0ZVN0YXR1cyA9ICJBbGxv
+          dyBOdXN0cmltIHRvIGluc3RhbGwgdW5rbm93biBhcHBzLCB0aGVuIHJldHVybiBoZXJlIGFuZCBwcmVzcyBPSyBhZ2Fpbi4iCiAg
+          ICAgICAgICAgIHVwZGF0ZXIub3Blbkluc3RhbGxQZXJtaXNzaW9uKCkKICAgICAgICAgICAgcmV0dXJuCiAgICAgICAgfQoKICAg
+          ICAgICB1cGRhdGVTY29wZS5sYXVuY2ggewogICAgICAgICAgICB1cGRhdGVCdXN5ID0gdHJ1ZQogICAgICAgICAgICB1cGRhdGVQ
+          cm9ncmVzcyA9IDAKICAgICAgICAgICAgdXBkYXRlU3RhdHVzID0gIkRvd25sb2FkaW5nICR7aW5mby52ZXJzaW9uTmFtZX0uLi4i
+          CgogICAgICAgICAgICB1cGRhdGVyLmRvd25sb2FkKGluZm8pIHsgcHJvZ3Jlc3MgLT4KICAgICAgICAgICAgICAgIHVwZGF0ZVBy
+          b2dyZXNzID0gcHJvZ3Jlc3MKICAgICAgICAgICAgICAgIHVwZGF0ZVN0YXR1cyA9ICJEb3dubG9hZGluZyAke2luZm8udmVyc2lv
+          bk5hbWV9Li4uICRwcm9ncmVzcyUiCiAgICAgICAgICAgIH0KICAgICAgICAgICAgICAgIC5vblN1Y2Nlc3MgeyBhcGsgLT4KICAg
+          ICAgICAgICAgICAgICAgICB1cGRhdGVTdGF0dXMgPSAiRG93bmxvYWQgdmVyaWZpZWQuIE9wZW5pbmcgQW5kcm9pZCBpbnN0YWxs
+          ZXIuLi4iCiAgICAgICAgICAgICAgICAgICAgdXBkYXRlci5pbnN0YWxsKGFwaykKICAgICAgICAgICAgICAgICAgICAgICAgLm9u
+          RmFpbHVyZSB7IGVycm9yIC0+CiAgICAgICAgICAgICAgICAgICAgICAgICAgICB1cGRhdGVTdGF0dXMgPSAiSW5zdGFsbGVyIGZh
+          aWxlZDogJHtlcnJvci5tZXNzYWdlID86IGVycm9yLmphdmFDbGFzcy5zaW1wbGVOYW1lfSIKICAgICAgICAgICAgICAgICAgICAg
+          ICAgfQogICAgICAgICAgICAgICAgfQogICAgICAgICAgICAgICAgLm9uRmFpbHVyZSB7IGVycm9yIC0+CiAgICAgICAgICAgICAg
+          ICAgICAgdXBkYXRlU3RhdHVzID0gIlVwZGF0ZSBkb3dubG9hZCBmYWlsZWQ6ICR7ZXJyb3IubWVzc2FnZSA/OiBlcnJvci5qYXZh
+          Q2xhc3Muc2ltcGxlTmFtZX0iCiAgICAgICAgICAgICAgICB9CgogICAgICAgICAgICB1cGRhdGVCdXN5ID0gZmFsc2UKICAgICAg
+          ICAgICAgdXBkYXRlUHJvZ3Jlc3MgPSBudWxsCiAgICAgICAgfQogICAgfQoKICAgIExhdW5jaGVkRWZmZWN0KGNvbnRlbnRGb2N1
+          c1JlcXVlc3RUb2tlbikgewogICAgICAgIHZhbCBsYXRlc3RTb3VyY2VzID0gc291cmNlU3RvcmUuc291cmNlcygpCiAgICAgICAg
+          aW5zdGFsbGVkU291cmNlcyA9IGxhdGVzdFNvdXJjZXMKICAgICAgICBzb3VyY2VTdGF0ZXMgPSBsYXRlc3RTb3VyY2VzLmFzc29j
+          aWF0ZSB7IHNvdXJjZSAtPgogICAgICAgICAgICBzb3VyY2UudXJsIHRvIChzb3VyY2VTdGF0ZXNbc291cmNlLnVybF0gPzogc291
+          cmNlLmVuYWJsZWQpCiAgICAgICAgfQoKICAgICAgICBpZiAoY29udGVudEZvY3VzUmVxdWVzdFRva2VuID4gMCkgewogICAgICAg
+          ICAgICBkZWxheSg2MCkKICAgICAgICAgICAgcnVuQ2F0Y2hpbmcgewogICAgICAgICAgICAgICAgKGxhc3RGb2N1c2VkUmVxdWVz
+          dGVyID86IGZpcnN0Q29udGVudFJlcXVlc3RlcikucmVxdWVzdEZvY3VzKCkKICAgICAgICAgICAgfQogICAgICAgIH0KICAgIH0K
+          CiAgICBMYXp5Q29sdW1uKAogICAgICAgIHN0YXRlID0gbGlzdFN0YXRlLAogICAgICAgIG1vZGlmaWVyID0gTW9kaWZpZXIKICAg
+          ICAgICAgICAgLmZpbGxNYXhTaXplKCkKICAgICAgICAgICAgLmJhY2tncm91bmQoVHZDb2xvcnMuQmFja2dyb3VuZCksCiAgICAg
+          ICAgY29udGVudFBhZGRpbmcgPSBhbmRyb2lkeC5jb21wb3NlLmZvdW5kYXRpb24ubGF5b3V0LlBhZGRpbmdWYWx1ZXMoCiAgICAg
+          ICAgICAgIHN0YXJ0ID0gMzYuZHAsCiAgICAgICAgICAgIGVuZCA9IDUwLmRwLAogICAgICAgICAgICB0b3AgPSAzOC5kcCwKICAg
+          ICAgICAgICAgYm90dG9tID0gNDIuZHAKICAgICAgICApLAogICAgICAgIHZlcnRpY2FsQXJyYW5nZW1lbnQgPSBBcnJhbmdlbWVu
+          dC5zcGFjZWRCeSgxMi5kcCkKICAgICkgewogICAgICAgIGl0ZW0oa2V5ID0gImhlYWRlciIpIHsKICAgICAgICAgICAgQ29sdW1u
+          KAogICAgICAgICAgICAgICAgbW9kaWZpZXIgPSBNb2RpZmllci5wYWRkaW5nKGJvdHRvbSA9IDEwLmRwKSwKICAgICAgICAgICAg
+          ICAgIHZlcnRpY2FsQXJyYW5nZW1lbnQgPSBBcnJhbmdlbWVudC5zcGFjZWRCeSg1LmRwKQogICAgICAgICAgICApIHsKICAgICAg
+          ICAgICAgICAgIFRleHQoCiAgICAgICAgICAgICAgICAgICAgdGV4dCA9ICJTZXR0aW5ncyIsCiAgICAgICAgICAgICAgICAgICAg
+          Y29sb3IgPSBUdkNvbG9ycy5UZXh0UHJpbWFyeSwKICAgICAgICAgICAgICAgICAgICBmb250V2VpZ2h0ID0gRm9udFdlaWdodC5C
+          b2xkLAogICAgICAgICAgICAgICAgICAgIGZvbnRTaXplID0gMzAuc3AKICAgICAgICAgICAgICAgICkKICAgICAgICAgICAgICAg
+          IFRleHQoCiAgICAgICAgICAgICAgICAgICAgdGV4dCA9IGJ1aWxkU3RyaW5nIHsKICAgICAgICAgICAgICAgICAgICAgICAgYXBw
+          ZW5kKCJUViBwbGF5YmFjaywgc3VidGl0bGVzIGFuZCBzb3VyY2VzIikKICAgICAgICAgICAgICAgICAgICAgICAgaWYgKGluc3Rh
+          bGxlZFNvdXJjZXMuaXNOb3RFbXB0eSgpKSB7CiAgICAgICAgICAgICAgICAgICAgICAgICAgICB2YWwgZW5hYmxlZENvdW50ID0g
+          c291cmNlU3RhdGVzLnZhbHVlcy5jb3VudCB7IGl0IH0KICAgICAgICAgICAgICAgICAgICAgICAgICAgIGFwcGVuZCgiIMK3ICRl
+          bmFibGVkQ291bnQvJHtpbnN0YWxsZWRTb3VyY2VzLnNpemV9IHNvdXJjZXMgZW5hYmxlZCIpCiAgICAgICAgICAgICAgICAgICAg
+          ICAgIH0KICAgICAgICAgICAgICAgICAgICB9LAogICAgICAgICAgICAgICAgICAgIGNvbG9yID0gVHZDb2xvcnMuVGV4dFNlY29u
+          ZGFyeSwKICAgICAgICAgICAgICAgICAgICBmb250U2l6ZSA9IDEzLnNwCiAgICAgICAgICAgICAgICApCiAgICAgICAgICAgIH0K
+          ICAgICAgICB9CgogICAgICAgIGl0ZW0oa2V5ID0gInBsYXliYWNrLXRpdGxlIikgewogICAgICAgICAgICBUdlNldHRpbmdzU2Vj
+          dGlvblRpdGxlKCJQbGF5YmFjayIpCiAgICAgICAgfQoKICAgICAgICBpdGVtKGtleSA9ICJhdXRvcGxheS1zb3VyY2UiKSB7CiAg
+          ICAgICAgICAgIFR2U2V0dGluZ3NUb2dnbGVSb3coCiAgICAgICAgICAgICAgICB0aXRsZSA9ICJBdXRvcGxheSBmaXJzdCBzb3Vy
+          Y2UiLAogICAgICAgICAgICAgICAgc3VtbWFyeSA9ICJTdGFydCB0aGUgZmlyc3QgcGxheWFibGUgcmVzdWx0IGF1dG9tYXRpY2Fs
+          bHkuIiwKICAgICAgICAgICAgICAgIGljb24gPSBJY29ucy5PdXRsaW5lZC5QbGF5QXJyb3csCiAgICAgICAgICAgICAgICBjaGVj
+          a2VkID0gYXV0b3BsYXlGaXJzdCwKICAgICAgICAgICAgICAgIGZvY3VzUmVxdWVzdGVyID0gZmlyc3RDb250ZW50UmVxdWVzdGVy
+          LAogICAgICAgICAgICAgICAgb25Gb2N1c2VkID0gOjpyZXBvcnRGb2N1cywKICAgICAgICAgICAgICAgIG9uTW92ZUxlZnQgPSBv
+          bk1vdmVMZWZ0LAogICAgICAgICAgICAgICAgb25Ub2dnbGUgPSB7CiAgICAgICAgICAgICAgICAgICAgYXV0b3BsYXlGaXJzdCA9
+          ICFhdXRvcGxheUZpcnN0CiAgICAgICAgICAgICAgICAgICAgcHJlZmVyZW5jZXMuYXV0b3BsYXlGaXJzdFNvdXJjZSA9IGF1dG9w
+          bGF5Rmlyc3QKICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgKQogICAgICAgIH0KCiAgICAgICAgaXRlbShrZXkgPSAiYXV0
+          b3BsYXktbmV4dCIpIHsKICAgICAgICAgICAgVHZTZXR0aW5nc1RvZ2dsZVJvdygKICAgICAgICAgICAgICAgIHRpdGxlID0gIkF1
+          dG9wbGF5IG5leHQgZXBpc29kZSIsCiAgICAgICAgICAgICAgICBzdW1tYXJ5ID0gIkNvbnRpbnVlIHRvIHRoZSBuZXh0IGVwaXNv
+          ZGUgd2hlbiBhdmFpbGFibGUuIiwKICAgICAgICAgICAgICAgIGljb24gPSBJY29ucy5PdXRsaW5lZC5QbGF5QXJyb3csCiAgICAg
+          ICAgICAgICAgICBjaGVja2VkID0gYXV0b3BsYXlOZXh0LAogICAgICAgICAgICAgICAgb25Gb2N1c2VkID0gOjpyZXBvcnRGb2N1
+          cywKICAgICAgICAgICAgICAgIG9uTW92ZUxlZnQgPSBvbk1vdmVMZWZ0LAogICAgICAgICAgICAgICAgb25Ub2dnbGUgPSB7CiAg
+          ICAgICAgICAgICAgICAgICAgYXV0b3BsYXlOZXh0ID0gIWF1dG9wbGF5TmV4dAogICAgICAgICAgICAgICAgICAgIHByZWZlcmVu
+          Y2VzLmF1dG9wbGF5TmV4dEVwaXNvZGUgPSBhdXRvcGxheU5leHQKICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgKQogICAg
+          ICAgIH0KCiAgICAgICAgaXRlbShrZXkgPSAic3VidGl0bGUtdGl0bGUiKSB7CiAgICAgICAgICAgIFR2U2V0dGluZ3NTZWN0aW9u
+          VGl0bGUoIlN1YnRpdGxlcyIpCiAgICAgICAgfQoKICAgICAgICBpdGVtKGtleSA9ICJzdWJ0aXRsZS1tb2RlIikgewogICAgICAg
+          ICAgICBUdlNldHRpbmdzVG9nZ2xlUm93KAogICAgICAgICAgICAgICAgdGl0bGUgPSAiU2hvdyBhbGwgc3VidGl0bGUgbGFuZ3Vh
+          Z2VzIiwKICAgICAgICAgICAgICAgIHN1bW1hcnkgPSBpZiAoc2hvd0FsbFN1YnRpdGxlcykgewogICAgICAgICAgICAgICAgICAg
+          ICJBbGwgYXZhaWxhYmxlIHN1YnRpdGxlcyBhcmUgc2hvd24uIgogICAgICAgICAgICAgICAgfSBlbHNlIHsKICAgICAgICAgICAg
+          ICAgICAgICAiUHJlZmVyICR7cHJlZmVyZW5jZXMuc3VidGl0bGVQcmVmZXJyZWRMYW5ndWFnZS51cHBlcmNhc2UoKX0gdGhlbiAk
+          e3ByZWZlcmVuY2VzLnN1YnRpdGxlU2Vjb25kUHJlZmVycmVkTGFuZ3VhZ2UudXBwZXJjYXNlKCl9LiIKICAgICAgICAgICAgICAg
+          IH0sCiAgICAgICAgICAgICAgICBpY29uID0gSWNvbnMuT3V0bGluZWQuSW5mbywKICAgICAgICAgICAgICAgIGNoZWNrZWQgPSBz
+          aG93QWxsU3VidGl0bGVzLAogICAgICAgICAgICAgICAgb25Gb2N1c2VkID0gOjpyZXBvcnRGb2N1cywKICAgICAgICAgICAgICAg
+          IG9uTW92ZUxlZnQgPSBvbk1vdmVMZWZ0LAogICAgICAgICAgICAgICAgb25Ub2dnbGUgPSB7CiAgICAgICAgICAgICAgICAgICAg
+          c2hvd0FsbFN1YnRpdGxlcyA9ICFzaG93QWxsU3VidGl0bGVzCiAgICAgICAgICAgICAgICAgICAgcHJlZmVyZW5jZXMuc3VidGl0
+          bGVEaXNwbGF5TW9kZSA9IGlmIChzaG93QWxsU3VidGl0bGVzKSB7CiAgICAgICAgICAgICAgICAgICAgICAgIFN1YnRpdGxlRGlz
+          cGxheU1vZGUuU0hPV19BTEwKICAgICAgICAgICAgICAgICAgICB9IGVsc2UgewogICAgICAgICAgICAgICAgICAgICAgICBTdWJ0
+          aXRsZURpc3BsYXlNb2RlLlBSRUZFUlJFRF9PTkxZCiAgICAgICAgICAgICAgICAgICAgfQogICAgICAgICAgICAgICAgfQogICAg
+          ICAgICAgICApCiAgICAgICAgfQoKICAgICAgICBpdGVtKGtleSA9ICJzb3VyY2UtdGl0bGUiKSB7CiAgICAgICAgICAgIFR2U2V0
+          dGluZ3NTZWN0aW9uVGl0bGUoIlNvdXJjZXMiKQogICAgICAgIH0KCiAgICAgICAgaW5zdGFsbGVkU291cmNlcy5mb3JFYWNoSW5k
+          ZXhlZCB7IGluZGV4LCBzb3VyY2UgLT4KICAgICAgICAgICAgaXRlbShrZXkgPSAic291cmNlOiR7c291cmNlLnVybH0iKSB7CiAg
+          ICAgICAgICAgICAgICB2YWwgY2hlY2tlZCA9IHNvdXJjZVN0YXRlc1tzb3VyY2UudXJsXSA/OiBzb3VyY2UuZW5hYmxlZAogICAg
+          ICAgICAgICAgICAgVHZTZXR0aW5nc1RvZ2dsZVJvdygKICAgICAgICAgICAgICAgICAgICB0aXRsZSA9IHNvdXJjZS5sYWJlbC5p
+          ZkJsYW5rIHsKICAgICAgICAgICAgICAgICAgICAgICAgIlNvdXJjZSAke2luZGV4ICsgMX0iCiAgICAgICAgICAgICAgICAgICAg
+          fSwKICAgICAgICAgICAgICAgICAgICBzdW1tYXJ5ID0gYnVpbGRTdHJpbmcgewogICAgICAgICAgICAgICAgICAgICAgICBpZiAo
+          c291cmNlLmRldmVsb3Blck9ubHkpIHsKICAgICAgICAgICAgICAgICAgICAgICAgICAgIGFwcGVuZCgiRGV2ZWxvcGVyIMK3ICIp
+          CiAgICAgICAgICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgICAgICAgICAgICAgYXBwZW5kKHNvdXJjZS51cmwpCiAgICAg
+          ICAgICAgICAgICAgICAgfSwKICAgICAgICAgICAgICAgICAgICBpY29uID0gSWNvbnMuT3V0bGluZWQuU2V0dGluZ3MsCiAgICAg
+          ICAgICAgICAgICAgICAgY2hlY2tlZCA9IGNoZWNrZWQsCiAgICAgICAgICAgICAgICAgICAgb25Gb2N1c2VkID0gOjpyZXBvcnRG
+          b2N1cywKICAgICAgICAgICAgICAgICAgICBvbk1vdmVMZWZ0ID0gb25Nb3ZlTGVmdCwKICAgICAgICAgICAgICAgICAgICBvblRv
+          Z2dsZSA9IHsKICAgICAgICAgICAgICAgICAgICAgICAgdmFsIG5leHQgPSAhY2hlY2tlZAogICAgICAgICAgICAgICAgICAgICAg
+          ICBzb3VyY2VTdG9yZS5zZXRFbmFibGVkKHNvdXJjZS51cmwsIG5leHQpCiAgICAgICAgICAgICAgICAgICAgICAgIHNvdXJjZVN0
+          YXRlcyA9IHNvdXJjZVN0YXRlcyArIChzb3VyY2UudXJsIHRvIG5leHQpCiAgICAgICAgICAgICAgICAgICAgfQogICAgICAgICAg
+          ICAgICAgKQogICAgICAgICAgICB9CiAgICAgICAgfQoKICAgICAgICBpZiAoaW5zdGFsbGVkU291cmNlcy5pc0VtcHR5KCkpIHsK
+          ICAgICAgICAgICAgaXRlbShrZXkgPSAic291cmNlLWVtcHR5IikgewogICAgICAgICAgICAgICAgVHZTZXR0aW5nc0luZm9Sb3co
+          CiAgICAgICAgICAgICAgICAgICAgdGl0bGUgPSAiTm8gc291cmNlcyBpbnN0YWxsZWQiLAogICAgICAgICAgICAgICAgICAgIHN1
+          bW1hcnkgPSAiSW5zdGFsbCBhIHNvdXJjZSBmcm9tIHRoZSBtb2JpbGUgc291cmNlIG1hbmFnZXIuIiwKICAgICAgICAgICAgICAg
+          ICAgICBpY29uID0gSWNvbnMuT3V0bGluZWQuSW5mbywKICAgICAgICAgICAgICAgICAgICBvbkZvY3VzZWQgPSA6OnJlcG9ydEZv
+          Y3VzLAogICAgICAgICAgICAgICAgICAgIG9uTW92ZUxlZnQgPSBvbk1vdmVMZWZ0CiAgICAgICAgICAgICAgICApCiAgICAgICAg
+          ICAgIH0KICAgICAgICB9CgogICAgICAgIGl0ZW0oa2V5ID0gInVwZGF0ZS10aXRsZSIpIHsKICAgICAgICAgICAgVHZTZXR0aW5n
+          c1NlY3Rpb25UaXRsZSgiVXBkYXRlcyIpCiAgICAgICAgfQoKICAgICAgICBpdGVtKGtleSA9ICJhcHAtdXBkYXRlIikgewogICAg
+          ICAgICAgICB2YWwgdXBkYXRlID0gYXZhaWxhYmxlVXBkYXRlCiAgICAgICAgICAgIFR2U2V0dGluZ3NBY3Rpb25Sb3coCiAgICAg
+          ICAgICAgICAgICB0aXRsZSA9IHdoZW4gewogICAgICAgICAgICAgICAgICAgIHVwZGF0ZUJ1c3kgJiYgdXBkYXRlUHJvZ3Jlc3Mg
+          IT0gbnVsbCAtPiAiRG93bmxvYWRpbmcgdXBkYXRlIgogICAgICAgICAgICAgICAgICAgIHVwZGF0ZUJ1c3kgLT4gIkNoZWNraW5n
+          IGZvciB1cGRhdGVzIgogICAgICAgICAgICAgICAgICAgIHVwZGF0ZSAhPSBudWxsIC0+ICJJbnN0YWxsICR7dXBkYXRlLnZlcnNp
+          b25OYW1lfSIKICAgICAgICAgICAgICAgICAgICBlbHNlIC0+ICJDaGVjayBmb3IgdXBkYXRlcyIKICAgICAgICAgICAgICAgIH0s
+          CiAgICAgICAgICAgICAgICBzdW1tYXJ5ID0gdXBkYXRlU3RhdHVzLAogICAgICAgICAgICAgICAgaWNvbiA9IEljb25zLk91dGxp
+          bmVkLlJlZnJlc2gsCiAgICAgICAgICAgICAgICB0cmFpbGluZyA9IHdoZW4gewogICAgICAgICAgICAgICAgICAgIHVwZGF0ZUJ1
+          c3kgJiYgdXBkYXRlUHJvZ3Jlc3MgIT0gbnVsbCAtPiAiJHt1cGRhdGVQcm9ncmVzcyA/OiAwfSUiCiAgICAgICAgICAgICAgICAg
+          ICAgdXBkYXRlQnVzeSAtPiAiV0FJVCIKICAgICAgICAgICAgICAgICAgICB1cGRhdGUgIT0gbnVsbCAtPiAiSU5TVEFMTCIKICAg
+          ICAgICAgICAgICAgICAgICBlbHNlIC0+ICJPSyIKICAgICAgICAgICAgICAgIH0sCiAgICAgICAgICAgICAgICBlbmFibGVkID0g
+          IXVwZGF0ZUJ1c3ksCiAgICAgICAgICAgICAgICBvbkZvY3VzZWQgPSA6OnJlcG9ydEZvY3VzLAogICAgICAgICAgICAgICAgb25N
+          b3ZlTGVmdCA9IG9uTW92ZUxlZnQsCiAgICAgICAgICAgICAgICBvbkFjdGl2YXRlID0gOjpydW5VcGRhdGVBY3Rpb24KICAgICAg
+          ICAgICAgKQogICAgICAgIH0KCiAgICAgICAgaXRlbShrZXkgPSAiYXBwLXRpdGxlIikgewogICAgICAgICAgICBUdlNldHRpbmdz
+          U2VjdGlvblRpdGxlKCJBYm91dCIpCiAgICAgICAgfQoKICAgICAgICBpdGVtKGtleSA9ICJhYm91dCIpIHsKICAgICAgICAgICAg
+          VHZTZXR0aW5nc0luZm9Sb3coCiAgICAgICAgICAgICAgICB0aXRsZSA9ICJOdXN0cmltIFRWIiwKICAgICAgICAgICAgICAgIHN1
+          bW1hcnkgPSAiVmVyc2lvbiAke0J1aWxkQ29uZmlnLlZFUlNJT05fTkFNRX0gwrcgUmVtb3RlLWZpcnN0IGludGVyZmFjZSIsCiAg
+          ICAgICAgICAgICAgICBpY29uID0gSWNvbnMuT3V0bGluZWQuSW5mbywKICAgICAgICAgICAgICAgIG9uRm9jdXNlZCA9IDo6cmVw
+          b3J0Rm9jdXMsCiAgICAgICAgICAgICAgICBvbk1vdmVMZWZ0ID0gb25Nb3ZlTGVmdAogICAgICAgICAgICApCiAgICAgICAgfQog
+          ICAgfQp9CgpAQ29tcG9zYWJsZQpwcml2YXRlIGZ1biBUdlNldHRpbmdzU2VjdGlvblRpdGxlKAogICAgdGl0bGU6IFN0cmluZwop
+          IHsKICAgIFRleHQoCiAgICAgICAgdGV4dCA9IHRpdGxlLnVwcGVyY2FzZSgpLAogICAgICAgIGNvbG9yID0gVHZDb2xvcnMuVGV4
+          dFNlY29uZGFyeS5jb3B5KGFscGhhID0gMC43MmYpLAogICAgICAgIGZvbnRXZWlnaHQgPSBGb250V2VpZ2h0LlNlbWlCb2xkLAog
+          ICAgICAgIGZvbnRTaXplID0gMTEuc3AsCiAgICAgICAgbGV0dGVyU3BhY2luZyA9IDEuMS5zcCwKICAgICAgICBtb2RpZmllciA9
+          IE1vZGlmaWVyLnBhZGRpbmcoCiAgICAgICAgICAgIHRvcCA9IDguZHAsCiAgICAgICAgICAgIGJvdHRvbSA9IDIuZHAKICAgICAg
+          ICApCiAgICApCn0KCkBDb21wb3NhYmxlCnByaXZhdGUgZnVuIFR2U2V0dGluZ3NUb2dnbGVSb3coCiAgICB0aXRsZTogU3RyaW5n
+          LAogICAgc3VtbWFyeTogU3RyaW5nLAogICAgaWNvbjogSW1hZ2VWZWN0b3IsCiAgICBjaGVja2VkOiBCb29sZWFuLAogICAgZm9j
+          dXNSZXF1ZXN0ZXI6IEZvY3VzUmVxdWVzdGVyPyA9IG51bGwsCiAgICBvbkZvY3VzZWQ6IChGb2N1c1JlcXVlc3RlcikgLT4gVW5p
+          dCwKICAgIG9uTW92ZUxlZnQ6ICgoKSAtPiBVbml0KT8gPSBudWxsLAogICAgb25Ub2dnbGU6ICgpIC0+IFVuaXQKKSB7CiAgICB2
+          YWwgcmVxdWVzdGVyID0gcmVtZW1iZXIodGl0bGUsIGZvY3VzUmVxdWVzdGVyKSB7CiAgICAgICAgZm9jdXNSZXF1ZXN0ZXIgPzog
+          Rm9jdXNSZXF1ZXN0ZXIoKQogICAgfQogICAgdmFyIGZvY3VzZWQgYnkgcmVtZW1iZXIodGl0bGUpIHsgbXV0YWJsZVN0YXRlT2Yo
+          ZmFsc2UpIH0KCiAgICBTdXJmYWNlKAogICAgICAgIG1vZGlmaWVyID0gTW9kaWZpZXIKICAgICAgICAgICAgLmZpbGxNYXhXaWR0
+          aCgpCiAgICAgICAgICAgIC5mb2N1c1JlcXVlc3RlcihyZXF1ZXN0ZXIpCiAgICAgICAgICAgIC5vbkZvY3VzQ2hhbmdlZCB7IHN0
+          YXRlIC0+CiAgICAgICAgICAgICAgICBmb2N1c2VkID0gc3RhdGUuaGFzRm9jdXMKICAgICAgICAgICAgICAgIGlmIChzdGF0ZS5o
+          YXNGb2N1cykgb25Gb2N1c2VkKHJlcXVlc3RlcikKICAgICAgICAgICAgfQogICAgICAgICAgICAub25QcmV2aWV3S2V5RXZlbnQg
+          eyBldmVudCAtPgogICAgICAgICAgICAgICAgd2hlbiB7CiAgICAgICAgICAgICAgICAgICAgZXZlbnQudHlwZSA9PSBLZXlFdmVu
+          dFR5cGUuS2V5RG93biAmJgogICAgICAgICAgICAgICAgICAgICAgICBldmVudC5rZXkgPT0gS2V5LkRpcmVjdGlvbkxlZnQgJiYK
+          ICAgICAgICAgICAgICAgICAgICAgICAgb25Nb3ZlTGVmdCAhPSBudWxsIC0+IHsKICAgICAgICAgICAgICAgICAgICAgICAgb25N
+          b3ZlTGVmdCgpCiAgICAgICAgICAgICAgICAgICAgICAgIHRydWUKICAgICAgICAgICAgICAgICAgICB9CgogICAgICAgICAgICAg
+          ICAgICAgIGV2ZW50LnR5cGUgPT0gS2V5RXZlbnRUeXBlLktleURvd24gJiYKICAgICAgICAgICAgICAgICAgICAgICAgKAogICAg
+          ICAgICAgICAgICAgICAgICAgICAgICAgZXZlbnQua2V5ID09IEtleS5EaXJlY3Rpb25DZW50ZXIgfHwKICAgICAgICAgICAgICAg
+          ICAgICAgICAgICAgICAgICBldmVudC5rZXkgPT0gS2V5LkVudGVyCiAgICAgICAgICAgICAgICAgICAgICAgICAgICApIC0+IHsK
+          ICAgICAgICAgICAgICAgICAgICAgICAgb25Ub2dnbGUoKQogICAgICAgICAgICAgICAgICAgICAgICB0cnVlCiAgICAgICAgICAg
+          ICAgICAgICAgfQoKICAgICAgICAgICAgICAgICAgICBlbHNlIC0+IGZhbHNlCiAgICAgICAgICAgICAgICB9CiAgICAgICAgICAg
+          IH0KICAgICAgICAgICAgLmZvY3VzYWJsZSgpLAogICAgICAgIGNvbG9yID0gaWYgKGZvY3VzZWQpIHsKICAgICAgICAgICAgVHZD
+          b2xvcnMuRm9jdXNCYWNrZ3JvdW5kCiAgICAgICAgfSBlbHNlIHsKICAgICAgICAgICAgVHZDb2xvcnMuU3VyZmFjZQogICAgICAg
+          IH0sCiAgICAgICAgc2hhcGUgPSBSb3VuZGVkQ29ybmVyU2hhcGUoMTQuZHApLAogICAgICAgIGJvcmRlciA9IEJvcmRlclN0cm9r
+          ZSgKICAgICAgICAgICAgaWYgKGZvY3VzZWQpIDIuZHAgZWxzZSAxLmRwLAogICAgICAgICAgICBpZiAoZm9jdXNlZCkgewogICAg
+          ICAgICAgICAgICAgVHZDb2xvcnMuRm9jdXNSaW5nCiAgICAgICAgICAgIH0gZWxzZSB7CiAgICAgICAgICAgICAgICBDb2xvci5X
+          aGl0ZS5jb3B5KGFscGhhID0gMC4wOGYpCiAgICAgICAgICAgIH0KICAgICAgICApCiAgICApIHsKICAgICAgICBSb3coCiAgICAg
+          ICAgICAgIG1vZGlmaWVyID0gTW9kaWZpZXIKICAgICAgICAgICAgICAgIC5maWxsTWF4V2lkdGgoKQogICAgICAgICAgICAgICAg
+          LnBhZGRpbmcoCiAgICAgICAgICAgICAgICAgICAgaG9yaXpvbnRhbCA9IDE4LmRwLAogICAgICAgICAgICAgICAgICAgIHZlcnRp
+          Y2FsID0gMTQuZHAKICAgICAgICAgICAgICAgICksCiAgICAgICAgICAgIHZlcnRpY2FsQWxpZ25tZW50ID0gQWxpZ25tZW50LkNl
+          bnRlclZlcnRpY2FsbHksCiAgICAgICAgICAgIGhvcml6b250YWxBcnJhbmdlbWVudCA9IEFycmFuZ2VtZW50LnNwYWNlZEJ5KDE0
+          LmRwKQogICAgICAgICkgewogICAgICAgICAgICBJY29uKAogICAgICAgICAgICAgICAgaW1hZ2VWZWN0b3IgPSBpY29uLAogICAg
+          ICAgICAgICAgICAgY29udGVudERlc2NyaXB0aW9uID0gbnVsbCwKICAgICAgICAgICAgICAgIHRpbnQgPSBUdkNvbG9ycy5UZXh0
+          U2Vjb25kYXJ5LAogICAgICAgICAgICAgICAgbW9kaWZpZXIgPSBNb2RpZmllci5zaXplKDIyLmRwKQogICAgICAgICAgICApCiAg
+          ICAgICAgICAgIENvbHVtbigKICAgICAgICAgICAgICAgIG1vZGlmaWVyID0gTW9kaWZpZXIud2VpZ2h0KDFmKSwKICAgICAgICAg
+          ICAgICAgIHZlcnRpY2FsQXJyYW5nZW1lbnQgPSBBcnJhbmdlbWVudC5zcGFjZWRCeSgzLmRwKQogICAgICAgICAgICApIHsKICAg
+          ICAgICAgICAgICAgIFRleHQoCiAgICAgICAgICAgICAgICAgICAgdGV4dCA9IHRpdGxlLAogICAgICAgICAgICAgICAgICAgIGNv
+          bG9yID0gVHZDb2xvcnMuVGV4dFByaW1hcnksCiAgICAgICAgICAgICAgICAgICAgZm9udFdlaWdodCA9IEZvbnRXZWlnaHQuU2Vt
+          aUJvbGQsCiAgICAgICAgICAgICAgICAgICAgZm9udFNpemUgPSAxNS5zcAogICAgICAgICAgICAgICAgKQogICAgICAgICAgICAg
+          ICAgVGV4dCgKICAgICAgICAgICAgICAgICAgICB0ZXh0ID0gc3VtbWFyeSwKICAgICAgICAgICAgICAgICAgICBjb2xvciA9IFR2
+          Q29sb3JzLlRleHRTZWNvbmRhcnksCiAgICAgICAgICAgICAgICAgICAgZm9udFNpemUgPSAxMi5zcAogICAgICAgICAgICAgICAg
+          KQogICAgICAgICAgICB9CiAgICAgICAgICAgIFN3aXRjaCgKICAgICAgICAgICAgICAgIGNoZWNrZWQgPSBjaGVja2VkLAogICAg
+          ICAgICAgICAgICAgb25DaGVja2VkQ2hhbmdlID0gbnVsbAogICAgICAgICAgICApCiAgICAgICAgfQogICAgfQp9CgpAQ29tcG9z
+          YWJsZQpwcml2YXRlIGZ1biBUdlNldHRpbmdzQWN0aW9uUm93KAogICAgdGl0bGU6IFN0cmluZywKICAgIHN1bW1hcnk6IFN0cmlu
+          ZywKICAgIGljb246IEltYWdlVmVjdG9yLAogICAgdHJhaWxpbmc6IFN0cmluZywKICAgIGVuYWJsZWQ6IEJvb2xlYW4sCiAgICBv
+          bkZvY3VzZWQ6IChGb2N1c1JlcXVlc3RlcikgLT4gVW5pdCwKICAgIG9uTW92ZUxlZnQ6ICgpIC0+IFVuaXQsCiAgICBvbkFjdGl2
+          YXRlOiAoKSAtPiBVbml0CikgewogICAgdmFsIHJlcXVlc3RlciA9IHJlbWVtYmVyIHsgRm9jdXNSZXF1ZXN0ZXIoKSB9CiAgICB2
+          YXIgZm9jdXNlZCBieSByZW1lbWJlciB7IG11dGFibGVTdGF0ZU9mKGZhbHNlKSB9CgogICAgU3VyZmFjZSgKICAgICAgICBtb2Rp
+          ZmllciA9IE1vZGlmaWVyCiAgICAgICAgICAgIC5maWxsTWF4V2lkdGgoKQogICAgICAgICAgICAuZm9jdXNSZXF1ZXN0ZXIocmVx
+          dWVzdGVyKQogICAgICAgICAgICAub25Gb2N1c0NoYW5nZWQgeyBzdGF0ZSAtPgogICAgICAgICAgICAgICAgZm9jdXNlZCA9IHN0
+          YXRlLmhhc0ZvY3VzCiAgICAgICAgICAgICAgICBpZiAoc3RhdGUuaGFzRm9jdXMpIG9uRm9jdXNlZChyZXF1ZXN0ZXIpCiAgICAg
+          ICAgICAgIH0KICAgICAgICAgICAgLm9uUHJldmlld0tleUV2ZW50IHsgZXZlbnQgLT4KICAgICAgICAgICAgICAgIHdoZW4gewog
+          ICAgICAgICAgICAgICAgICAgIGV2ZW50LnR5cGUgPT0gS2V5RXZlbnRUeXBlLktleURvd24gJiYKICAgICAgICAgICAgICAgICAg
+          ICAgICAgZXZlbnQua2V5ID09IEtleS5EaXJlY3Rpb25MZWZ0IC0+IHsKICAgICAgICAgICAgICAgICAgICAgICAgb25Nb3ZlTGVm
+          dCgpCiAgICAgICAgICAgICAgICAgICAgICAgIHRydWUKICAgICAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgICAgICAgICAg
+          ZW5hYmxlZCAmJgogICAgICAgICAgICAgICAgICAgICAgICBldmVudC50eXBlID09IEtleUV2ZW50VHlwZS5LZXlEb3duICYmCiAg
+          ICAgICAgICAgICAgICAgICAgICAgICgKICAgICAgICAgICAgICAgICAgICAgICAgICAgIGV2ZW50LmtleSA9PSBLZXkuRGlyZWN0
+          aW9uQ2VudGVyIHx8CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgZXZlbnQua2V5ID09IEtleS5FbnRlcgogICAgICAg
+          ICAgICAgICAgICAgICAgICAgICAgKSAtPiB7CiAgICAgICAgICAgICAgICAgICAgICAgIG9uQWN0aXZhdGUoKQogICAgICAgICAg
+          ICAgICAgICAgICAgICB0cnVlCiAgICAgICAgICAgICAgICAgICAgfQogICAgICAgICAgICAgICAgICAgIGVsc2UgLT4gZmFsc2UK
+          ICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgfQogICAgICAgICAgICAuZm9jdXNhYmxlKCksCiAgICAgICAgY29sb3IgPSBp
+          ZiAoZm9jdXNlZCkgewogICAgICAgICAgICBUdkNvbG9ycy5Gb2N1c0JhY2tncm91bmQKICAgICAgICB9IGVsc2UgewogICAgICAg
+          ICAgICBUdkNvbG9ycy5TdXJmYWNlCiAgICAgICAgfSwKICAgICAgICBzaGFwZSA9IFJvdW5kZWRDb3JuZXJTaGFwZSgxNC5kcCks
+          CiAgICAgICAgYm9yZGVyID0gQm9yZGVyU3Ryb2tlKAogICAgICAgICAgICBpZiAoZm9jdXNlZCkgMi5kcCBlbHNlIDEuZHAsCiAg
+          ICAgICAgICAgIGlmIChmb2N1c2VkKSB7CiAgICAgICAgICAgICAgICBUdkNvbG9ycy5Gb2N1c1JpbmcKICAgICAgICAgICAgfSBl
+          bHNlIHsKICAgICAgICAgICAgICAgIENvbG9yLldoaXRlLmNvcHkoYWxwaGEgPSAwLjA4ZikKICAgICAgICAgICAgfQogICAgICAg
+          ICkKICAgICkgewogICAgICAgIFJvdygKICAgICAgICAgICAgbW9kaWZpZXIgPSBNb2RpZmllcgogICAgICAgICAgICAgICAgLmZp
+          bGxNYXhXaWR0aCgpCiAgICAgICAgICAgICAgICAucGFkZGluZygKICAgICAgICAgICAgICAgICAgICBob3Jpem9udGFsID0gMTgu
+          ZHAsCiAgICAgICAgICAgICAgICAgICAgdmVydGljYWwgPSAxNS5kcAogICAgICAgICAgICAgICAgKSwKICAgICAgICAgICAgdmVy
+          dGljYWxBbGlnbm1lbnQgPSBBbGlnbm1lbnQuQ2VudGVyVmVydGljYWxseSwKICAgICAgICAgICAgaG9yaXpvbnRhbEFycmFuZ2Vt
+          ZW50ID0gQXJyYW5nZW1lbnQuc3BhY2VkQnkoMTQuZHApCiAgICAgICAgKSB7CiAgICAgICAgICAgIEljb24oCiAgICAgICAgICAg
+          ICAgICBpbWFnZVZlY3RvciA9IGljb24sCiAgICAgICAgICAgICAgICBjb250ZW50RGVzY3JpcHRpb24gPSBudWxsLAogICAgICAg
+          ICAgICAgICAgdGludCA9IGlmIChlbmFibGVkKSBUdkNvbG9ycy5UZXh0U2Vjb25kYXJ5IGVsc2UgVHZDb2xvcnMuVGV4dFNlY29u
+          ZGFyeS5jb3B5KGFscGhhID0gMC41NWYpLAogICAgICAgICAgICAgICAgbW9kaWZpZXIgPSBNb2RpZmllci5zaXplKDIyLmRwKQog
+          ICAgICAgICAgICApCiAgICAgICAgICAgIENvbHVtbigKICAgICAgICAgICAgICAgIG1vZGlmaWVyID0gTW9kaWZpZXIud2VpZ2h0
+          KDFmKSwKICAgICAgICAgICAgICAgIHZlcnRpY2FsQXJyYW5nZW1lbnQgPSBBcnJhbmdlbWVudC5zcGFjZWRCeSgzLmRwKQogICAg
+          ICAgICAgICApIHsKICAgICAgICAgICAgICAgIFRleHQoCiAgICAgICAgICAgICAgICAgICAgdGV4dCA9IHRpdGxlLAogICAgICAg
+          ICAgICAgICAgICAgIGNvbG9yID0gaWYgKGVuYWJsZWQpIFR2Q29sb3JzLlRleHRQcmltYXJ5IGVsc2UgVHZDb2xvcnMuVGV4dFNl
+          Y29uZGFyeSwKICAgICAgICAgICAgICAgICAgICBmb250V2VpZ2h0ID0gRm9udFdlaWdodC5TZW1pQm9sZCwKICAgICAgICAgICAg
+          ICAgICAgICBmb250U2l6ZSA9IDE1LnNwCiAgICAgICAgICAgICAgICApCiAgICAgICAgICAgICAgICBUZXh0KAogICAgICAgICAg
+          ICAgICAgICAgIHRleHQgPSBzdW1tYXJ5LAogICAgICAgICAgICAgICAgICAgIGNvbG9yID0gVHZDb2xvcnMuVGV4dFNlY29uZGFy
+          eSwKICAgICAgICAgICAgICAgICAgICBmb250U2l6ZSA9IDEyLnNwCiAgICAgICAgICAgICAgICApCiAgICAgICAgICAgIH0KICAg
+          ICAgICAgICAgVGV4dCgKICAgICAgICAgICAgICAgIHRleHQgPSB0cmFpbGluZywKICAgICAgICAgICAgICAgIGNvbG9yID0gaWYg
+          KGZvY3VzZWQpIFR2Q29sb3JzLkZvY3VzUmluZyBlbHNlIFR2Q29sb3JzLlRleHRTZWNvbmRhcnksCiAgICAgICAgICAgICAgICBm
+          b250V2VpZ2h0ID0gRm9udFdlaWdodC5Cb2xkLAogICAgICAgICAgICAgICAgZm9udFNpemUgPSAxMS5zcAogICAgICAgICAgICAp
+          CiAgICAgICAgfQogICAgfQp9CgpAQ29tcG9zYWJsZQpwcml2YXRlIGZ1biBUdlNldHRpbmdzSW5mb1JvdygKICAgIHRpdGxlOiBT
+          dHJpbmcsCiAgICBzdW1tYXJ5OiBTdHJpbmcsCiAgICBpY29uOiBJbWFnZVZlY3RvciwKICAgIG9uRm9jdXNlZDogKEZvY3VzUmVx
+          dWVzdGVyKSAtPiBVbml0LAogICAgb25Nb3ZlTGVmdDogKCkgLT4gVW5pdAopIHsKICAgIHZhbCByZXF1ZXN0ZXIgPSByZW1lbWJl
+          cih0aXRsZSkgeyBGb2N1c1JlcXVlc3RlcigpIH0KICAgIHZhciBmb2N1c2VkIGJ5IHJlbWVtYmVyKHRpdGxlKSB7IG11dGFibGVT
+          dGF0ZU9mKGZhbHNlKSB9CgogICAgU3VyZmFjZSgKICAgICAgICBtb2RpZmllciA9IE1vZGlmaWVyCiAgICAgICAgICAgIC5maWxs
+          TWF4V2lkdGgoKQogICAgICAgICAgICAuZm9jdXNSZXF1ZXN0ZXIocmVxdWVzdGVyKQogICAgICAgICAgICAub25Gb2N1c0NoYW5n
+          ZWQgeyBzdGF0ZSAtPgogICAgICAgICAgICAgICAgZm9jdXNlZCA9IHN0YXRlLmhhc0ZvY3VzCiAgICAgICAgICAgICAgICBpZiAo
+          c3RhdGUuaGFzRm9jdXMpIG9uRm9jdXNlZChyZXF1ZXN0ZXIpCiAgICAgICAgICAgIH0KICAgICAgICAgICAgLm9uUHJldmlld0tl
+          eUV2ZW50IHsgZXZlbnQgLT4KICAgICAgICAgICAgICAgIGlmICgKICAgICAgICAgICAgICAgICAgICBldmVudC50eXBlID09IEtl
+          eUV2ZW50VHlwZS5LZXlEb3duICYmCiAgICAgICAgICAgICAgICAgICAgZXZlbnQua2V5ID09IEtleS5EaXJlY3Rpb25MZWZ0CiAg
+          ICAgICAgICAgICAgICApIHsKICAgICAgICAgICAgICAgICAgICBvbk1vdmVMZWZ0KCkKICAgICAgICAgICAgICAgICAgICB0cnVl
+          CiAgICAgICAgICAgICAgICB9IGVsc2UgewogICAgICAgICAgICAgICAgICAgIGZhbHNlCiAgICAgICAgICAgICAgICB9CiAgICAg
+          ICAgICAgIH0KICAgICAgICAgICAgLmZvY3VzYWJsZSgpLAogICAgICAgIGNvbG9yID0gaWYgKGZvY3VzZWQpIHsKICAgICAgICAg
+          ICAgVHZDb2xvcnMuRm9jdXNCYWNrZ3JvdW5kCiAgICAgICAgfSBlbHNlIHsKICAgICAgICAgICAgVHZDb2xvcnMuU3VyZmFjZQog
+          ICAgICAgIH0sCiAgICAgICAgc2hhcGUgPSBSb3VuZGVkQ29ybmVyU2hhcGUoMTQuZHApLAogICAgICAgIGJvcmRlciA9IEJvcmRl
+          clN0cm9rZSgKICAgICAgICAgICAgaWYgKGZvY3VzZWQpIDIuZHAgZWxzZSAxLmRwLAogICAgICAgICAgICBpZiAoZm9jdXNlZCkg
+          ewogICAgICAgICAgICAgICAgVHZDb2xvcnMuRm9jdXNSaW5nCiAgICAgICAgICAgIH0gZWxzZSB7CiAgICAgICAgICAgICAgICBD
+          b2xvci5XaGl0ZS5jb3B5KGFscGhhID0gMC4wOGYpCiAgICAgICAgICAgIH0KICAgICAgICApCiAgICApIHsKICAgICAgICBSb3co
+          CiAgICAgICAgICAgIG1vZGlmaWVyID0gTW9kaWZpZXIKICAgICAgICAgICAgICAgIC5maWxsTWF4V2lkdGgoKQogICAgICAgICAg
+          ICAgICAgLnBhZGRpbmcoCiAgICAgICAgICAgICAgICAgICAgaG9yaXpvbnRhbCA9IDE4LmRwLAogICAgICAgICAgICAgICAgICAg
+          IHZlcnRpY2FsID0gMTUuZHAKICAgICAgICAgICAgICAgICksCiAgICAgICAgICAgIHZlcnRpY2FsQWxpZ25tZW50ID0gQWxpZ25t
+          ZW50LkNlbnRlclZlcnRpY2FsbHksCiAgICAgICAgICAgIGhvcml6b250YWxBcnJhbmdlbWVudCA9IEFycmFuZ2VtZW50LnNwYWNl
+          ZEJ5KDE0LmRwKQogICAgICAgICkgewogICAgICAgICAgICBJY29uKAogICAgICAgICAgICAgICAgaW1hZ2VWZWN0b3IgPSBpY29u
+          LAogICAgICAgICAgICAgICAgY29udGVudERlc2NyaXB0aW9uID0gbnVsbCwKICAgICAgICAgICAgICAgIHRpbnQgPSBUdkNvbG9y
+          cy5UZXh0U2Vjb25kYXJ5LAogICAgICAgICAgICAgICAgbW9kaWZpZXIgPSBNb2RpZmllci5zaXplKDIyLmRwKQogICAgICAgICAg
+          ICApCiAgICAgICAgICAgIENvbHVtbigKICAgICAgICAgICAgICAgIHZlcnRpY2FsQXJyYW5nZW1lbnQgPSBBcnJhbmdlbWVudC5z
+          cGFjZWRCeSgzLmRwKQogICAgICAgICAgICApIHsKICAgICAgICAgICAgICAgIFRleHQoCiAgICAgICAgICAgICAgICAgICAgdGV4
+          dCA9IHRpdGxlLAogICAgICAgICAgICAgICAgICAgIGNvbG9yID0gVHZDb2xvcnMuVGV4dFByaW1hcnksCiAgICAgICAgICAgICAg
+          ICAgICAgZm9udFdlaWdodCA9IEZvbnRXZWlnaHQuU2VtaUJvbGQsCiAgICAgICAgICAgICAgICAgICAgZm9udFNpemUgPSAxNS5z
+          cAogICAgICAgICAgICAgICAgKQogICAgICAgICAgICAgICAgVGV4dCgKICAgICAgICAgICAgICAgICAgICB0ZXh0ID0gc3VtbWFy
+          eSwKICAgICAgICAgICAgICAgICAgICBjb2xvciA9IFR2Q29sb3JzLlRleHRTZWNvbmRhcnksCiAgICAgICAgICAgICAgICAgICAg
+          Zm9udFNpemUgPSAxMi5zcAogICAgICAgICAgICAgICAgKQogICAgICAgICAgICB9CiAgICAgICAgfQogICAgfQp9Cg==
+          EOF
+          test "$(sha256sum "$FILE" | awk '{print $1}')" = "$TARGET_TV_SETTINGS_SHA256"
+
+      - name: Bump V2.8 version
+        if: steps.preflight.outputs.already_applied != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("app/build.gradle.kts")
+          text = path.read_text(encoding="utf-8")
+          old_code = 'versionCode = 90'
+          old_name = 'versionName = "0.34.1-tv-v2.7-episode-engine-polish"'
+          if old_code not in text or old_name not in text:
+              raise SystemExit("V2.7 version anchors missing")
+          text = text.replace(old_code, 'versionCode = 91', 1)
+          text = text.replace(
+              old_name,
+              'versionName = "0.35.0-tv-v2.8-updater-interface-mode"',
+              1,
+          )
+          path.write_text(text, encoding="utf-8")
+          PY
+
+          test "$(sha256sum app/build.gradle.kts | awk '{print $1}')" = "$TARGET_BUILD_SHA256"
+
+      - name: Verify V2.8 source contract
+        if: steps.preflight.outputs.already_applied != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          D="$RUNNER_TEMP/nustrim-v28-updater-mode"
+          {
+            git diff --name-only
+            git ls-files --others --exclude-standard
+          } | sed '/^$/d' | sort -u | tee "$D/contract.log"
+
+          cat > "$D/expected-files.txt" <<'EOF'
+          app/build.gradle.kts
+          app/src/main/java/app/nudroidlabs/nustrim/tv/settings/TvSettingsScreen.kt
+          app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt
+          app/src/main/java/app/nudroidlabs/nustrim/ui/UiPreferences.kt
+          EOF
+          sed -i 's/^          //' "$D/expected-files.txt"
+          sort -u "$D/expected-files.txt" -o "$D/expected-files.txt"
+
+          diff -u "$D/expected-files.txt" "$D/contract.log"
+
+          grep -F 'interfaceModeConfirmed' app/src/main/java/app/nudroidlabs/nustrim/ui/UiPreferences.kt
+          grep -F 'preferences.interfaceMode = selected' app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt
+          grep -F 'TvSettingsSectionTitle("Updates")' app/src/main/java/app/nudroidlabs/nustrim/tv/settings/TvSettingsScreen.kt
+          grep -F 'AppUpdater(context)' app/src/main/java/app/nudroidlabs/nustrim/tv/settings/TvSettingsScreen.kt
+          grep -F 'updater.download(info)' app/src/main/java/app/nudroidlabs/nustrim/tv/settings/TvSettingsScreen.kt
+
+      - name: Compile and lint before commit
+        if: steps.preflight.outputs.already_applied != 'true'
+        shell: bash
+        run: |
+          set -o pipefail
+          D="$RUNNER_TEMP/nustrim-v28-updater-mode"
+          gradle --no-daemon --build-cache \
+            :app:compileDebugKotlin \
+            :app:compileReleaseKotlin \
+            :app:testDebugUnitTest \
+            :app:lintRelease \
+            --stacktrace \
+            --console=plain 2>&1 | tee "$D/verify.log"
+
+      - name: Commit V2.8 only after verification
+        if: steps.preflight.outputs.already_applied != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            app/build.gradle.kts \
+            app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt \
+            app/src/main/java/app/nudroidlabs/nustrim/ui/UiPreferences.kt \
+            app/src/main/java/app/nudroidlabs/nustrim/tv/settings/TvSettingsScreen.kt
+          git commit -m "Nustrim TV V2.8 updater and interface mode selector"
+          git push origin HEAD:main
+
+      - name: Refresh to committed V2.8
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          git checkout -B main origin/main
+          test "$(sha256sum app/build.gradle.kts | awk '{print $1}')" = "$TARGET_BUILD_SHA256"
+          test "$(sha256sum app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt | awk '{print $1}')" = "$TARGET_NUSTRIM_APP_SHA256"
+          test "$(sha256sum app/src/main/java/app/nudroidlabs/nustrim/ui/UiPreferences.kt | awk '{print $1}')" = "$TARGET_UI_PREFS_SHA256"
+          test "$(sha256sum app/src/main/java/app/nudroidlabs/nustrim/tv/settings/TvSettingsScreen.kt | awk '{print $1}')" = "$TARGET_TV_SETTINGS_SHA256"
+
+      - name: Prepare permanent signing
+        if: success()
+        shell: bash
+        env:
+          KEYSTORE_B64: ${{ secrets.NUSTRIM_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.NUSTRIM_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.NUSTRIM_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.NUSTRIM_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for name in KEYSTORE_B64 KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::Signing secret $name is missing."
+              exit 50
+            fi
+          done
+
+          KS="$RUNNER_TEMP/nustrim-release.jks"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$KS"
+          chmod 600 "$KS"
+          keytool -list -keystore "$KS" -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" >/dev/null
+
+          CERT="$(
+            keytool -exportcert -rfc -keystore "$KS" -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" |
+            openssl x509 -noout -fingerprint -sha256 |
+            cut -d= -f2 |
+            tr -d ':' |
+            tr '[:lower:]' '[:upper:]'
+          )"
+          LOCKED_CERT="30C625B9112CD04D43B631D6020D0D52E61695111B8E2125F29AD19651EB165D"
+          test "$CERT" = "$LOCKED_CERT"
+
+          echo "NUSTRIM_KEYSTORE_PATH=$KS" >> "$GITHUB_ENV"
+          echo "NUSTRIM_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "NUSTRIM_KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
+          echo "NUSTRIM_KEY_PASSWORD=$KEY_PASSWORD" >> "$GITHUB_ENV"
+          echo "NUSTRIM_CERT_SHA256=$CERT" >> "$GITHUB_ENV"
+
+      - name: Build signed release APK
+        if: success()
+        shell: bash
+        run: |
+          set -o pipefail
+          D="$RUNNER_TEMP/nustrim-v28-updater-mode"
+          gradle --no-daemon --build-cache \
+            :app:testDebugUnitTest \
+            :app:assembleRelease \
+            --stacktrace \
+            --console=plain 2>&1 | tee "$D/release-build.log"
+          test -s app/build/outputs/apk/release/app-release.apk
+
+      - name: Verify signed APK identity
+        if: success()
+        id: apk
+        shell: bash
+        run: |
+          set -euo pipefail
+          D="$RUNNER_TEMP/nustrim-v28-updater-mode"
+          APK="app/build/outputs/apk/release/app-release.apk"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)"
+          AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -1)"
+
+          "$APKSIGNER" verify --verbose --print-certs "$APK" | tee "$D/signature.txt"
+          CERT="$(
+            sed -n -E 's/^.*certificate SHA-256 digest:[[:space:]]*//p' "$D/signature.txt" |
+            head -1 |
+            tr -d ':' |
+            tr '[:lower:]' '[:upper:]'
+          )"
+          test "$CERT" = "$NUSTRIM_CERT_SHA256"
+
+          BADGING="$("$AAPT" dump badging "$APK" | head -1)"
+          PACKAGE="$(printf '%s\n' "$BADGING" | sed -n -E "s/^package: name='([^']+)'.*/\1/p")"
+          CODE="$(printf '%s\n' "$BADGING" | sed -n -E "s/^.*versionCode='([^']+)'.*/\1/p")"
+          NAME="$(printf '%s\n' "$BADGING" | sed -n -E "s/^.*versionName='([^']+)'.*/\1/p")"
+
+          test "$PACKAGE" = "app.nudroidlabs.nustrim"
+          test "$CODE" = "91"
+          test "$NAME" = "0.35.0-tv-v2.8-updater-interface-mode"
+
+          echo "version_code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "version_name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "cert_sha=$CERT" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare updater assets
+        if: success()
+        id: assets
+        shell: bash
+        env:
+          VERSION_CODE: ${{ steps.apk.outputs.version_code }}
+          VERSION_NAME: ${{ steps.apk.outputs.version_name }}
+          CERT_SHA: ${{ steps.apk.outputs.cert_sha }}
+        run: |
+          set -euo pipefail
+          export VERSION_CODE VERSION_NAME CERT_SHA
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import json
+          import os
+
+          code = int(os.environ["VERSION_CODE"])
+          name = os.environ["VERSION_NAME"]
+          cert = os.environ["CERT_SHA"]
+          repo = os.environ["GITHUB_REPOSITORY"]
+
+          src = Path("app/build/outputs/apk/release/app-release.apk")
+          apk = Path(f"Nustrim-{name}.apk")
+          apk.write_bytes(src.read_bytes())
+          sha = hashlib.sha256(apk.read_bytes()).hexdigest()
+          tag = f"v{name}"
+
+          manifest = {
+              "versionCode": code,
+              "versionName": name,
+              "apkUrl": f"https://github.com/{repo}/releases/download/{tag}/{apk.name}",
+              "sha256": sha,
+              "changelog": "V2.8 adds the TV Settings updater and fixes first-run Mobile or TV interface selection with persistent mode choice.",
+              "sizeBytes": apk.stat().st_size,
+              "signingMode": "permanent",
+              "signingCertSha256": cert,
+          }
+          Path("update.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+              out.write(f"tag={tag}\n")
+              out.write(f"apk={apk.name}\n")
+              out.write(f"sha256={sha}\n")
+          PY
+
+      - name: Publish Nustrim V2.8 release
+        if: success()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.assets.outputs.tag }}
+          APK: ${{ steps.assets.outputs.apk }}
+          VERSION: ${{ steps.apk.outputs.version_name }}
+        run: |
+          set -euo pipefail
+          TARGET_SHA="$(git rev-parse HEAD)"
+          NOTES="Nustrim $VERSION. TV Settings updater plus persistent Mobile or TV startup selection."
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "Nustrim $VERSION" --notes "$NOTES" --latest
+            gh release upload "$TAG" "$APK" update.json --clobber
+          else
+            gh release create "$TAG" "$APK" update.json \
+              --target "$TARGET_SHA" \
+              --title "Nustrim $VERSION" \
+              --notes "$NOTES" \
+              --latest
+          fi
+
+      - name: Verify published updater
+        if: success()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.assets.outputs.tag }}
+          APK: ${{ steps.assets.outputs.apk }}
+          EXPECTED_SHA: ${{ steps.assets.outputs.sha256 }}
+          EXPECTED_CERT: ${{ steps.apk.outputs.cert_sha }}
+        run: |
+          set -euo pipefail
+          latest="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)"
+          test "$latest" = "$TAG"
+
+          LIVE="$RUNNER_TEMP/nustrim-v28-updater-mode/live"
+          rm -rf "$LIVE"
+          mkdir -p "$LIVE"
+          gh release download "$TAG" \
+            --pattern update.json \
+            --pattern "$APK" \
+            --dir "$LIVE" \
+            --clobber
+
+          LIVE_SHA="$(sha256sum "$LIVE/$APK" | awk '{print $1}')"
+          test "$LIVE_SHA" = "$EXPECTED_SHA"
+          export LIVE APK EXPECTED_SHA EXPECTED_CERT
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import json
+          import os
+
+          root = Path(os.environ["LIVE"])
+          apk = root / os.environ["APK"]
+          manifest = json.loads((root / "update.json").read_text(encoding="utf-8"))
+          assert int(manifest["versionCode"]) == 91
+          assert manifest["versionName"] == "0.35.0-tv-v2.8-updater-interface-mode"
+          assert manifest["signingMode"] == "permanent"
+          assert manifest["signingCertSha256"].upper() == os.environ["EXPECTED_CERT"].upper()
+          sha = hashlib.sha256(apk.read_bytes()).hexdigest()
+          assert sha == os.environ["EXPECTED_SHA"]
+          assert manifest["sha256"] == sha
+          print("Updater verified:", manifest["versionName"], manifest["versionCode"])
+          PY
+
+      - name: Collect failure context
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          D="$RUNNER_TEMP/nustrim-v28-updater-mode"
+          mkdir -p "$D"
+          cp app/build.gradle.kts "$D/build.gradle.current.kts" 2>/dev/null || true
+          cp app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt "$D/NustrimApp.current.kt" 2>/dev/null || true
+          cp app/src/main/java/app/nudroidlabs/nustrim/ui/UiPreferences.kt "$D/UiPreferences.current.kt" 2>/dev/null || true
+          cp app/src/main/java/app/nudroidlabs/nustrim/tv/settings/TvSettingsScreen.kt "$D/TvSettingsScreen.current.kt" 2>/dev/null || true
+          cp update.json "$D/update.current.json" 2>/dev/null || true
+          git status --short > "$D/git-status.txt" 2>&1 || true
+          git diff > "$D/git-diff.txt" 2>&1 || true
+          git log -8 --oneline > "$D/recent-commits.txt" 2>&1 || true
+          {
+            echo "V2.8 failure bundle."
+            echo "verify.log contains compile, test and lint output."
+            echo "release-build.log contains signed APK build output."
+            echo "contract.log contains the exact changed-file contract."
+            echo "preflight.txt contains baseline hashes."
+          } > "$D/README.txt"
+
+      - name: Upload diagnose evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nustrim-tv-v2.8-updater-interface-mode-diagnose
+          path: ${{ runner.temp }}/nustrim-v28-updater-mode
+          if-no-files-found: error
+          retention-days: 14
