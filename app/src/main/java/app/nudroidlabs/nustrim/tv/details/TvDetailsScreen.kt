@@ -69,6 +69,7 @@ import app.nudroidlabs.nustrim.core.model.MediaItem
 import app.nudroidlabs.nustrim.core.model.MediaType
 import app.nudroidlabs.nustrim.core.model.StreamSource
 import app.nudroidlabs.nustrim.core.model.SubtitleSource
+import app.nudroidlabs.nustrim.core.recommendation.MoreLikeThisRepository
 import app.nudroidlabs.nustrim.core.source.SourceEngine
 import app.nudroidlabs.nustrim.core.source.SourceSession
 import app.nudroidlabs.nustrim.core.source.StreamAggregationPhase
@@ -103,6 +104,8 @@ private const val EPISODE_SCROLL_REPEAT_THROTTLE_MS = 80L
 fun TvDetailsScreen(
     entry: TvHomeEntry,
     autoPlayOnLaunch: Boolean = false,
+    restoreRelatedFocusKey: String? = null,
+    onOpenRelated: (TvHomeEntry, String) -> Unit = { _, _ -> },
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
@@ -199,6 +202,24 @@ fun TvDetailsScreen(
     var logoLoadFailed by remember(entry.stableKey) {
         mutableStateOf(false)
     }
+    var detailsReloadToken by remember(entry.stableKey) {
+        mutableIntStateOf(0)
+    }
+    var moreLikeThisItems by remember(entry.stableKey) {
+        mutableStateOf<List<MediaItem>>(emptyList())
+    }
+    var moreLikeThisLoading by remember(entry.stableKey) {
+        mutableStateOf(false)
+    }
+    var moreLikeThisError by remember(entry.stableKey) {
+        mutableStateOf<String?>(null)
+    }
+    var moreLikeThisReloadToken by remember(entry.stableKey) {
+        mutableIntStateOf(0)
+    }
+    val moreLikeThisRequesters = remember(entry.stableKey) {
+        mutableMapOf<String, FocusRequester>()
+    }
 
     fun loadWith(session: SourceSession) {
         resolvedSession = session
@@ -221,7 +242,7 @@ fun TvDetailsScreen(
         )
     }
 
-    LaunchedEffect(entry.stableKey) {
+    LaunchedEffect(entry.stableKey, detailsReloadToken) {
         loading = true
         detailsResolved = false
         errorMessage = null
@@ -245,6 +266,70 @@ fun TvDetailsScreen(
             detailsResolved = true
             loading = false
             errorMessage = "Source information is unavailable."
+        }
+    }
+
+    LaunchedEffect(
+        entry.stableKey,
+        detailsResolved,
+        detailedItem.id,
+        detailedItem.ref?.metaId,
+        resolvedSession?.id,
+        moreLikeThisReloadToken
+    ) {
+        val session = resolvedSession
+        if (!detailsResolved || session == null) {
+            moreLikeThisItems = emptyList()
+            moreLikeThisLoading = false
+            moreLikeThisError = null
+            return@LaunchedEffect
+        }
+
+        moreLikeThisLoading = true
+        moreLikeThisError = null
+        MoreLikeThisRepository.load(
+            session = session,
+            current = detailedItem,
+            limit = 18,
+            onSuccess = { items ->
+                moreLikeThisItems = items
+                moreLikeThisLoading = false
+                moreLikeThisError = null
+            },
+            onError = { error ->
+                moreLikeThisItems = emptyList()
+                moreLikeThisLoading = false
+                moreLikeThisError = error.message
+                    ?.takeIf { it.isNotBlank() }
+                    ?: "Recommendations are unavailable from this source."
+            }
+        )
+    }
+
+    LaunchedEffect(
+        entry.stableKey,
+        restoreRelatedFocusKey,
+        moreLikeThisItems.size,
+        moreLikeThisLoading
+    ) {
+        val focusKey = restoreRelatedFocusKey
+            ?.takeIf { it.isNotBlank() }
+            ?: return@LaunchedEffect
+        if (moreLikeThisLoading || moreLikeThisItems.isEmpty()) {
+            return@LaunchedEffect
+        }
+        delay(120)
+        val requester = moreLikeThisRequesters[focusKey]
+        if (requester != null) {
+            runCatching {
+                detailsListState.animateScrollToItem(
+                    detailsListState.layoutInfo.totalItemsCount
+                        .minus(2)
+                        .coerceAtLeast(0)
+                )
+            }
+            delay(70)
+            runCatching { requester.requestFocus() }
         }
     }
 
@@ -897,6 +982,12 @@ fun TvDetailsScreen(
                     errorMessage?.let { message ->
                         Spacer(Modifier.height(12.dp))
                         TvDetailsInlineMessage(message)
+                        Spacer(Modifier.height(9.dp))
+                        TvDetailsRetryButton(
+                            onClick = {
+                                detailsReloadToken += 1
+                            }
+                        )
                     }
                 }
             }
@@ -1118,6 +1209,36 @@ fun TvDetailsScreen(
                         item = detailedItem,
                         onFocused = { requester ->
                             lastDetailsRequester = requester
+                        }
+                    )
+                }
+            }
+
+            if (
+                moreLikeThisLoading ||
+                moreLikeThisItems.isNotEmpty() ||
+                moreLikeThisError != null
+            ) {
+                item(key = "more_like_this") {
+                    TvMoreLikeThisSection(
+                        items = moreLikeThisItems,
+                        loading = moreLikeThisLoading,
+                        errorMessage = moreLikeThisError,
+                        requesters = moreLikeThisRequesters,
+                        onFocused = { requester ->
+                            lastDetailsRequester = requester
+                        },
+                        onRetry = {
+                            moreLikeThisReloadToken += 1
+                        },
+                        onOpen = { item, focusKey ->
+                            val relatedEntry = TvHomeEntry(
+                                sourceUrl = entry.sourceUrl,
+                                session = resolvedSession,
+                                item = item,
+                                catalogName = "More Like This"
+                            )
+                            onOpenRelated(relatedEntry, focusKey)
                         }
                     )
                 }
@@ -1527,6 +1648,60 @@ private fun TvDetailsInlineMessage(message: String) {
     }
 }
 
+
+@Composable
+private fun TvDetailsRetryButton(
+    onClick: () -> Unit
+) {
+    var focused by remember { mutableStateOf(false) }
+
+    Surface(
+        modifier = Modifier
+            .width(132.dp)
+            .height(38.dp)
+            .onFocusChanged { focused = it.hasFocus }
+            .onPreviewKeyEvent { event ->
+                if (
+                    event.type == KeyEventType.KeyDown &&
+                    (
+                        event.key == Key.DirectionCenter ||
+                            event.key == Key.Enter
+                        )
+                ) {
+                    onClick()
+                    true
+                } else {
+                    false
+                }
+            }
+            .focusable(),
+        color = if (focused) {
+            Color.White
+        } else {
+            Color.White.copy(alpha = 0.08f)
+        },
+        shape = RoundedCornerShape(9.dp),
+        border = if (focused) {
+            null
+        } else {
+            BorderStroke(1.dp, Color.White.copy(alpha = 0.10f))
+        }
+    ) {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = "Retry details",
+                color = if (focused) Color.Black else TvColors.TextPrimary,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 12.sp
+            )
+        }
+    }
+}
+
+
 @Composable
 private fun TvDetailsActionButton(
     label: String,
@@ -1781,6 +1956,276 @@ private fun TvPeopleSection(
             }
         }
     }
+}
+
+
+
+@Composable
+private fun TvMoreLikeThisSection(
+    items: List<MediaItem>,
+    loading: Boolean,
+    errorMessage: String?,
+    requesters: MutableMap<String, FocusRequester>,
+    onFocused: (FocusRequester) -> Unit,
+    onRetry: () -> Unit,
+    onOpen: (MediaItem, String) -> Unit
+) {
+    Column(
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text(
+            text = "More Like This",
+            color = TvColors.TextPrimary,
+            fontWeight = FontWeight.SemiBold,
+            fontSize = 24.sp
+        )
+
+        when {
+            loading && items.isEmpty() -> {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    repeat(6) {
+                        Box(
+                            modifier = Modifier
+                                .width(156.dp)
+                                .height(234.dp)
+                                .background(
+                                    Color.White.copy(alpha = 0.055f),
+                                    RoundedCornerShape(10.dp)
+                                )
+                        )
+                    }
+                }
+            }
+
+            errorMessage != null && items.isEmpty() -> {
+                TvMoreLikeThisRetry(
+                    message = errorMessage,
+                    onRetry = onRetry
+                )
+            }
+
+            items.isNotEmpty() -> {
+                LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    contentPadding = PaddingValues(
+                        end = 34.dp,
+                        bottom = 12.dp
+                    )
+                ) {
+                    itemsIndexed(
+                        items = items,
+                        key = { _, item -> moreLikeThisFocusKey(item) }
+                    ) { _, item ->
+                        val focusKey = moreLikeThisFocusKey(item)
+                        val requester = remember(focusKey) {
+                            FocusRequester().also { requesters[focusKey] = it }
+                        }
+                        TvMoreLikeThisCard(
+                            item = item,
+                            focusRequester = requester,
+                            onFocused = onFocused,
+                            onClick = {
+                                onOpen(item, focusKey)
+                            }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TvMoreLikeThisCard(
+    item: MediaItem,
+    focusRequester: FocusRequester,
+    onFocused: (FocusRequester) -> Unit,
+    onClick: () -> Unit
+) {
+    var focused by remember(item.id, item.ref?.metaId) {
+        mutableStateOf(false)
+    }
+    val scale by animateFloatAsState(
+        targetValue = if (focused) 1.045f else 1f,
+        label = "moreLikeThisScale"
+    )
+    val image = item.posterUrl
+        .takeIf { it.isNotBlank() }
+        ?: item.backgroundUrl
+
+    Surface(
+        modifier = Modifier
+            .width(156.dp)
+            .height(234.dp)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
+            .focusRequester(focusRequester)
+            .onFocusChanged { state ->
+                focused = state.hasFocus
+                if (state.hasFocus) onFocused(focusRequester)
+            }
+            .onPreviewKeyEvent { event ->
+                if (
+                    event.type == KeyEventType.KeyDown &&
+                    (
+                        event.key == Key.DirectionCenter ||
+                            event.key == Key.Enter
+                        )
+                ) {
+                    onClick()
+                    true
+                } else {
+                    false
+                }
+            }
+            .focusable(),
+        color = Color.Black.copy(alpha = 0.48f),
+        shape = RoundedCornerShape(10.dp),
+        border = BorderStroke(
+            if (focused) 2.dp else 1.dp,
+            if (focused) {
+                Color.White.copy(alpha = 0.96f)
+            } else {
+                Color.White.copy(alpha = 0.08f)
+            }
+        )
+    ) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            if (!image.isNullOrBlank()) {
+                AsyncImage(
+                    model = image,
+                    contentDescription = item.title,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop
+                )
+            }
+
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(
+                            listOf(
+                                Color.Transparent,
+                                Color.Transparent,
+                                Color.Black.copy(alpha = 0.86f)
+                            )
+                        )
+                    )
+            )
+
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .fillMaxWidth()
+                    .padding(10.dp),
+                verticalArrangement = Arrangement.spacedBy(3.dp)
+            ) {
+                Text(
+                    text = item.title,
+                    color = Color.White,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 12.sp,
+                    lineHeight = 15.sp,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+
+                val metadata = buildList {
+                    item.releaseInfo
+                        .trim()
+                        .takeIf { it.isNotBlank() }
+                        ?.let(::add)
+                    item.rating
+                        .trim()
+                        .takeIf { it.isNotBlank() }
+                        ?.let { add("IMDb $it") }
+                }.take(2).joinToString(" • ")
+
+                if (metadata.isNotBlank()) {
+                    Text(
+                        text = metadata,
+                        color = Color.White.copy(alpha = 0.70f),
+                        fontSize = 9.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TvMoreLikeThisRetry(
+    message: String,
+    onRetry: () -> Unit
+) {
+    var focused by remember { mutableStateOf(false) }
+
+    Surface(
+        modifier = Modifier
+            .width(420.dp)
+            .height(78.dp)
+            .onFocusChanged { focused = it.hasFocus }
+            .onPreviewKeyEvent { event ->
+                if (
+                    event.type == KeyEventType.KeyDown &&
+                    (
+                        event.key == Key.DirectionCenter ||
+                            event.key == Key.Enter
+                        )
+                ) {
+                    onRetry()
+                    true
+                } else {
+                    false
+                }
+            }
+            .focusable(),
+        color = Color.Black.copy(alpha = 0.40f),
+        shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(
+            if (focused) 2.dp else 1.dp,
+            if (focused) {
+                Color.White.copy(alpha = 0.92f)
+            } else {
+                Color.White.copy(alpha = 0.10f)
+            }
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                text = "Recommendations unavailable",
+                color = TvColors.TextPrimary,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 13.sp
+            )
+            Text(
+                text = if (focused) "Press OK to retry" else message,
+                color = TvColors.TextSecondary,
+                fontSize = 11.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+private fun moreLikeThisFocusKey(item: MediaItem): String {
+    val identity = item.ref?.metaId
+        ?.takeIf { it.isNotBlank() }
+        ?: item.id
+            .takeIf { it.isNotBlank() }
+        ?: item.title
+    return "more_like_this|$identity"
 }
 
 
