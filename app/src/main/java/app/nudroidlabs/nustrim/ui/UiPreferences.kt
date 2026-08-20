@@ -26,6 +26,10 @@ class UiPreferences(context: Context) {
             }
         }
 
+    var interfaceModeConfirmed: Boolean
+        get() = preferences.getBoolean(KEY_INTERFACE_MODE_CONFIRMED, false)
+        set(value) = preferences.edit().putBoolean(KEY_INTERFACE_MODE_CONFIRMED, value).apply()
+
     var remoteTestEnabled: Boolean
         get() = preferences.getBoolean(KEY_REMOTE_TEST_ENABLED, false)
         set(value) = preferences.edit().putBoolean(KEY_REMOTE_TEST_ENABLED, value).apply()
@@ -163,6 +167,7 @@ class UiPreferences(context: Context) {
 
     companion object {
         private const val KEY_INTERFACE_MODE = "interface_mode"
+        private const val KEY_INTERFACE_MODE_CONFIRMED = "interface_mode_confirmed_v2"
         private const val KEY_REMOTE_TEST_ENABLED = "remote_test_enabled"
         private const val KEY_DEVELOPER_MODE = "developer_mode"
         private const val KEY_DEVELOPER_DIAGNOSTICS = "developer_diagnostics"

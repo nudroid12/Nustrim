@@ -484,7 +484,11 @@ fun NustrimApp() {
     val preferences = remember(context) { UiPreferences(context) }
     val sourceStore = remember(context) { InstalledSourceStore(context) }
     val sourceEngine = remember(context) { SourceEngine(context) }
-    var interfaceMode by remember { mutableStateOf<InterfaceMode?>(InterfaceMode.MOBILE) }
+    var interfaceMode by remember {
+        mutableStateOf<InterfaceMode?>(
+            preferences.interfaceMode.takeIf { preferences.interfaceModeConfirmed }
+        )
+    }
     var developerMode by remember { mutableStateOf(preferences.developerMode) }
     var remoteTestEnabled by remember {
         mutableStateOf(preferences.developerMode && preferences.remoteTestEnabled)
@@ -493,13 +497,17 @@ fun NustrimApp() {
     val activity = context.findActivity()
 
     var tvModeSessionActive by rememberSaveable {
-        mutableStateOf(preferences.interfaceMode == InterfaceMode.TV)
+        mutableStateOf(
+            preferences.interfaceModeConfirmed &&
+                preferences.interfaceMode == InterfaceMode.TV
+        )
     }
 
     fun switchInterfaceMode(selected: InterfaceMode) {
         tvModeSessionActive = selected == InterfaceMode.TV
-        preferences.interfaceMode = InterfaceMode.MOBILE
-        interfaceMode = InterfaceMode.MOBILE
+        preferences.interfaceMode = selected
+        preferences.interfaceModeConfirmed = true
+        interfaceMode = selected
         screen = Screen.Main(MainSection.HOME)
     }
 
