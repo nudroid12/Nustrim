@@ -64,6 +64,7 @@ fun TvShell(
     var sidebarExpanded by remember { mutableStateOf(true) }
     var contentFocusRequestToken by remember { mutableIntStateOf(0) }
     var openedDetailsEntry by remember { mutableStateOf<TvHomeEntry?>(null) }
+    var openedDetailsAutoPlay by remember { mutableStateOf(false) }
     var lastContentFocusRequester by remember { mutableStateOf<FocusRequester?>(null) }
     var restoreContentFocusToken by remember { mutableIntStateOf(0) }
     var libraryRefreshToken by remember { mutableIntStateOf(0) }
@@ -87,6 +88,7 @@ fun TvShell(
 
     fun closeDetailsAndRestoreContent() {
         openedDetailsEntry = null
+        openedDetailsAutoPlay = false
         sidebarExpanded = false
         libraryRefreshToken += 1
         restoreContentFocusToken += 1
@@ -138,6 +140,12 @@ fun TvShell(
                     },
                     onMoveLeft = { focusSidebar() },
                     onOpen = { entry ->
+                        openedDetailsAutoPlay = false
+                        openedDetailsEntry = entry
+                        sidebarExpanded = false
+                    },
+                    onPlay = { entry ->
+                        openedDetailsAutoPlay = true
                         openedDetailsEntry = entry
                         sidebarExpanded = false
                     }
@@ -152,6 +160,7 @@ fun TvShell(
                     },
                     onMoveLeft = { focusSidebar() },
                     onOpen = { entry ->
+                        openedDetailsAutoPlay = false
                         openedDetailsEntry = entry
                         sidebarExpanded = false
                     }
@@ -167,6 +176,7 @@ fun TvShell(
                     },
                     onMoveLeft = { focusSidebar() },
                     onOpen = { entry ->
+                        openedDetailsAutoPlay = false
                         openedDetailsEntry = entry
                         sidebarExpanded = false
                     }
@@ -208,6 +218,7 @@ fun TvShell(
             ) {
                 TvDetailsScreen(
                     entry = entry,
+                    autoPlayOnLaunch = openedDetailsAutoPlay,
                     onBack = {
                         closeDetailsAndRestoreContent()
                     }
