@@ -101,7 +101,10 @@ fun TvDetailsScreen(
     val engine = remember(context) { SourceEngine(context) }
     val mediaStore = remember(context) { LocalMediaStore(context) }
     val firstActionRequester = remember { FocusRequester() }
+    val manualPlayRequester = remember { FocusRequester() }
     val libraryActionRequester = remember { FocusRequester() }
+    val watchedActionRequester = remember { FocusRequester() }
+    val detailsListState = rememberLazyListState()
     val seasonListState = rememberLazyListState()
     val episodeListState = rememberLazyListState()
     var lastEpisodeRepeatAt by remember(entry.stableKey) { mutableStateOf(0L) }
@@ -172,6 +175,12 @@ fun TvDetailsScreen(
     var savedToLibrary by remember(entry.stableKey) {
         mutableStateOf(mediaStore.isSaved(entry.sourceUrl, entry.item))
     }
+    var movieWatched by remember(entry.stableKey) {
+        mutableStateOf(mediaStore.isWatched(entry.sourceUrl, entry.item))
+    }
+    var logoLoadFailed by remember(entry.stableKey) {
+        mutableStateOf(false)
+    }
 
     fun loadWith(session: SourceSession) {
         resolvedSession = session
@@ -180,6 +189,8 @@ fun TvDetailsScreen(
             onSuccess = { loaded ->
                 detailedItem = loaded
                 savedToLibrary = mediaStore.isSaved(entry.sourceUrl, loaded)
+                movieWatched = mediaStore.isWatched(entry.sourceUrl, loaded)
+                logoLoadFailed = false
                 detailsResolved = true
                 loading = false
                 errorMessage = null
@@ -292,21 +303,81 @@ fun TvDetailsScreen(
         episode = resumeEpisode
     )
     val resumeActionLabel = when {
-        effectiveContinueEntry?.nextUp == true &&
-            resumeEpisode != null -> {
-            "Next · ${resumeEpisode.displayTitle}"
-        }
-
-        resumePositionMs > 0L &&
-            resumeEpisode != null -> {
-            "Resume · ${resumeEpisode.displayTitle}"
-        }
-
+        effectiveContinueEntry?.nextUp == true && resumeEpisode != null -> "Next episode"
         resumePositionMs > 0L -> "Resume"
         else -> "Play"
     }
+    val resumeContextLabel = when {
+        effectiveContinueEntry?.nextUp == true && resumeEpisode != null -> {
+            "Next: ${resumeEpisode.displayTitle}"
+        }
+
+        resumePositionMs > 0L && resumeEpisode != null -> {
+            "Resume: ${resumeEpisode.displayTitle}"
+        }
+
+        else -> null
+    }
+
+    val heroTargetEpisode = if (isSeries) resumeEpisode ?: primaryEpisode else null
+    val creditLine = remember(
+        detailedItem.director,
+        detailedItem.writer,
+        isSeries
+    ) {
+        val directors = detailedItem.director.joinToString(", ").takeIf { it.isNotBlank() }
+        val writers = detailedItem.writer.joinToString(", ").takeIf { it.isNotBlank() }
+        when {
+            directors != null -> {
+                val label = if (isSeries) "Creator" else "Director"
+                "$label: $directors"
+            }
+
+            writers != null -> "Writer: $writers"
+            else -> null
+        }
+    }
+    val metaLabels = remember(
+        detailedItem.releaseInfo,
+        detailedItem.runtime,
+        detailedItem.rating,
+        isSeries,
+        sortedEpisodes.size
+    ) {
+        buildList {
+            detailedItem.releaseInfo
+                .trim()
+                .takeIf { it.isNotBlank() }
+                ?.let(::add)
+            add(if (isSeries) "Series" else "Movie")
+            detailedItem.runtime
+                .trim()
+                .takeIf { it.isNotBlank() }
+                ?.let(::add)
+            detailedItem.rating
+                .trim()
+                .takeIf { it.isNotBlank() }
+                ?.let { add("IMDb $it") }
+            if (isSeries && sortedEpisodes.isNotEmpty()) {
+                add("${sortedEpisodes.size} episodes")
+            }
+        }
+    }
+    val genreLine = remember(detailedItem.genres) {
+        detailedItem.genres
+            .filter { it.isNotBlank() }
+            .take(5)
+            .joinToString(" • ")
+    }
 
     val localPlaybackEntry = effectiveContinueEntry
+    LaunchedEffect(sourcePlayerReturnToken, detailedItem.id) {
+        movieWatched = mediaStore.isWatched(
+            sourceUrl = entry.sourceUrl,
+            item = detailedItem
+        )
+    }
+
     val watchedEpisodeKeys = remember(
         entry.stableKey,
         sourcePlayerReturnToken,
@@ -547,327 +618,438 @@ fun TvDetailsScreen(
             modifier = Modifier.fillMaxSize()
         )
 
-        Row(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(
-                    start = 60.dp,
-                    end = 54.dp,
-                    top = 46.dp,
-                    bottom = 38.dp
-                ),
-            horizontalArrangement = Arrangement.spacedBy(34.dp),
-            verticalAlignment = Alignment.Top
+        LazyColumn(
+            state = detailsListState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(
+                start = 60.dp,
+                end = 54.dp,
+                bottom = 44.dp
+            ),
+            verticalArrangement = Arrangement.spacedBy(18.dp)
         ) {
-            TvDetailsPoster(
-                item = detailedItem,
-                modifier = Modifier
-                    .width(188.dp)
-                    .height(282.dp)
-            )
-
-            Column(
-                modifier = Modifier
-                    .fillMaxHeight()
-                    .width(760.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Text(
-                    text = detailedItem.title,
-                    color = TvColors.TextPrimary,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 34.sp,
-                    lineHeight = 39.sp,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalAlignment = Alignment.CenterVertically
+            item(key = "hero") {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(500.dp)
+                        .padding(
+                            end = 270.dp,
+                            bottom = 26.dp
+                        ),
+                    verticalArrangement = Arrangement.Bottom
                 ) {
-                    detailedItem.releaseInfo
-                        .takeIf { it.isNotBlank() }
-                        ?.let {
-                            TvMetaPill(it)
-                        }
+                    val shouldShowLogo =
+                        detailedItem.logoUrl.isNotBlank() && !logoLoadFailed
 
-                    TvMetaPill(
-                        when {
-                            isSeries -> "Series"
-                            detailedItem.type == MediaType.MOVIE -> "Movie"
-                            else -> detailedItem.type.name.lowercase()
-                                .replaceFirstChar { it.uppercase() }
-                        }
-                    )
-
-                    if (sortedEpisodes.isNotEmpty()) {
-                        TvMetaPill("${sortedEpisodes.size} episodes")
+                    if (shouldShowLogo) {
+                        AsyncImage(
+                            model = detailedItem.logoUrl,
+                            contentDescription = detailedItem.title,
+                            onError = { logoLoadFailed = true },
+                            modifier = Modifier
+                                .width(360.dp)
+                                .height(92.dp),
+                            contentScale = ContentScale.Fit,
+                            alignment = Alignment.CenterStart
+                        )
+                        Spacer(Modifier.height(12.dp))
+                    } else {
+                        Text(
+                            text = detailedItem.title,
+                            color = TvColors.TextPrimary,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 38.sp,
+                            lineHeight = 43.sp,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Spacer(Modifier.height(12.dp))
                     }
-                }
 
-                detailedItem.description
-                    .takeIf { it.isNotBlank() }
-                    ?.let {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TvDetailsActionButton(
+                            label = resumeActionLabel,
+                            focusRequester = firstActionRequester,
+                            onFocused = { lastDetailsRequester = it },
+                            primary = true,
+                            onLongPress = {
+                                if (!loading) {
+                                    openSources(
+                                        episode = heroTargetEpisode,
+                                        autoPlay = false
+                                    )
+                                }
+                            },
+                            onClick = {
+                                if (!loading) {
+                                    openSources(
+                                        episode = heroTargetEpisode,
+                                        autoPlay = true
+                                    )
+                                }
+                            }
+                        )
+
+                        TvDetailsActionButton(
+                            label = "Play manually",
+                            icon = Icons.Outlined.PlayArrow,
+                            focusRequester = manualPlayRequester,
+                            onFocused = { lastDetailsRequester = it },
+                            onClick = {
+                                if (!loading) {
+                                    openSources(
+                                        episode = heroTargetEpisode,
+                                        autoPlay = false
+                                    )
+                                }
+                            }
+                        )
+
+                        TvDetailsActionButton(
+                            label = if (savedToLibrary) "In Library" else "Library",
+                            icon = if (savedToLibrary) {
+                                Icons.Outlined.BookmarkRemove
+                            } else {
+                                Icons.Outlined.BookmarkAdd
+                            },
+                            focusRequester = libraryActionRequester,
+                            onFocused = { lastDetailsRequester = it },
+                            onClick = {
+                                val nextSaved = !savedToLibrary
+                                mediaStore.setSaved(
+                                    entry.sourceUrl,
+                                    detailedItem,
+                                    nextSaved
+                                )
+                                savedToLibrary = nextSaved
+                            }
+                        )
+
+                        if (!isSeries) {
+                            TvDetailsActionButton(
+                                label = if (movieWatched) "Watched" else "Mark watched",
+                                icon = null,
+                                focusRequester = watchedActionRequester,
+                                onFocused = { lastDetailsRequester = it },
+                                onClick = {
+                                    val nextWatched = !movieWatched
+                                    if (nextWatched) {
+                                        mediaStore.recordProgress(
+                                            sourceUrl = entry.sourceUrl,
+                                            item = detailedItem,
+                                            episode = null,
+                                            positionMs = 0L,
+                                            durationMs = 0L,
+                                            completed = true
+                                        )
+                                    } else {
+                                        mediaStore.setWatched(
+                                            sourceUrl = entry.sourceUrl,
+                                            item = detailedItem,
+                                            watched = false
+                                        )
+                                    }
+                                    movieWatched = nextWatched
+                                }
+                            )
+                        }
+                    }
+
+                    resumeContextLabel?.let {
+                        Spacer(Modifier.height(8.dp))
                         Text(
                             text = it,
-                            color = TvColors.TextPrimary.copy(alpha = 0.76f),
-                            fontSize = 14.sp,
-                            lineHeight = 19.sp,
-                            maxLines = 4,
+                            color = TvColors.TextSecondary,
+                            fontWeight = FontWeight.Medium,
+                            fontSize = 12.sp,
+                            maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
                     }
 
-                if (errorMessage != null) {
-                    Surface(
-                        color = TvColors.BackgroundElevated.copy(alpha = 0.92f),
-                        shape = RoundedCornerShape(10.dp),
-                        border = BorderStroke(
-                            1.dp,
-                            Color.White.copy(alpha = 0.10f)
+                    Spacer(Modifier.height(15.dp))
+
+                    creditLine?.let {
+                        Text(
+                            text = it,
+                            color = TvColors.TextSecondary,
+                            fontWeight = FontWeight.Medium,
+                            fontSize = 13.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
-                    ) {
+                        Spacer(Modifier.height(8.dp))
+                    }
+
+                    detailedItem.description
+                        .takeIf { it.isNotBlank() }
+                        ?.let {
+                            Text(
+                                text = it,
+                                color = TvColors.TextPrimary.copy(alpha = 0.82f),
+                                fontSize = 14.sp,
+                                lineHeight = 19.sp,
+                                maxLines = 6,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Spacer(Modifier.height(10.dp))
+                        }
+
+                    if (metaLabels.isNotEmpty()) {
                         Row(
-                            modifier = Modifier.padding(
-                                horizontal = 12.dp,
-                                vertical = 8.dp
-                            ),
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(
-                                imageVector = Icons.Outlined.Info,
-                                contentDescription = null,
-                                tint = TvColors.TextSecondary,
-                                modifier = Modifier.size(17.dp)
+                            metaLabels.take(5).forEach { label ->
+                                TvMetaPill(label)
+                            }
+                        }
+                    }
+
+                    if (genreLine.isNotBlank()) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            text = genreLine,
+                            color = TvColors.TextSecondary.copy(alpha = 0.92f),
+                            fontSize = 12.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    if (errorMessage != null) {
+                        Spacer(Modifier.height(10.dp))
+                        Surface(
+                            color = TvColors.BackgroundElevated.copy(alpha = 0.92f),
+                            shape = RoundedCornerShape(10.dp),
+                            border = BorderStroke(
+                                1.dp,
+                                Color.White.copy(alpha = 0.10f)
                             )
-                            Text(
-                                text = errorMessage.orEmpty(),
-                                color = TvColors.TextSecondary,
-                                fontSize = 12.sp,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis
-                            )
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(
+                                    horizontal = 12.dp,
+                                    vertical = 8.dp
+                                ),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.Info,
+                                    contentDescription = null,
+                                    tint = TvColors.TextSecondary,
+                                    modifier = Modifier.size(17.dp)
+                                )
+                                Text(
+                                    text = errorMessage.orEmpty(),
+                                    color = TvColors.TextSecondary,
+                                    fontSize = 12.sp,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
                         }
                     }
                 }
+            }
 
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    TvDetailsActionButton(
-                        label = resumeActionLabel,
-                        focusRequester = firstActionRequester,
-                        onFocused = { lastDetailsRequester = it },
-                        onClick = {
-                            if (!loading) {
-                                val continueEntry = effectiveContinueEntry
-                                if (continueEntry != null) {
-                                    openSources(
-                                        episode = resumeEpisode,
-                                        autoPlay = true
-                                    )
-                                } else {
-                                    openSources(
-                                        if (isSeries) primaryEpisode else null
-                                    )
-                                }
-                            }
-                        }
-                    )
-                    TvDetailsActionButton(
-                        label = if (savedToLibrary) {
-                            "Remove from Library"
-                        } else {
-                            "Add to Library"
-                        },
-                        icon = if (savedToLibrary) {
-                            Icons.Outlined.BookmarkRemove
-                        } else {
-                            Icons.Outlined.BookmarkAdd
-                        },
-                        focusRequester = libraryActionRequester,
-                        onFocused = { lastDetailsRequester = it },
-                        onClick = {
-                            val nextSaved = !savedToLibrary
-                            mediaStore.setSaved(
-                                entry.sourceUrl,
-                                detailedItem,
-                                nextSaved
-                            )
-                            savedToLibrary = nextSaved
-                        }
-                    )
-                }
-
-                if (seasons.isNotEmpty()) {
-                    Spacer(Modifier.height(2.dp))
-                    Text(
-                        text = "Seasons",
-                        color = TvColors.TextPrimary,
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 18.sp
-                    )
-
-                    LazyRow(
-                        state = seasonListState,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        contentPadding = PaddingValues(end = 18.dp)
+            if (seasons.isNotEmpty()) {
+                item(key = "seasons") {
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        itemsIndexed(
-                            items = seasons,
-                            key = { _, season -> season }
-                        ) { _, season ->
-                            val seasonEpisodes = sortedEpisodes.filter { it.season == season }
-                            val seasonFullyWatched = seasonEpisodes.isNotEmpty() &&
-                                seasonEpisodes.all { episode ->
-                                    episodeHasWatchedMark(episode, watchedEpisodeKeys)
-                                }
+                        Text(
+                            text = "Seasons",
+                            color = TvColors.TextPrimary,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 19.sp
+                        )
 
-                            TvSeasonChip(
-                                season = season,
-                                selected = season == selectedSeason,
-                                fullyWatched = seasonFullyWatched,
-                                onFocused = { requester ->
-                                    lastDetailsRequester = requester
-                                    if (season != selectedSeason) {
-                                        pendingSeasonSelection = season
+                        LazyRow(
+                            state = seasonListState,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            contentPadding = PaddingValues(end = 18.dp)
+                        ) {
+                            itemsIndexed(
+                                items = seasons,
+                                key = { _, season -> season }
+                            ) { _, season ->
+                                val seasonEpisodes = sortedEpisodes.filter { it.season == season }
+                                val seasonFullyWatched = seasonEpisodes.isNotEmpty() &&
+                                    seasonEpisodes.all { episode ->
+                                        episodeHasWatchedMark(episode, watchedEpisodeKeys)
                                     }
-                                },
-                                onClick = {
-                                    pendingSeasonSelection = null
-                                    selectedSeason = season
-                                    lastFocusedEpisodeKey = null
-                                    pendingEpisodeFocusRestoreKey = null
-                                },
-                                onLongPress = {
-                                    pendingSeasonSelection = null
-                                    selectedSeason = season
-                                    seasonOptions = season
-                                }
-                            )
+
+                                TvSeasonChip(
+                                    season = season,
+                                    selected = season == selectedSeason,
+                                    fullyWatched = seasonFullyWatched,
+                                    onFocused = { requester ->
+                                        lastDetailsRequester = requester
+                                        if (season != selectedSeason) {
+                                            pendingSeasonSelection = season
+                                        }
+                                    },
+                                    onClick = {
+                                        pendingSeasonSelection = null
+                                        selectedSeason = season
+                                        lastFocusedEpisodeKey = null
+                                        pendingEpisodeFocusRestoreKey = null
+                                    },
+                                    onLongPress = {
+                                        pendingSeasonSelection = null
+                                        selectedSeason = season
+                                        seasonOptions = season
+                                    }
+                                )
+                            }
                         }
                     }
                 }
+            }
 
-                if (sortedEpisodes.isNotEmpty()) {
-                    Text(
-                        text = when {
-                            selectedSeason == null -> "Episodes"
-                            selectedSeason == 0 && selectedSeasonEpisodes.isEmpty() -> "Episodes · Specials"
-                            selectedSeason == 0 -> {
-                                "Episodes · Specials · " +
-                                    "$selectedSeasonWatchedCount/${selectedSeasonEpisodes.size} watched"
-                            }
-                            selectedSeasonEpisodes.isEmpty() -> "Episodes · Season $selectedSeason"
-                            else -> {
-                                "Episodes · Season $selectedSeason · " +
-                                    "$selectedSeasonWatchedCount/${selectedSeasonEpisodes.size} watched"
-                            }
-                        },
-                        color = TvColors.TextPrimary,
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 18.sp
-                    )
-
-                    LazyRow(
-                        state = episodeListState,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .onPreviewKeyEvent { event ->
-                                val native = event.nativeKeyEvent
-                                val horizontal =
-                                    native.keyCode == AndroidKeyEvent.KEYCODE_DPAD_LEFT ||
-                                        native.keyCode == AndroidKeyEvent.KEYCODE_DPAD_RIGHT
-                                if (
-                                    horizontal &&
-                                    native.action == AndroidKeyEvent.ACTION_DOWN &&
-                                    native.repeatCount > 0
-                                ) {
-                                    val now = System.currentTimeMillis()
-                                    if (
-                                        now - lastEpisodeRepeatAt <
-                                        EPISODE_SCROLL_REPEAT_THROTTLE_MS
-                                    ) {
-                                        true
-                                    } else {
-                                        lastEpisodeRepeatAt = now
-                                        false
-                                    }
-                                } else {
-                                    false
+            if (sortedEpisodes.isNotEmpty()) {
+                item(key = "episodes_$selectedSeason") {
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Text(
+                            text = when {
+                                selectedSeason == null -> "Episodes"
+                                selectedSeason == 0 && selectedSeasonEpisodes.isEmpty() -> "Episodes · Specials"
+                                selectedSeason == 0 -> {
+                                    "Episodes · Specials · " +
+                                        "$selectedSeasonWatchedCount/${selectedSeasonEpisodes.size} watched"
+                                }
+                                selectedSeasonEpisodes.isEmpty() -> "Episodes · Season $selectedSeason"
+                                else -> {
+                                    "Episodes · Season $selectedSeason · " +
+                                        "$selectedSeasonWatchedCount/${selectedSeasonEpisodes.size} watched"
                                 }
                             },
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        contentPadding = PaddingValues(
-                            end = 32.dp,
-                            bottom = 10.dp
+                            color = TvColors.TextPrimary,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 19.sp
                         )
-                    ) {
-                        itemsIndexed(
-                            items = visibleEpisodes,
-                            key = { _, episode ->
-                                episodeFocusKey(episode)
-                            }
-                        ) { _, episode ->
-                            val focusKey = episodeFocusKey(episode)
-                            val episodeRequester = remember(focusKey) {
-                                FocusRequester().also { requester ->
-                                    episodeFocusRequesters[focusKey] = requester
-                                }
-                            }
-                            val isPlaybackEpisode = localPlaybackEntry?.let { stored ->
-                                stored.episodeId == episode.id
-                            } == true
-                            val progressFraction = if (
-                                isPlaybackEpisode &&
-                                localPlaybackEntry?.hasProgress == true
-                            ) {
-                                localPlaybackEntry.progressFraction
-                            } else {
-                                0f
-                            }
-                            val episodeWatched = episodeHasWatchedMark(episode, watchedEpisodeKeys)
-                            val statusLabel = when {
-                                isPlaybackEpisode &&
-                                    localPlaybackEntry?.nextUp == true -> {
-                                    "Next up"
-                                }
 
-                                progressFraction > 0f -> {
-                                    "Resume · ${(progressFraction * 100f).toInt()}%"
-                                }
-
-                                episodeWatched -> "Watched"
-                                else -> null
-                            }
-
-                            TvEpisodeCard(
-                                episode = episode,
-                                focusRequester = episodeRequester,
-                                progressFraction = progressFraction,
-                                statusLabel = statusLabel,
-                                watched = episodeWatched,
-                                onFocused = { requester ->
-                                    lastDetailsRequester = requester
-                                    lastFocusedEpisodeKey = focusKey
+                        LazyRow(
+                            state = episodeListState,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .onPreviewKeyEvent { event ->
+                                    val native = event.nativeKeyEvent
+                                    val horizontal =
+                                        native.keyCode == AndroidKeyEvent.KEYCODE_DPAD_LEFT ||
+                                            native.keyCode == AndroidKeyEvent.KEYCODE_DPAD_RIGHT
+                                    if (
+                                        horizontal &&
+                                        native.action == AndroidKeyEvent.ACTION_DOWN &&
+                                        native.repeatCount > 0
+                                    ) {
+                                        val now = System.currentTimeMillis()
+                                        if (
+                                            now - lastEpisodeRepeatAt <
+                                            EPISODE_SCROLL_REPEAT_THROTTLE_MS
+                                        ) {
+                                            true
+                                        } else {
+                                            lastEpisodeRepeatAt = now
+                                            false
+                                        }
+                                    } else {
+                                        false
+                                    }
                                 },
-                                onClick = {
-                                    lastFocusedEpisodeKey = focusKey
-                                    pendingEpisodeFocusRestoreKey = focusKey
-                                    openSources(episode)
-                                },
-                                onLongPress = {
-                                    lastFocusedEpisodeKey = focusKey
-                                    pendingEpisodeFocusRestoreKey = focusKey
-                                    episodeOptions = episode
-                                }
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            contentPadding = PaddingValues(
+                                end = 32.dp,
+                                bottom = 10.dp
                             )
+                        ) {
+                            itemsIndexed(
+                                items = visibleEpisodes,
+                                key = { _, episode ->
+                                    episodeFocusKey(episode)
+                                }
+                            ) { _, episode ->
+                                val focusKey = episodeFocusKey(episode)
+                                val episodeRequester = remember(focusKey) {
+                                    FocusRequester().also { requester ->
+                                        episodeFocusRequesters[focusKey] = requester
+                                    }
+                                }
+                                val isPlaybackEpisode = localPlaybackEntry?.let { stored ->
+                                    stored.episodeId == episode.id
+                                } == true
+                                val progressFraction = if (
+                                    isPlaybackEpisode &&
+                                    localPlaybackEntry?.hasProgress == true
+                                ) {
+                                    localPlaybackEntry.progressFraction
+                                } else {
+                                    0f
+                                }
+                                val episodeWatched =
+                                    episodeHasWatchedMark(episode, watchedEpisodeKeys)
+                                val statusLabel = when {
+                                    isPlaybackEpisode &&
+                                        localPlaybackEntry?.nextUp == true -> {
+                                        "Next up"
+                                    }
+
+                                    progressFraction > 0f -> {
+                                        "Resume · ${(progressFraction * 100f).toInt()}%"
+                                    }
+
+                                    episodeWatched -> "Watched"
+                                    else -> null
+                                }
+
+                                TvEpisodeCard(
+                                    episode = episode,
+                                    focusRequester = episodeRequester,
+                                    progressFraction = progressFraction,
+                                    statusLabel = statusLabel,
+                                    watched = episodeWatched,
+                                    onFocused = { requester ->
+                                        lastDetailsRequester = requester
+                                        lastFocusedEpisodeKey = focusKey
+                                    },
+                                    onClick = {
+                                        lastFocusedEpisodeKey = focusKey
+                                        pendingEpisodeFocusRestoreKey = focusKey
+                                        openSources(
+                                            episode = episode,
+                                            autoPlay = true
+                                        )
+                                    },
+                                    onLongPress = {
+                                        lastFocusedEpisodeKey = focusKey
+                                        pendingEpisodeFocusRestoreKey = focusKey
+                                        episodeOptions = episode
+                                    }
+                                )
+                            }
                         }
                     }
                 }
+            }
+
+            if (detailedItem.cast.isNotEmpty()) {
+                item(key = "cast") {
+                    TvCastSection(
+                        cast = detailedItem.cast
+                    )
+                }
+            }
+
+            item(key = "details_bottom_space") {
+                Spacer(Modifier.height(26.dp))
             }
         }
 
@@ -936,7 +1118,17 @@ fun TvDetailsScreen(
                 },
                 onPlay = {
                     episodeOptions = null
-                    openSources(episode)
+                    openSources(
+                        episode = episode,
+                        autoPlay = true
+                    )
+                },
+                onManualPlay = {
+                    episodeOptions = null
+                    openSources(
+                        episode = episode,
+                        autoPlay = false
+                    )
                 },
                 onStartFromBeginning = {
                     episodeOptions = null
@@ -1139,6 +1331,7 @@ fun TvDetailsScreen(
     }
 
     LaunchedEffect(entry.stableKey) {
+        runCatching { detailsListState.scrollToItem(0) }
         delay(70)
         runCatching { firstActionRequester.requestFocus() }
     }
@@ -1248,12 +1441,26 @@ private fun TvMetaPill(label: String) {
 @Composable
 private fun TvDetailsActionButton(
     label: String,
-    icon: ImageVector = Icons.Outlined.PlayArrow,
+    icon: ImageVector? = Icons.Outlined.PlayArrow,
     focusRequester: FocusRequester,
     onFocused: (FocusRequester) -> Unit,
+    primary: Boolean = false,
+    onLongPress: (() -> Unit)? = null,
     onClick: () -> Unit
 ) {
     var focused by remember { mutableStateOf(false) }
+    var longPressTriggered by remember(label) { mutableStateOf(false) }
+
+    val containerColor = when {
+        primary -> Color.White
+        focused -> TvColors.FocusRing
+        else -> TvColors.SurfaceVariant
+    }
+    val contentColor = when {
+        primary -> Color.Black
+        focused -> TvColors.Background
+        else -> TvColors.TextPrimary
+    }
 
     Surface(
         modifier = Modifier
@@ -1264,32 +1471,54 @@ private fun TvDetailsActionButton(
                 if (it.hasFocus) onFocused(focusRequester)
             }
             .onPreviewKeyEvent { event ->
-                if (
-                    event.type == KeyEventType.KeyDown &&
-                    (
-                        event.key == Key.DirectionCenter ||
-                            event.key == Key.Enter
-                        )
-                ) {
-                    onClick()
-                    true
-                } else {
-                    false
+                val native = event.nativeKeyEvent
+                val isSelect =
+                    native.keyCode == AndroidKeyEvent.KEYCODE_DPAD_CENTER ||
+                        native.keyCode == AndroidKeyEvent.KEYCODE_ENTER ||
+                        native.keyCode == AndroidKeyEvent.KEYCODE_NUMPAD_ENTER
+
+                when {
+                    onLongPress != null &&
+                        native.action == AndroidKeyEvent.ACTION_DOWN &&
+                        native.keyCode == AndroidKeyEvent.KEYCODE_MENU -> {
+                        longPressTriggered = true
+                        onLongPress()
+                        true
+                    }
+
+                    onLongPress != null &&
+                        isSelect &&
+                        native.action == AndroidKeyEvent.ACTION_DOWN &&
+                        native.repeatCount >= 2 &&
+                        !longPressTriggered -> {
+                        longPressTriggered = true
+                        onLongPress()
+                        true
+                    }
+
+                    isSelect && native.action == AndroidKeyEvent.ACTION_DOWN -> true
+
+                    isSelect && native.action == AndroidKeyEvent.ACTION_UP -> {
+                        if (longPressTriggered) {
+                            longPressTriggered = false
+                        } else {
+                            onClick()
+                        }
+                        true
+                    }
+
+                    else -> false
                 }
             }
             .focusable(),
-        color = if (focused) {
-            TvColors.FocusRing
-        } else {
-            TvColors.SurfaceVariant
-        },
-        shape = RoundedCornerShape(10.dp),
+        color = containerColor,
+        shape = RoundedCornerShape(23.dp),
         border = BorderStroke(
-            1.dp,
-            if (focused) {
-                TvColors.FocusRing
-            } else {
-                Color.White.copy(alpha = 0.10f)
+            if (focused) 2.dp else 1.dp,
+            when {
+                focused -> TvColors.FocusRing
+                primary -> Color.White.copy(alpha = 0.92f)
+                else -> Color.White.copy(alpha = 0.10f)
             }
         )
     ) {
@@ -1298,18 +1527,97 @@ private fun TvDetailsActionButton(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = if (focused) TvColors.Background else TvColors.TextPrimary,
-                modifier = Modifier.size(19.dp)
-            )
+            icon?.let {
+                Icon(
+                    imageVector = it,
+                    contentDescription = null,
+                    tint = contentColor,
+                    modifier = Modifier.size(19.dp)
+                )
+            }
             Text(
                 text = label,
-                color = if (focused) TvColors.Background else TvColors.TextPrimary,
+                color = contentColor,
                 fontWeight = FontWeight.SemiBold,
                 fontSize = 14.sp
             )
+        }
+    }
+}
+
+
+@Composable
+private fun TvCastSection(
+    cast: List<String>
+) {
+    Column(
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Text(
+            text = "Cast",
+            color = TvColors.TextPrimary,
+            fontWeight = FontWeight.SemiBold,
+            fontSize = 19.sp
+        )
+
+        LazyRow(
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            contentPadding = PaddingValues(end = 28.dp)
+        ) {
+            itemsIndexed(
+                items = cast.take(20),
+                key = { index, name -> "$index|$name" }
+            ) { _, name ->
+                Surface(
+                    modifier = Modifier
+                        .width(156.dp)
+                        .height(56.dp),
+                    color = TvColors.SurfaceVariant.copy(alpha = 0.90f),
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(
+                        1.dp,
+                        Color.White.copy(alpha = 0.08f)
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Surface(
+                            modifier = Modifier.size(32.dp),
+                            color = TvColors.BackgroundElevated,
+                            shape = RoundedCornerShape(16.dp),
+                            border = BorderStroke(
+                                1.dp,
+                                Color.White.copy(alpha = 0.08f)
+                            )
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Text(
+                                    text = name
+                                        .trim()
+                                        .firstOrNull()
+                                        ?.uppercase()
+                                        .orEmpty(),
+                                    color = TvColors.TextPrimary,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp
+                                )
+                            }
+                        }
+
+                        Text(
+                            text = name,
+                            color = TvColors.TextPrimary.copy(alpha = 0.90f),
+                            fontWeight = FontWeight.Medium,
+                            fontSize = 12.sp,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
         }
     }
 }
@@ -1685,6 +1993,7 @@ private fun TvEpisodeOptionsOverlay(
     hasPreviousEpisodes: Boolean,
     onDismiss: () -> Unit,
     onPlay: () -> Unit,
+    onManualPlay: () -> Unit,
     onStartFromBeginning: () -> Unit,
     onToggleWatched: () -> Unit,
     onToggleSeasonWatched: () -> Unit,
@@ -1698,6 +2007,7 @@ private fun TvEpisodeOptionsOverlay(
     ) { FocusRequester() }
     val previousRequester = remember(episodeFocusKey(episode)) { FocusRequester() }
     val playRequester = remember(episodeFocusKey(episode), hasProgress) { FocusRequester() }
+    val manualRequester = remember(episodeFocusKey(episode)) { FocusRequester() }
     val startRequester = remember(episodeFocusKey(episode), hasProgress) { FocusRequester() }
 
     BackHandler(onBack = onDismiss)
@@ -1759,6 +2069,11 @@ private fun TvEpisodeOptionsOverlay(
                     label = if (hasProgress) "Resume" else "Play",
                     focusRequester = playRequester,
                     onClick = onPlay
+                )
+                TvEpisodeOptionButton(
+                    label = "Play manually",
+                    focusRequester = manualRequester,
+                    onClick = onManualPlay
                 )
                 if (hasProgress) {
                     TvEpisodeOptionButton(
