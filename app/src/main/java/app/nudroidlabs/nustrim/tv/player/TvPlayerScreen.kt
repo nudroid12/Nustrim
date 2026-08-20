@@ -39,6 +39,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material3.CircularProgressIndicator
@@ -229,6 +230,29 @@ fun TvPlayerScreen(
         subtitlesDisabled -> "Off"
         else -> subtitleTracks.firstOrNull { it.selected }?.label ?: "Auto"
     }
+    val seekStepSeconds = preferences.tvSeekStepSeconds
+    val seekStepMs = seekStepSeconds * 1_000L
+    val controlsAutoHideMs = preferences.tvControlsAutoHideSeconds * 1_000L
+    val focusedControlLabel = when (focusedControlId) {
+        "previous" -> previousEpisodeTitle
+            ?.takeIf { it.isNotBlank() }
+            ?.let { "Previous · $it" }
+            ?: "Previous episode"
+        "rewind" -> "Rewind ${seekStepSeconds}s"
+        "play" -> if (isPlaying) "Pause" else "Play"
+        "forward" -> "Forward ${seekStepSeconds}s"
+        "next" -> nextEpisodeTitle
+            ?.takeIf { it.isNotBlank() }
+            ?.let { "Next · $it" }
+            ?: "Next episode"
+        "subtitles" -> "Subtitles · $selectedSubtitleLabel"
+        "audio" -> "Audio · $selectedAudioLabel"
+        "sources" -> "Change source"
+        "speed" -> "Playback speed · ${formatTvSpeed(playbackSpeed)}"
+        "aspect" -> "Aspect ratio"
+        "more" -> if (moreExpanded) "Close more actions" else "More actions"
+        else -> null
+    }
 
     fun revealControls() {
         seekOverlayVisible = false
@@ -366,6 +390,11 @@ fun TvPlayerScreen(
 
         cancelAutoNext()
         pauseOverlayVisible = false
+        if (player.playbackState == Player.STATE_ENDED) {
+            playbackCompleted = false
+            player.seekTo(0L)
+            positionMs = 0L
+        }
         if (player.isPlaying) player.pause() else player.play()
         revealControls()
     }
@@ -427,9 +456,9 @@ fun TvPlayerScreen(
         }
 
         val stepMs = when {
-            seekRepeatCount >= 9 -> 30_000L
-            seekRepeatCount >= 5 -> 20_000L
-            else -> 10_000L
+            seekRepeatCount >= 9 -> seekStepMs * 3L
+            seekRepeatCount >= 5 -> seekStepMs * 2L
+            else -> seekStepMs
         }
         val duration = player.duration
             .takeIf { it != C.TIME_UNSET && it > 0L }
@@ -529,7 +558,8 @@ fun TvPlayerScreen(
                         completed = true,
                         force = true
                     )
-                    val hasNextEpisode = onNextEpisode != null
+                    val hasNextEpisode =
+                        onNextEpisode != null && preferences.autoplayNextEpisode
                     controlsVisible = !hasNextEpisode
                     moreExpanded = false
                     focusedControlId = null
@@ -724,7 +754,7 @@ fun TvPlayerScreen(
             focusedControlId == null
         ) {
             val token = interactionToken
-            delay(3500)
+            delay(controlsAutoHideMs)
             if (
                 token == interactionToken &&
                 isPlaying &&
@@ -808,6 +838,11 @@ fun TvPlayerScreen(
 
     BackHandler {
         when {
+            playbackError != null -> {
+                reportProgress(force = true)
+                onBack()
+            }
+
             pauseOverlayVisible -> {
                 pauseOverlayVisible = false
                 controlsVisible = false
@@ -1178,6 +1213,7 @@ fun TvPlayerScreen(
                         positionMs = positionMs,
                         bufferedMs = bufferedMs,
                         durationMs = durationMs,
+                        seekStepMs = seekStepMs,
                         focusRequester = progressControlRequester,
                         focused = focusedControlId == "progress",
                         onFocusedChange = { focused ->
@@ -1202,6 +1238,28 @@ fun TvPlayerScreen(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
+                            if (onPreviousEpisode != null) {
+                                TvPlayerControlButton(
+                                    id = "previous",
+                                    icon = Icons.Default.SkipPrevious,
+                                    label = "Previous episode",
+                                    upFocusRequester = progressControlRequester,
+                                    focusedId = focusedControlId,
+                                    onFocusedIdChange = { focusedControlId = it },
+                                    onClick = ::triggerPreviousEpisode,
+                                    onDownKey = ::hideControlsFromRow
+                                )
+                            }
+                            TvPlayerControlButton(
+                                id = "rewind",
+                                icon = Icons.Default.KeyboardArrowLeft,
+                                label = "Rewind ${seekStepSeconds}s",
+                                upFocusRequester = progressControlRequester,
+                                focusedId = focusedControlId,
+                                onFocusedIdChange = { focusedControlId = it },
+                                onClick = { seekBy(-seekStepMs) },
+                                onDownKey = ::hideControlsFromRow
+                            )
                             TvPlayerControlButton(
                                 id = "play",
                                 icon = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
@@ -1211,6 +1269,16 @@ fun TvPlayerScreen(
                                 focusedId = focusedControlId,
                                 onFocusedIdChange = { focusedControlId = it },
                                 onClick = ::togglePlayback,
+                                onDownKey = ::hideControlsFromRow
+                            )
+                            TvPlayerControlButton(
+                                id = "forward",
+                                icon = Icons.Default.KeyboardArrowRight,
+                                label = "Forward ${seekStepSeconds}s",
+                                upFocusRequester = progressControlRequester,
+                                focusedId = focusedControlId,
+                                onFocusedIdChange = { focusedControlId = it },
+                                onClick = { seekBy(seekStepMs) },
                                 onDownKey = ::hideControlsFromRow
                             )
                             if (onNextEpisode != null) {
@@ -1329,6 +1397,16 @@ fun TvPlayerScreen(
                             fontWeight = FontWeight.Medium
                         )
                     }
+
+                    Text(
+                        text = focusedControlLabel
+                            ?: "OK Play/Pause  •  Left/Right Seek  •  Down Hide controls",
+                        color = Color.White.copy(alpha = if (focusedControlLabel != null) 0.92f else 0.58f),
+                        fontSize = 12.sp,
+                        fontWeight = if (focusedControlLabel != null) FontWeight.SemiBold else FontWeight.Normal,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
             }
         }
@@ -1936,6 +2014,7 @@ private fun TvPlayerProgress(
     positionMs: Long,
     bufferedMs: Long,
     durationMs: Long,
+    seekStepMs: Long,
     focusRequester: FocusRequester,
     focused: Boolean,
     onFocusedChange: (Boolean) -> Unit,
@@ -1984,11 +2063,11 @@ private fun TvPlayerProgress(
                 } else {
                     when (event.key) {
                         Key.DirectionLeft -> {
-                            onSeekBy(-10_000L)
+                            onSeekBy(-seekStepMs)
                             true
                         }
                         Key.DirectionRight -> {
-                            onSeekBy(10_000L)
+                            onSeekBy(seekStepMs)
                             true
                         }
                         Key.DirectionDown -> {
