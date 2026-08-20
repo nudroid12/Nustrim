@@ -49,6 +49,30 @@ class UiPreferences(context: Context) {
     var autoplayNextEpisode: Boolean
         get() = preferences.getBoolean(KEY_AUTOPLAY_NEXT_EPISODE, true)
         set(value) = preferences.edit().putBoolean(KEY_AUTOPLAY_NEXT_EPISODE, value).apply()
+    var tvSeekStepSeconds: Int
+        get() = when (val stored = preferences.getInt(KEY_TV_SEEK_STEP_SECONDS, 10)) {
+            10, 15, 30 -> stored
+            else -> 10
+        }
+        set(value) {
+            val safe = when (value) {
+                10, 15, 30 -> value
+                else -> 10
+            }
+            preferences.edit().putInt(KEY_TV_SEEK_STEP_SECONDS, safe).apply()
+        }
+    var tvControlsAutoHideSeconds: Int
+        get() = when (val stored = preferences.getInt(KEY_TV_CONTROLS_AUTO_HIDE_SECONDS, 5)) {
+            3, 5, 8 -> stored
+            else -> 5
+        }
+        set(value) {
+            val safe = when (value) {
+                3, 5, 8 -> value
+                else -> 5
+            }
+            preferences.edit().putInt(KEY_TV_CONTROLS_AUTO_HIDE_SECONDS, safe).apply()
+        }
 
     var subtitlePreferredLanguage: String
         get() = preferences.getString(KEY_SUBTITLE_PREFERRED_LANGUAGE, "ms").orEmpty().ifBlank { "ms" }
@@ -173,6 +197,8 @@ class UiPreferences(context: Context) {
         private const val KEY_DEVELOPER_DIAGNOSTICS = "developer_diagnostics"
         private const val KEY_AUTOPLAY_FIRST_SOURCE = "autoplay_first_source"
         private const val KEY_AUTOPLAY_NEXT_EPISODE = "autoplay_next_episode"
+        private const val KEY_TV_SEEK_STEP_SECONDS = "tv_seek_step_seconds"
+        private const val KEY_TV_CONTROLS_AUTO_HIDE_SECONDS = "tv_controls_auto_hide_seconds"
         private const val KEY_SUBTITLE_PREFERRED_LANGUAGE = "subtitle_preferred_language"
         private const val KEY_SUBTITLE_SECOND_PREFERRED_LANGUAGE = "subtitle_second_preferred_language"
         private const val KEY_SUBTITLE_DISPLAY_MODE = "subtitle_display_mode"
