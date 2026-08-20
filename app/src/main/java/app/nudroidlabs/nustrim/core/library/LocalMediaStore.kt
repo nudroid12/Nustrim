@@ -116,8 +116,11 @@ class LocalMediaStore(context: Context) {
         episode: MediaEpisode
     ): Boolean {
         if (sourceUrl.isBlank()) return false
-        return episodeWatchedStorageKey(sourceUrl, item, episode) in
-            preferences.getStringSet(KEY_EPISODE_WATCHED, emptySet()).orEmpty()
+        val current = preferences.getStringSet(KEY_EPISODE_WATCHED, emptySet()).orEmpty()
+        val exact = episodeWatchedStorageKey(sourceUrl, item, episode)
+        if (exact in current) return true
+        val prefix = episodeWatchedStorageIdPrefix(sourceUrl, item, episode)
+        return prefix.isNotBlank() && current.any { it.startsWith(prefix) }
     }
 
     fun setEpisodeWatched(
@@ -128,11 +131,13 @@ class LocalMediaStore(context: Context) {
     ) {
         if (sourceUrl.isBlank()) return
         val key = episodeWatchedStorageKey(sourceUrl, item, episode)
+        val prefix = episodeWatchedStorageIdPrefix(sourceUrl, item, episode)
         val current = preferences
             .getStringSet(KEY_EPISODE_WATCHED, emptySet())
             .orEmpty()
             .toMutableSet()
-        if (watched) current += key else current -= key
+        if (prefix.isNotBlank()) current.removeAll { it.startsWith(prefix) }
+        if (watched) current += key
         preferences.edit().putStringSet(KEY_EPISODE_WATCHED, current).apply()
     }
 
@@ -149,7 +154,9 @@ class LocalMediaStore(context: Context) {
             .toMutableSet()
         episodes.forEach { episode ->
             val key = episodeWatchedStorageKey(sourceUrl, item, episode)
-            if (watched) current += key else current -= key
+            val prefix = episodeWatchedStorageIdPrefix(sourceUrl, item, episode)
+            if (prefix.isNotBlank()) current.removeAll { it.startsWith(prefix) }
+            if (watched) current += key
         }
         preferences.edit().putStringSet(KEY_EPISODE_WATCHED, current).apply()
     }
@@ -324,6 +331,16 @@ class LocalMediaStore(context: Context) {
         item: MediaItem,
         episode: MediaEpisode
     ): String = "${mediaKey(sourceUrl, item)}|episode|${episodeWatchIdentity(episode)}"
+
+    private fun episodeWatchedStorageIdPrefix(
+        sourceUrl: String,
+        item: MediaItem,
+        episode: MediaEpisode
+    ): String = if (episode.id.isBlank()) {
+        ""
+    } else {
+        "${mediaKey(sourceUrl, item)}|episode|${episode.id}|"
+    }
 
     private fun episodeWatchIdentity(episode: MediaEpisode): String =
         buildString {

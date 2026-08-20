@@ -63,6 +63,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import app.nudroidlabs.nustrim.core.library.LocalMediaStore
 import app.nudroidlabs.nustrim.core.model.MediaEpisode
+import app.nudroidlabs.nustrim.core.model.EpisodeEngine
 import app.nudroidlabs.nustrim.core.model.MediaItem
 import app.nudroidlabs.nustrim.core.model.MediaType
 import app.nudroidlabs.nustrim.core.model.StreamSource
@@ -223,15 +224,9 @@ fun TvDetailsScreen(
     } else {
         emptyList()
     }
-    val sortedEpisodes = resolvedEpisodes
-        .sortedWith(
-            compareBy<MediaEpisode>(
-                { it.season ?: Int.MAX_VALUE },
-                { it.episode ?: Int.MAX_VALUE },
-                { it.title }
-            )
-        )
-        .distinctBy(::episodeFocusKey)
+    val sortedEpisodes = remember(resolvedEpisodes) {
+        EpisodeEngine.polish(resolvedEpisodes)
+    }
     val rawSeasons = sortedEpisodes.mapNotNull { it.season }.distinct().sorted()
     val regularSeasons = rawSeasons.filter { it > 0 }
     val specialSeasons = rawSeasons.filter { it == 0 }
@@ -333,7 +328,7 @@ fun TvDetailsScreen(
         watchedEpisodeKeys
     ) {
         selectedSeasonEpisodes.count { episode ->
-            episodeWatchKey(episode) in watchedEpisodeKeys
+            episodeHasWatchedMark(episode, watchedEpisodeKeys)
         }
     }
     fun markEpisodeWatched(
@@ -348,9 +343,7 @@ fun TvDetailsScreen(
         )
 
         val isContinueEpisode = effectiveContinueEntry?.let { stored ->
-            stored.episodeId == episode.id &&
-                stored.season == episode.season &&
-                stored.episode == episode.episode
+            stored.episodeId == episode.id
         } == true
 
         if (watched && isContinueEpisode) {
@@ -730,7 +723,7 @@ fun TvDetailsScreen(
                             val seasonEpisodes = sortedEpisodes.filter { it.season == season }
                             val seasonFullyWatched = seasonEpisodes.isNotEmpty() &&
                                 seasonEpisodes.all { episode ->
-                                    episodeWatchKey(episode) in watchedEpisodeKeys
+                                    episodeHasWatchedMark(episode, watchedEpisodeKeys)
                                 }
 
                             TvSeasonChip(
@@ -826,9 +819,7 @@ fun TvDetailsScreen(
                                 }
                             }
                             val isPlaybackEpisode = localPlaybackEntry?.let { stored ->
-                                stored.episodeId == episode.id &&
-                                    stored.season == episode.season &&
-                                    stored.episode == episode.episode
+                                stored.episodeId == episode.id
                             } == true
                             val progressFraction = if (
                                 isPlaybackEpisode &&
@@ -838,7 +829,7 @@ fun TvDetailsScreen(
                             } else {
                                 0f
                             }
-                            val episodeWatched = episodeWatchKey(episode) in watchedEpisodeKeys
+                            val episodeWatched = episodeHasWatchedMark(episode, watchedEpisodeKeys)
                             val statusLabel = when {
                                 isPlaybackEpisode &&
                                     localPlaybackEntry?.nextUp == true -> {
@@ -912,7 +903,7 @@ fun TvDetailsScreen(
         }
 
         episodeOptions?.let { episode ->
-            val watched = episodeWatchKey(episode) in watchedEpisodeKeys
+            val watched = episodeHasWatchedMark(episode, watchedEpisodeKeys)
             val progress = mediaStore.resumePosition(
                 sourceUrl = entry.sourceUrl,
                 item = detailedItem,
@@ -924,7 +915,7 @@ fun TvDetailsScreen(
             }.orEmpty()
             val seasonFullyWatched = seasonEpisodes.isNotEmpty() &&
                 seasonEpisodes.all { candidate ->
-                    episodeWatchKey(candidate) in watchedEpisodeKeys
+                    episodeHasWatchedMark(candidate, watchedEpisodeKeys)
                 }
             val hasPreviousEpisodes = episode.episode?.let { episodeNumber ->
                 seasonEpisodes.any { candidate ->
@@ -988,7 +979,7 @@ fun TvDetailsScreen(
             val seasonEpisodes = sortedEpisodes.filter { it.season == season }
             val seasonFullyWatched = seasonEpisodes.isNotEmpty() &&
                 seasonEpisodes.all { episode ->
-                    episodeWatchKey(episode) in watchedEpisodeKeys
+                    episodeHasWatchedMark(episode, watchedEpisodeKeys)
                 }
             val hasPreviousSeasons = seasons.any { candidate ->
                 candidate > 0 && candidate < season
@@ -1434,6 +1425,16 @@ private fun episodeWatchKey(episode: MediaEpisode): String =
         append('|')
         append(episode.episode ?: -1)
     }
+
+private fun episodeHasWatchedMark(
+    episode: MediaEpisode,
+    watchedKeys: Set<String>
+): Boolean {
+    val exact = episodeWatchKey(episode)
+    if (exact in watchedKeys) return true
+    val idPrefix = "${episode.id}|"
+    return episode.id.isNotBlank() && watchedKeys.any { it.startsWith(idPrefix) }
+}
 
 private fun episodeFocusKey(episode: MediaEpisode): String =
     buildString {
