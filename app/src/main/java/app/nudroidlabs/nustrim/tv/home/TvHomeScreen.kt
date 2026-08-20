@@ -2,8 +2,10 @@ package app.nudroidlabs.nustrim.tv.home
 
 import android.os.SystemClock
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
@@ -26,7 +28,6 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Info
-import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
@@ -55,6 +56,7 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -72,6 +74,9 @@ import kotlinx.coroutines.delay
 
 private const val HOME_FOCUS_SETTLE_MS = 140L
 private const val HOME_LONG_PRESS_MS = 650L
+private const val HOME_POSTER_EXPAND_DELAY_MS = 3000L
+private const val HOME_ROWS_VIEWPORT_FRACTION = 0.52f
+private const val HOME_HERO_MEDIA_WIDTH_FRACTION = 0.74f
 
 @Composable
 fun TvHomeScreen(
@@ -98,6 +103,13 @@ fun TvHomeScreen(
     val focusedIndexByRow = remember { mutableStateMapOf<String, Int>() }
     val requesterByKey = remember { mutableMapOf<String, FocusRequester>() }
     val homeListState = rememberLazyListState()
+    val configuration = LocalConfiguration.current
+    val screenHeight = configuration.screenHeightDp.dp
+    val rowsViewportHeight = screenHeight * HOME_ROWS_VIEWPORT_FRACTION
+    val heroBackdropHeight = (
+        screenHeight - rowsViewportHeight + 42.dp
+    ).coerceAtMost(screenHeight)
+    val rowsTopPadding = (heroBackdropHeight - 18.dp).coerceAtLeast(286.dp)
 
     var focusedEntry by remember { mutableStateOf<TvHomeEntry?>(null) }
     var heroEntry by remember { mutableStateOf<TvHomeEntry?>(null) }
@@ -300,17 +312,20 @@ fun TvHomeScreen(
     ) {
         TvHeroBackdrop(
             entry = heroEntry ?: initialHero,
-            modifier = Modifier.fillMaxSize()
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .fillMaxWidth()
+                .height(heroBackdropHeight)
         )
 
         LazyColumn(
             state = homeListState,
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(
-                top = 304.dp,
-                bottom = 52.dp
+                top = rowsTopPadding,
+                bottom = 64.dp
             ),
-            verticalArrangement = Arrangement.spacedBy(20.dp)
+            verticalArrangement = Arrangement.spacedBy(28.dp)
         ) {
             if (!loading && continueEntries.isNotEmpty()) {
                 item(key = "continue-watching") {
@@ -380,7 +395,7 @@ fun TvHomeScreen(
                         text = "$failureCount source(s) could not be loaded.",
                         color = TvColors.TextSecondary,
                         fontSize = 13.sp,
-                        modifier = Modifier.padding(horizontal = 34.dp)
+                        modifier = Modifier.padding(horizontal = 52.dp)
                     )
                 }
             }
@@ -463,19 +478,29 @@ private fun TvHeroBackdrop(
     modifier: Modifier = Modifier
 ) {
     val item = entry?.item
+    val image = item?.backgroundUrl
+        ?.takeIf { it.isNotBlank() }
+        ?: item?.posterUrl.orEmpty()
 
-    Box(modifier = modifier) {
-        val image = item?.backgroundUrl
-            ?.takeIf { it.isNotBlank() }
-            ?: item?.posterUrl.orEmpty()
-
-        if (image.isNotBlank()) {
-            AsyncImage(
-                model = image,
-                contentDescription = item?.title,
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop
-            )
+    Box(modifier = modifier.background(TvColors.Background)) {
+        Crossfade(
+            targetState = image,
+            animationSpec = tween(durationMillis = 320),
+            label = "homeHeroBackdropCrossfade",
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .fillMaxHeight()
+                .fillMaxWidth(HOME_HERO_MEDIA_WIDTH_FRACTION)
+        ) { model ->
+            if (model.isNotBlank()) {
+                AsyncImage(
+                    model = model,
+                    contentDescription = item?.title,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop,
+                    alignment = Alignment.TopEnd
+                )
+            }
         }
 
         Box(
@@ -484,10 +509,11 @@ private fun TvHeroBackdrop(
                 .background(
                     Brush.horizontalGradient(
                         colorStops = arrayOf(
-                            0.00f to TvColors.Background.copy(alpha = 0.98f),
-                            0.42f to TvColors.Background.copy(alpha = 0.68f),
-                            0.74f to TvColors.Background.copy(alpha = 0.28f),
-                            1.00f to TvColors.Background.copy(alpha = 0.08f)
+                            0.00f to TvColors.Background,
+                            0.22f to TvColors.Background.copy(alpha = 0.86f),
+                            0.46f to TvColors.Background.copy(alpha = 0.56f),
+                            0.76f to TvColors.Background.copy(alpha = 0.16f),
+                            1.00f to Color.Transparent
                         )
                     )
                 )
@@ -500,8 +526,8 @@ private fun TvHeroBackdrop(
                     Brush.verticalGradient(
                         colorStops = arrayOf(
                             0.00f to Color.Transparent,
-                            0.52f to Color.Transparent,
-                            0.78f to TvColors.Background.copy(alpha = 0.58f),
+                            0.40f to Color.Transparent,
+                            0.75f to TvColors.Background.copy(alpha = 0.65f),
                             1.00f to TvColors.Background
                         )
                     )
@@ -511,16 +537,20 @@ private fun TvHeroBackdrop(
         if (item != null) {
             Column(
                 modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(start = 44.dp, top = 52.dp)
-                    .width(520.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                    .align(Alignment.BottomStart)
+                    .padding(
+                        start = 52.dp,
+                        end = 72.dp,
+                        bottom = 58.dp
+                    )
+                    .fillMaxWidth(0.48f),
+                verticalArrangement = Arrangement.spacedBy(9.dp)
             ) {
                 Text(
                     text = item.title,
                     color = TvColors.TextPrimary,
-                    fontSize = 34.sp,
-                    lineHeight = 38.sp,
+                    fontSize = 32.sp,
+                    lineHeight = 36.sp,
                     fontWeight = FontWeight.Bold,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
@@ -536,20 +566,39 @@ private fun TvHeroBackdrop(
                             Text(
                                 text = it,
                                 color = TvColors.TextPrimary.copy(alpha = 0.82f),
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.Medium
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 1
                             )
                         }
 
-                    entry.catalogName
-                        .takeIf { it.isNotBlank() }
-                        ?.let {
+                    entry.continueEntry
+                        ?.let(::homeContinueStatusLine)
+                        ?.takeIf { it.isNotBlank() }
+                        ?.let { status ->
                             Text(
-                                text = it,
+                                text = if (entry.continueEntry?.nextUp == true) {
+                                    status
+                                } else {
+                                    "Resume · $status"
+                                },
                                 color = TvColors.TextSecondary,
-                                fontSize = 13.sp
+                                fontSize = 12.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
+                        ?: entry.catalogName
+                            .takeIf { it.isNotBlank() }
+                            ?.let { catalog ->
+                                Text(
+                                    text = catalog,
+                                    color = TvColors.TextSecondary,
+                                    fontSize = 12.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
                 }
 
                 item.description
@@ -557,39 +606,13 @@ private fun TvHeroBackdrop(
                     ?.let {
                         Text(
                             text = it,
-                            color = TvColors.TextPrimary.copy(alpha = 0.78f),
+                            color = TvColors.TextPrimary.copy(alpha = 0.74f),
                             fontSize = 14.sp,
                             lineHeight = 19.sp,
                             maxLines = 3,
                             overflow = TextOverflow.Ellipsis
                         )
                     }
-
-                Row(
-                    modifier = Modifier.padding(top = 2.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        imageVector = Icons.Outlined.PlayArrow,
-                        contentDescription = null,
-                        tint = TvColors.TextPrimary,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Text(
-                        text = entry.continueEntry?.let { local ->
-                            val status = homeContinueStatusLine(local)
-                            when {
-                                local.nextUp -> status
-                                status.isNotBlank() -> "Resume · $status"
-                                else -> "Press OK for details"
-                            }
-                        } ?: "Press OK for details",
-                        color = TvColors.TextPrimary.copy(alpha = 0.88f),
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                }
             }
         }
     }
@@ -619,20 +642,20 @@ private fun TvCatalogRow(
     )
 
     Column(
-        verticalArrangement = Arrangement.spacedBy(10.dp)
+        verticalArrangement = Arrangement.spacedBy(9.dp)
     ) {
         Text(
             text = section.title,
             color = TvColors.TextPrimary,
             fontWeight = FontWeight.SemiBold,
-            fontSize = 19.sp,
-            modifier = Modifier.padding(horizontal = 34.dp)
+            fontSize = 18.sp,
+            modifier = Modifier.padding(horizontal = 52.dp)
         )
 
         LazyRow(
             state = rowState,
-            contentPadding = PaddingValues(horizontal = 34.dp),
-            horizontalArrangement = Arrangement.spacedBy(14.dp)
+            contentPadding = PaddingValues(horizontal = 52.dp),
+            horizontalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             itemsIndexed(
                 items = entries,
@@ -684,20 +707,20 @@ private fun TvContinueRow(
     )
 
     Column(
-        verticalArrangement = Arrangement.spacedBy(10.dp)
+        verticalArrangement = Arrangement.spacedBy(9.dp)
     ) {
         Text(
             text = "Continue Watching",
             color = TvColors.TextPrimary,
             fontWeight = FontWeight.SemiBold,
-            fontSize = 19.sp,
-            modifier = Modifier.padding(horizontal = 34.dp)
+            fontSize = 18.sp,
+            modifier = Modifier.padding(horizontal = 52.dp)
         )
 
         LazyRow(
             state = rowState,
-            contentPadding = PaddingValues(horizontal = 34.dp),
-            horizontalArrangement = Arrangement.spacedBy(14.dp)
+            contentPadding = PaddingValues(horizontal = 52.dp),
+            horizontalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             itemsIndexed(
                 items = stableEntries,
@@ -756,7 +779,7 @@ private fun TvPosterCard(
 
     LaunchedEffect(focused, keepExpanded) {
         if (focused) {
-            delay(900)
+            delay(HOME_POSTER_EXPAND_DELAY_MS)
             if (focused) expanded = true
         } else if (!keepExpanded) {
             expanded = false
@@ -764,15 +787,14 @@ private fun TvPosterCard(
     }
 
     val width by animateDpAsState(
-        targetValue = if (expanded) 236.dp else 132.dp,
+        targetValue = if (expanded) 352.dp else 132.dp,
+        animationSpec = tween(durationMillis = 260),
         label = "posterWidth"
     )
-    val height by animateDpAsState(
-        targetValue = if (expanded) 132.dp else 198.dp,
-        label = "posterHeight"
-    )
+    val height = 198.dp
     val scale by animateFloatAsState(
-        targetValue = if (focused) 1.045f else 1f,
+        targetValue = if (focused) 1.03f else 1f,
+        animationSpec = tween(durationMillis = 140),
         label = "posterScale"
     )
     val image = if (expanded) {
@@ -832,9 +854,9 @@ private fun TvPosterCard(
         color = TvColors.Surface,
         shape = RoundedCornerShape(10.dp),
         border = if (focused) {
-            BorderStroke(2.dp, TvColors.FocusRing)
+            BorderStroke(2.dp, Color.White.copy(alpha = 0.94f))
         } else {
-            BorderStroke(1.dp, Color.White.copy(alpha = 0.08f))
+            BorderStroke(1.dp, Color.White.copy(alpha = 0.06f))
         }
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
@@ -920,7 +942,8 @@ private fun TvContinueCard(
     }
 
     val scale by animateFloatAsState(
-        targetValue = if (focused || optionsActive) 1.035f else 1f,
+        targetValue = if (focused || optionsActive) 1.03f else 1f,
+        animationSpec = tween(durationMillis = 140),
         label = "continueScale"
     )
     val local = entry.continueEntry
@@ -932,8 +955,8 @@ private fun TvContinueCard(
 
     Surface(
         modifier = Modifier
-            .width(260.dp)
-            .height(146.dp)
+            .width(286.dp)
+            .height(114.dp)
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
@@ -977,7 +1000,7 @@ private fun TvContinueCard(
             }
             .focusable(),
         color = TvColors.Surface,
-        shape = RoundedCornerShape(9.dp),
+        shape = RoundedCornerShape(10.dp),
         border = BorderStroke(
             if (focused || optionsActive) 2.dp else 1.dp,
             if (focused || optionsActive) {
@@ -1061,7 +1084,7 @@ private fun TvContinueCard(
                     modifier = Modifier
                         .align(Alignment.BottomStart)
                         .fillMaxWidth()
-                        .height(4.dp)
+                        .height(3.dp)
                         .background(Color.White.copy(alpha = 0.22f))
                 ) {
                     Box(
