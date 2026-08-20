@@ -81,6 +81,12 @@ fun TvSettingsScreen(
     var autoplayNext by remember {
         mutableStateOf(preferences.autoplayNextEpisode)
     }
+    var seekStepSeconds by remember {
+        mutableStateOf(preferences.tvSeekStepSeconds)
+    }
+    var controlsAutoHideSeconds by remember {
+        mutableStateOf(preferences.tvControlsAutoHideSeconds)
+    }
     var showAllSubtitles by remember {
         mutableStateOf(
             preferences.subtitleDisplayMode == SubtitleDisplayMode.SHOW_ALL
@@ -257,6 +263,46 @@ fun TvSettingsScreen(
                 onToggle = {
                     autoplayNext = !autoplayNext
                     preferences.autoplayNextEpisode = autoplayNext
+                }
+            )
+        }
+
+        item(key = "seek-step") {
+            TvSettingsActionRow(
+                title = "Seek step",
+                summary = "Amount used by player rewind, forward and D-pad seeking.",
+                icon = Icons.Outlined.PlayArrow,
+                trailing = "${seekStepSeconds}s",
+                enabled = true,
+                onFocused = ::reportFocus,
+                onMoveLeft = onMoveLeft,
+                onActivate = {
+                    seekStepSeconds = when (seekStepSeconds) {
+                        10 -> 15
+                        15 -> 30
+                        else -> 10
+                    }
+                    preferences.tvSeekStepSeconds = seekStepSeconds
+                }
+            )
+        }
+
+        item(key = "controls-timeout") {
+            TvSettingsActionRow(
+                title = "Player controls timeout",
+                summary = "How long controls stay visible while video is playing.",
+                icon = Icons.Outlined.Settings,
+                trailing = "${controlsAutoHideSeconds}s",
+                enabled = true,
+                onFocused = ::reportFocus,
+                onMoveLeft = onMoveLeft,
+                onActivate = {
+                    controlsAutoHideSeconds = when (controlsAutoHideSeconds) {
+                        3 -> 5
+                        5 -> 8
+                        else -> 3
+                    }
+                    preferences.tvControlsAutoHideSeconds = controlsAutoHideSeconds
                 }
             )
         }
