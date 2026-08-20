@@ -70,13 +70,23 @@ object StremioParser {
             type = MediaType.from(type),
             posterUrl = meta.optString("poster", ""),
             backgroundUrl = meta.optString("background", ""),
-            releaseInfo = meta.optString("releaseInfo", ""),
+            releaseInfo = meta.optString("releaseInfo", "")
+                .ifBlank { meta.optString("year", "") },
             episodes = episodes,
             ref = MediaRef(
                 sourceKind = "stremio",
                 mediaType = type,
                 metaId = id
-            )
+            ),
+            genres = meta.optStringList("genres"),
+            runtime = meta.optString("runtime", "").trim(),
+            rating = meta.optString("imdbRating", "")
+                .ifBlank { meta.optString("rating", "") }
+                .trim(),
+            director = meta.optStringList("director"),
+            writer = meta.optStringList("writer"),
+            cast = meta.optStringList("cast"),
+            logoUrl = meta.optString("logo", "").trim()
         )
     }
 
@@ -176,4 +186,27 @@ object StremioParser {
 
     private fun JSONObject.optIntOrNull(name: String): Int? =
         if (has(name) && !isNull(name)) optInt(name) else null
+
+    private fun JSONObject.optStringList(name: String): List<String> {
+        if (!has(name) || isNull(name)) return emptyList()
+        val value = opt(name)
+        val raw = when (value) {
+            is JSONArray -> buildList {
+                for (index in 0 until value.length()) {
+                    value.optString(index)
+                        .trim()
+                        .takeIf { it.isNotBlank() }
+                        ?.let(::add)
+                }
+            }
+
+            is String -> value
+                .split(',')
+                .map { it.trim() }
+                .filter { it.isNotBlank() }
+
+            else -> emptyList()
+        }
+        return raw.distinct()
+    }
 }
