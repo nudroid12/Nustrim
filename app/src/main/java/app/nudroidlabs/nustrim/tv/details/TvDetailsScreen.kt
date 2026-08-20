@@ -95,6 +95,7 @@ private const val EPISODE_SCROLL_REPEAT_THROTTLE_MS = 80L
 @Composable
 fun TvDetailsScreen(
     entry: TvHomeEntry,
+    autoPlayOnLaunch: Boolean = false,
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
@@ -149,6 +150,9 @@ fun TvDetailsScreen(
 
     var sourcePreview by remember(entry.stableKey) {
         mutableStateOf<TvSourcePreviewRequest?>(null)
+    }
+    var autoPlayLaunchConsumed by remember(entry.stableKey, autoPlayOnLaunch) {
+        mutableStateOf(!autoPlayOnLaunch)
     }
     var restoreSourceFocus by remember(entry.stableKey) {
         mutableStateOf(false)
@@ -571,6 +575,31 @@ fun TvDetailsScreen(
             preferredProviderName = preferredProviderName,
             startFromBeginning = startFromBeginning
         )
+    }
+    LaunchedEffect(
+        autoPlayOnLaunch,
+        detailsResolved,
+        resolvedSession,
+        detailedItem.id,
+        resumeEpisode?.id,
+        primaryEpisode?.id
+    ) {
+        if (
+            autoPlayOnLaunch &&
+            !autoPlayLaunchConsumed &&
+            detailsResolved &&
+            resolvedSession != null
+        ) {
+            autoPlayLaunchConsumed = true
+            openSources(
+                episode = if (isSeries) {
+                    resumeEpisode ?: primaryEpisode
+                } else {
+                    null
+                },
+                autoPlay = true
+            )
+        }
     }
 
     val activeEpisode = sourcePreview?.episode
