@@ -1988,11 +1988,7 @@ private fun TvPlayerSpeedPicker(
                 fontWeight = FontWeight.Bold
             )
             Text(
-                text = if (hasSubtitleControls) {
-                    "Left/Right adjusts timing  •  OK selects or resets  •  Back closes"
-                } else {
-                    "OK Select  •  Left/Back Close"
-                },
+                text = "OK Select  •  Left/Back Close",
                 color = TvColors.TextSecondary,
                 fontSize = 12.sp
             )
