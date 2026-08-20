@@ -56,6 +56,12 @@ import app.nudroidlabs.nustrim.tv.navigation.TvDestination
 import app.nudroidlabs.nustrim.tv.theme.TvColors
 import kotlinx.coroutines.delay
 
+private data class TvDetailsRoute(
+    val entry: TvHomeEntry,
+    val autoPlayOnLaunch: Boolean = false,
+    val restoreRelatedFocusKey: String? = null
+)
+
 @Composable
 fun TvShell(
     onExit: () -> Unit
@@ -63,8 +69,7 @@ fun TvShell(
     var selected by remember { mutableStateOf(TvDestination.HOME) }
     var sidebarExpanded by remember { mutableStateOf(true) }
     var contentFocusRequestToken by remember { mutableIntStateOf(0) }
-    var openedDetailsEntry by remember { mutableStateOf<TvHomeEntry?>(null) }
-    var openedDetailsAutoPlay by remember { mutableStateOf(false) }
+    var detailsStack by remember { mutableStateOf<List<TvDetailsRoute>>(emptyList()) }
     var lastContentFocusRequester by remember { mutableStateOf<FocusRequester?>(null) }
     var restoreContentFocusToken by remember { mutableIntStateOf(0) }
     var libraryRefreshToken by remember { mutableIntStateOf(0) }
@@ -86,9 +91,51 @@ fun TvShell(
         contentFocusRequestToken += 1
     }
 
-    fun closeDetailsAndRestoreContent() {
-        openedDetailsEntry = null
-        openedDetailsAutoPlay = false
+    fun openRootDetails(
+        entry: TvHomeEntry,
+        autoPlay: Boolean
+    ) {
+        detailsStack = listOf(
+            TvDetailsRoute(
+                entry = entry,
+                autoPlayOnLaunch = autoPlay
+            )
+        )
+        sidebarExpanded = false
+    }
+
+    fun pushRelatedDetails(
+        entry: TvHomeEntry,
+        returnFocusKey: String
+    ) {
+        val current = detailsStack.lastOrNull()
+        val preparedStack = if (current != null) {
+            detailsStack.dropLast(1) + current.copy(
+                restoreRelatedFocusKey = returnFocusKey
+            )
+        } else {
+            detailsStack
+        }
+
+        val alreadyCurrent =
+            preparedStack.lastOrNull()?.entry?.stableKey == entry.stableKey
+
+        detailsStack = if (alreadyCurrent) {
+            preparedStack
+        } else {
+            preparedStack + TvDetailsRoute(entry = entry)
+        }
+        sidebarExpanded = false
+    }
+
+    fun closeDetailsOrRestoreContent() {
+        if (detailsStack.size > 1) {
+            detailsStack = detailsStack.dropLast(1)
+            sidebarExpanded = false
+            return
+        }
+
+        detailsStack = emptyList()
         sidebarExpanded = false
         libraryRefreshToken += 1
         restoreContentFocusToken += 1
@@ -111,7 +158,7 @@ fun TvShell(
         }
     }
 
-    BackHandler(enabled = openedDetailsEntry == null) {
+    BackHandler(enabled = detailsStack.isEmpty()) {
         if (sidebarExpanded) {
             onExit()
         } else {
@@ -140,14 +187,16 @@ fun TvShell(
                     },
                     onMoveLeft = { focusSidebar() },
                     onOpen = { entry ->
-                        openedDetailsAutoPlay = false
-                        openedDetailsEntry = entry
-                        sidebarExpanded = false
+                        openRootDetails(
+                            entry = entry,
+                            autoPlay = false
+                        )
                     },
                     onPlay = { entry ->
-                        openedDetailsAutoPlay = true
-                        openedDetailsEntry = entry
-                        sidebarExpanded = false
+                        openRootDetails(
+                            entry = entry,
+                            autoPlay = true
+                        )
                     }
                 )
 
@@ -160,9 +209,10 @@ fun TvShell(
                     },
                     onMoveLeft = { focusSidebar() },
                     onOpen = { entry ->
-                        openedDetailsAutoPlay = false
-                        openedDetailsEntry = entry
-                        sidebarExpanded = false
+                        openRootDetails(
+                            entry = entry,
+                            autoPlay = false
+                        )
                     }
                 )
 
@@ -176,9 +226,10 @@ fun TvShell(
                     },
                     onMoveLeft = { focusSidebar() },
                     onOpen = { entry ->
-                        openedDetailsAutoPlay = false
-                        openedDetailsEntry = entry
-                        sidebarExpanded = false
+                        openRootDetails(
+                            entry = entry,
+                            autoPlay = false
+                        )
                     }
                 )
 
@@ -194,7 +245,7 @@ fun TvShell(
             }
         }
 
-        if (openedDetailsEntry == null) {
+        if (detailsStack.isEmpty()) {
             TvSidebar(
                 selected = selected,
                 expanded = sidebarExpanded,
@@ -210,17 +261,24 @@ fun TvShell(
             )
         }
 
-        openedDetailsEntry?.let { entry ->
+        detailsStack.lastOrNull()?.let { route ->
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .zIndex(20f)
             ) {
                 TvDetailsScreen(
-                    entry = entry,
-                    autoPlayOnLaunch = openedDetailsAutoPlay,
+                    entry = route.entry,
+                    autoPlayOnLaunch = route.autoPlayOnLaunch,
+                    restoreRelatedFocusKey = route.restoreRelatedFocusKey,
+                    onOpenRelated = { relatedEntry, returnFocusKey ->
+                        pushRelatedDetails(
+                            entry = relatedEntry,
+                            returnFocusKey = returnFocusKey
+                        )
+                    },
                     onBack = {
-                        closeDetailsAndRestoreContent()
+                        closeDetailsOrRestoreContent()
                     }
                 )
             }
