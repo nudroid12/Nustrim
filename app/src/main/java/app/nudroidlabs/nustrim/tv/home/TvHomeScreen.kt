@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -27,6 +28,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
@@ -74,6 +76,7 @@ import kotlinx.coroutines.delay
 private const val HOME_FOCUS_SETTLE_MS = 150L
 private const val HOME_LONG_PRESS_MS = 650L
 private const val HOME_HERO_HEIGHT_FRACTION = 0.72f
+private const val HOME_LOAD_SAFETY_MS = 6_500L
 
 @Composable
 fun TvHomeScreen(
@@ -82,7 +85,8 @@ fun TvHomeScreen(
     firstContentRequester: FocusRequester,
     onContentFocused: (TvHomeEntry, FocusRequester) -> Unit,
     onMoveLeft: () -> Unit,
-    onOpen: (TvHomeEntry) -> Unit
+    onOpen: (TvHomeEntry) -> Unit,
+    onPlay: (TvHomeEntry) -> Unit
 ) {
     val context = LocalContext.current
     val engine = remember(context) { SourceEngine(context) }
@@ -92,6 +96,7 @@ fun TvHomeScreen(
     var reloadToken by remember { mutableIntStateOf(0) }
     var localRevision by remember { mutableIntStateOf(0) }
     var loading by remember(reloadToken) { mutableStateOf(true) }
+    var loadTimeoutReached by remember(reloadToken) { mutableStateOf(false) }
     var failureCount by remember(reloadToken) { mutableIntStateOf(0) }
     var sourceOrder by remember(reloadToken) { mutableStateOf<List<String>>(emptyList()) }
     val sectionMap = remember(reloadToken) {
@@ -104,14 +109,17 @@ fun TvHomeScreen(
     val screenHeight = configuration.screenHeightDp.dp
     val heroBackdropHeight = (screenHeight * HOME_HERO_HEIGHT_FRACTION)
         .coerceAtMost(screenHeight)
-    val rowsTopPadding = (heroBackdropHeight - 92.dp)
-        .coerceAtLeast(300.dp)
+    val rowsTopPadding = (heroBackdropHeight - 58.dp)
+        .coerceAtLeast(330.dp)
 
     var focusedEntry by remember { mutableStateOf<TvHomeEntry?>(null) }
     var heroEntry by remember { mutableStateOf<TvHomeEntry?>(null) }
     var lastFocusedKey by remember { mutableStateOf<String?>(null) }
+    var lastFocusedRequester by remember { mutableStateOf<FocusRequester?>(null) }
     var pendingRestoreKey by remember { mutableStateOf<String?>(null) }
     var optionsEntry by remember { mutableStateOf<TvHomeEntry?>(null) }
+    val heroPlayRequester = remember { FocusRequester() }
+    val heroInfoRequester = remember { FocusRequester() }
 
     LaunchedEffect(reloadToken) {
         sectionMap.clear()
@@ -227,6 +235,14 @@ fun TvHomeScreen(
         }
     }
 
+    LaunchedEffect(reloadToken) {
+        delay(HOME_LOAD_SAFETY_MS)
+        if (loading) {
+            loadTimeoutReached = true
+            loading = false
+        }
+    }
+
     val catalogSections = sourceOrder
         .flatMap { sectionMap[it].orEmpty() }
         .map { section ->
@@ -234,22 +250,18 @@ fun TvHomeScreen(
         }
         .filter { it.entries.isNotEmpty() }
 
-    val continueEntries = remember(loading, reloadToken, refreshToken, localRevision) {
-        if (loading) {
-            emptyList()
-        } else {
-            mediaStore.continueWatching()
-                .map { local ->
-                    TvHomeEntry(
-                        sourceUrl = local.sourceUrl,
-                        session = null,
-                        item = local.toMediaItem(),
-                        catalogName = "Continue Watching",
-                        continueEntry = local
-                    )
-                }
-                .distinctBy { it.stableKey }
-        }
+    val continueEntries = remember(reloadToken, refreshToken, localRevision) {
+        mediaStore.continueWatching()
+            .map { local ->
+                TvHomeEntry(
+                    sourceUrl = local.sourceUrl,
+                    session = null,
+                    item = local.toMediaItem(),
+                    catalogName = "Continue Watching",
+                    continueEntry = local
+                )
+            }
+            .distinctBy { it.stableKey }
     }
 
     val firstCatalogEntries = catalogSections.firstOrNull()?.entries.orEmpty()
@@ -274,9 +286,10 @@ fun TvHomeScreen(
         catalogSections.any { it.entries.isNotEmpty() }
 
     LaunchedEffect(contentFocusRequestToken, loading, hasContent) {
-        if (contentFocusRequestToken > 0 && !loading && hasContent) {
+        if (contentFocusRequestToken > 0 && hasContent) {
             delay(40)
-            val preferred = lastFocusedKey?.let(requesterByKey::get)
+            val preferred = lastFocusedRequester
+                ?: lastFocusedKey?.let(requesterByKey::get)
             val restored = preferred != null &&
                 runCatching { preferred.requestFocus() }.isSuccess
             if (!restored) {
@@ -286,10 +299,11 @@ fun TvHomeScreen(
     }
 
     LaunchedEffect(refreshToken, loading, hasContent) {
-        if (refreshToken > 0 && !loading && hasContent) {
+        if (refreshToken > 0 && hasContent) {
             delay(90)
-            val key = lastFocusedKey ?: return@LaunchedEffect
-            requesterByKey[key]?.let { requester ->
+            val preferred = lastFocusedRequester
+                ?: lastFocusedKey?.let(requesterByKey::get)
+            preferred?.let { requester ->
                 runCatching { requester.requestFocus() }
             }
         }
@@ -319,6 +333,29 @@ fun TvHomeScreen(
     ) {
         TvHeroBackdrop(
             entry = heroEntry ?: initialHero,
+            playFocusRequester = heroPlayRequester,
+            infoFocusRequester = heroInfoRequester,
+            onActionFocused = { entry, requester ->
+                lastFocusedRequester = requester
+                onContentFocused(entry, requester)
+            },
+            onMoveLeft = onMoveLeft,
+            onMoveDown = {
+                val target = lastFocusedKey?.let(requesterByKey::get)
+                if (target != null) {
+                    runCatching { target.requestFocus() }
+                } else {
+                    runCatching { firstContentRequester.requestFocus() }
+                }
+            },
+            onPlay = { entry ->
+                lastFocusedRequester = heroPlayRequester
+                onPlay(entry)
+            },
+            onMoreInfo = { entry ->
+                lastFocusedRequester = heroInfoRequester
+                onOpen(entry)
+            },
             modifier = Modifier
                 .align(Alignment.TopStart)
                 .fillMaxWidth()
@@ -334,7 +371,7 @@ fun TvHomeScreen(
             ),
             verticalArrangement = Arrangement.spacedBy(30.dp)
         ) {
-            if (!loading && continueEntries.isNotEmpty()) {
+            if (continueEntries.isNotEmpty()) {
                 item(key = "continue-watching") {
                     TvContinueRow(
                         entries = continueEntries,
@@ -346,6 +383,7 @@ fun TvHomeScreen(
                             focusedIndexByRow["continue-watching"] = index
                             focusedEntry = entry
                             lastFocusedKey = entry.stableKey
+                            lastFocusedRequester = requester
                             onContentFocused(entry, requester)
                         },
                         onRequesterReady = { key, requester ->
@@ -357,6 +395,9 @@ fun TvHomeScreen(
                             }
                         },
                         onMoveLeft = onMoveLeft,
+                        onMoveUp = {
+                            runCatching { heroPlayRequester.requestFocus() }
+                        },
                         onOpen = onOpen,
                         onLongPress = { optionsEntry = it }
                     )
@@ -379,6 +420,7 @@ fun TvHomeScreen(
                             focusedIndexByRow[rowKey] = index
                             focusedEntry = entry
                             lastFocusedKey = entry.stableKey
+                            lastFocusedRequester = requester
                             onContentFocused(entry, requester)
                         },
                         onRequesterReady = { key, requester ->
@@ -390,6 +432,13 @@ fun TvHomeScreen(
                             }
                         },
                         onMoveLeft = onMoveLeft,
+                        onMoveUp = if (sectionIndex == 0 && continueEntries.isEmpty()) {
+                            {
+                                runCatching { heroPlayRequester.requestFocus() }
+                            }
+                        } else {
+                            null
+                        },
                         onOpen = onOpen,
                         onLongPress = { optionsEntry = it }
                     )
@@ -409,9 +458,9 @@ fun TvHomeScreen(
         }
 
         when {
-            loading && catalogSections.isEmpty() -> {
-                TvHomeLoading(
-                    modifier = Modifier.align(Alignment.Center)
+            loading && !hasContent -> {
+                TvHomeSkeleton(
+                    modifier = Modifier.fillMaxSize()
                 )
             }
 
@@ -419,6 +468,16 @@ fun TvHomeScreen(
                 catalogSections.isEmpty() &&
                 continueEntries.isEmpty() -> {
                 TvHomeEmpty(
+                    title = when {
+                        loadTimeoutReached -> "Home is taking too long"
+                        failureCount > 0 -> "Home unavailable"
+                        else -> "No catalog available"
+                    },
+                    message = when {
+                        loadTimeoutReached -> "Catalog loading timed out. Press OK to retry."
+                        failureCount > 0 -> "Catalog sources could not be loaded. Press OK to retry."
+                        else -> "Enable a catalog source, then press OK to retry."
+                    },
                     onReload = { reloadToken += 1 },
                     modifier = Modifier.align(Alignment.Center)
                 )
@@ -438,6 +497,10 @@ fun TvHomeScreen(
                     val key = entry.stableKey
                     optionsEntry = null
                     pendingRestoreKey = key
+                },
+                onPlay = {
+                    optionsEntry = null
+                    onPlay(entry)
                 },
                 onOpen = {
                     optionsEntry = null
@@ -482,6 +545,13 @@ fun TvHomeScreen(
 @Composable
 private fun TvHeroBackdrop(
     entry: TvHomeEntry?,
+    playFocusRequester: FocusRequester,
+    infoFocusRequester: FocusRequester,
+    onActionFocused: (TvHomeEntry, FocusRequester) -> Unit,
+    onMoveLeft: () -> Unit,
+    onMoveDown: () -> Unit,
+    onPlay: (TvHomeEntry) -> Unit,
+    onMoreInfo: (TvHomeEntry) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val item = entry?.item
@@ -492,7 +562,7 @@ private fun TvHeroBackdrop(
     Box(modifier = modifier.background(TvColors.Background)) {
         Crossfade(
             targetState = image,
-            animationSpec = tween(durationMillis = 420),
+            animationSpec = tween(durationMillis = 360),
             label = "homeHeroBackdropCrossfade",
             modifier = Modifier.fillMaxSize()
         ) { model ->
@@ -507,60 +577,56 @@ private fun TvHeroBackdrop(
             }
         }
 
-        // Cinematic left-to-right falloff keeps artwork dominant without
-        // sacrificing readability of the focused title and metadata.
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(
                     Brush.horizontalGradient(
                         colorStops = arrayOf(
-                            0.00f to TvColors.Background.copy(alpha = 0.98f),
-                            0.20f to TvColors.Background.copy(alpha = 0.88f),
-                            0.43f to TvColors.Background.copy(alpha = 0.58f),
-                            0.68f to TvColors.Background.copy(alpha = 0.18f),
+                            0.00f to TvColors.Background.copy(alpha = 0.99f),
+                            0.18f to TvColors.Background.copy(alpha = 0.92f),
+                            0.40f to TvColors.Background.copy(alpha = 0.63f),
+                            0.66f to TvColors.Background.copy(alpha = 0.18f),
                             1.00f to Color.Transparent
                         )
                     )
                 )
         )
 
-        // Fade the hero into the rails instead of ending the artwork at a
-        // visible container boundary.
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(
                     Brush.verticalGradient(
                         colorStops = arrayOf(
-                            0.00f to Color.Black.copy(alpha = 0.12f),
-                            0.52f to Color.Transparent,
-                            0.78f to TvColors.Background.copy(alpha = 0.38f),
+                            0.00f to Color.Black.copy(alpha = 0.14f),
+                            0.48f to Color.Transparent,
+                            0.76f to TvColors.Background.copy(alpha = 0.34f),
                             1.00f to TvColors.Background
                         )
                     )
                 )
         )
 
-        if (item != null) {
+        if (item != null && entry != null) {
             Column(
                 modifier = Modifier
                     .align(Alignment.BottomStart)
                     .padding(
                         start = 56.dp,
                         end = 72.dp,
-                        bottom = 106.dp
+                        bottom = 82.dp
                     )
-                    .fillMaxWidth(0.46f),
-                verticalArrangement = Arrangement.spacedBy(11.dp)
+                    .fillMaxWidth(0.48f),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 if (item.logoUrl.isNotBlank()) {
                     AsyncImage(
                         model = item.logoUrl,
                         contentDescription = item.title,
                         modifier = Modifier
-                            .width(310.dp)
-                            .height(82.dp),
+                            .width(320.dp)
+                            .height(86.dp),
                         contentScale = ContentScale.Fit,
                         alignment = Alignment.CenterStart
                     )
@@ -568,8 +634,16 @@ private fun TvHeroBackdrop(
                     Text(
                         text = item.title,
                         color = TvColors.TextPrimary,
-                        fontSize = if (item.title.length > 28) 30.sp else 38.sp,
-                        lineHeight = if (item.title.length > 28) 34.sp else 42.sp,
+                        fontSize = when {
+                            item.title.length > 42 -> 28.sp
+                            item.title.length > 26 -> 33.sp
+                            else -> 39.sp
+                        },
+                        lineHeight = when {
+                            item.title.length > 42 -> 32.sp
+                            item.title.length > 26 -> 37.sp
+                            else -> 43.sp
+                        },
                         fontWeight = FontWeight.Bold,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis
@@ -596,7 +670,7 @@ private fun TvHeroBackdrop(
                 if (metadata.isNotEmpty()) {
                     Text(
                         text = metadata.joinToString("  •  "),
-                        color = TvColors.TextPrimary.copy(alpha = 0.86f),
+                        color = TvColors.TextPrimary.copy(alpha = 0.88f),
                         fontSize = 13.sp,
                         fontWeight = FontWeight.Medium,
                         maxLines = 1,
@@ -609,13 +683,48 @@ private fun TvHeroBackdrop(
                     ?.let { description ->
                         Text(
                             text = description,
-                            color = TvColors.TextPrimary.copy(alpha = 0.72f),
+                            color = TvColors.TextPrimary.copy(alpha = 0.74f),
                             fontSize = 14.sp,
                             lineHeight = 19.sp,
                             maxLines = 3,
                             overflow = TextOverflow.Ellipsis
                         )
                     }
+
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    val playLabel = when {
+                        entry.continueEntry?.nextUp == true -> "Play Next"
+                        entry.continueEntry?.hasProgress == true -> "Resume"
+                        else -> "Play"
+                    }
+
+                    TvHeroActionButton(
+                        label = playLabel,
+                        icon = Icons.Outlined.PlayArrow,
+                        focusRequester = playFocusRequester,
+                        primary = true,
+                        onFocused = { requester ->
+                            onActionFocused(entry, requester)
+                        },
+                        onMoveLeft = onMoveLeft,
+                        onMoveDown = onMoveDown,
+                        onClick = { onPlay(entry) }
+                    )
+                    TvHeroActionButton(
+                        label = "More Info",
+                        icon = Icons.Outlined.Info,
+                        focusRequester = infoFocusRequester,
+                        primary = false,
+                        onFocused = { requester ->
+                            onActionFocused(entry, requester)
+                        },
+                        onMoveDown = onMoveDown,
+                        onClick = { onMoreInfo(entry) }
+                    )
+                }
 
                 val contextLine = entry.continueEntry
                     ?.let(::homeContinueStatusLine)
@@ -624,13 +733,9 @@ private fun TvHeroBackdrop(
 
                 contextLine?.let { line ->
                     Text(
-                        text = if (entry.continueEntry != null) {
-                            if (entry.continueEntry?.nextUp == true) line else "Resume · $line"
-                        } else {
-                            line
-                        },
+                        text = line,
                         color = if (entry.continueEntry != null) {
-                            TvColors.TextPrimary.copy(alpha = 0.84f)
+                            TvColors.TextPrimary.copy(alpha = 0.82f)
                         } else {
                             TvColors.TextSecondary
                         },
@@ -641,6 +746,93 @@ private fun TvHeroBackdrop(
                     )
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun TvHeroActionButton(
+    label: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    focusRequester: FocusRequester,
+    primary: Boolean,
+    onFocused: (FocusRequester) -> Unit,
+    onMoveLeft: (() -> Unit)? = null,
+    onMoveDown: () -> Unit,
+    onClick: () -> Unit
+) {
+    var focused by remember { mutableStateOf(false) }
+    val scale by animateFloatAsState(
+        targetValue = if (focused) 1.045f else 1f,
+        animationSpec = tween(durationMillis = 120),
+        label = "homeHeroActionScale"
+    )
+
+    Surface(
+        modifier = Modifier
+            .height(46.dp)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
+            .focusRequester(focusRequester)
+            .onFocusChanged { state ->
+                focused = state.hasFocus
+                if (state.hasFocus) {
+                    onFocused(focusRequester)
+                }
+            }
+            .onPreviewKeyEvent { event ->
+                when {
+                    event.type == KeyEventType.KeyDown &&
+                        event.key == Key.DirectionLeft &&
+                        onMoveLeft != null -> {
+                        onMoveLeft()
+                        true
+                    }
+                    event.type == KeyEventType.KeyDown &&
+                        event.key == Key.DirectionDown -> {
+                        onMoveDown()
+                        true
+                    }
+                    event.type == KeyEventType.KeyDown &&
+                        isHomeSelectKey(event.key) -> {
+                        onClick()
+                        true
+                    }
+                    else -> false
+                }
+            }
+            .focusable(),
+        color = when {
+            focused -> Color.White
+            primary -> Color.White.copy(alpha = 0.90f)
+            else -> Color.Black.copy(alpha = 0.46f)
+        },
+        shape = RoundedCornerShape(8.dp),
+        border = if (!primary && !focused) {
+            BorderStroke(1.dp, Color.White.copy(alpha = 0.24f))
+        } else {
+            null
+        }
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 18.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = if (focused || primary) TvColors.Background else TvColors.TextPrimary,
+                modifier = Modifier.size(20.dp)
+            )
+            Text(
+                text = label,
+                color = if (focused || primary) TvColors.Background else TvColors.TextPrimary,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.SemiBold
+            )
         }
     }
 }
@@ -657,6 +849,7 @@ private fun TvCatalogRow(
     onRequesterReady: (String, FocusRequester) -> Unit,
     onRequesterDisposed: (String, FocusRequester) -> Unit,
     onMoveLeft: () -> Unit,
+    onMoveUp: (() -> Unit)?,
     onOpen: (TvHomeEntry) -> Unit,
     onLongPress: (TvHomeEntry) -> Unit
 ) {
@@ -675,7 +868,7 @@ private fun TvCatalogRow(
             text = section.title,
             color = TvColors.TextPrimary,
             fontWeight = FontWeight.SemiBold,
-            fontSize = 20.sp,
+            fontSize = 21.sp,
             modifier = Modifier.padding(horizontal = 56.dp)
         )
 
@@ -705,6 +898,7 @@ private fun TvCatalogRow(
                     onRequesterReady = onRequesterReady,
                     onRequesterDisposed = onRequesterDisposed,
                     onMoveLeft = if (index == 0) onMoveLeft else null,
+                    onMoveUp = onMoveUp,
                     onOpen = onOpen,
                     onLongPress = onLongPress
                 )
@@ -724,6 +918,7 @@ private fun TvContinueRow(
     onRequesterReady: (String, FocusRequester) -> Unit,
     onRequesterDisposed: (String, FocusRequester) -> Unit,
     onMoveLeft: () -> Unit,
+    onMoveUp: (() -> Unit)?,
     onOpen: (TvHomeEntry) -> Unit,
     onLongPress: (TvHomeEntry) -> Unit
 ) {
@@ -740,7 +935,7 @@ private fun TvContinueRow(
             text = "Continue Watching",
             color = TvColors.TextPrimary,
             fontWeight = FontWeight.SemiBold,
-            fontSize = 20.sp,
+            fontSize = 21.sp,
             modifier = Modifier.padding(horizontal = 56.dp)
         )
 
@@ -769,6 +964,7 @@ private fun TvContinueRow(
                     onRequesterReady = onRequesterReady,
                     onRequesterDisposed = onRequesterDisposed,
                     onMoveLeft = if (index == 0) onMoveLeft else null,
+                    onMoveUp = onMoveUp,
                     onOpen = onOpen,
                     onLongPress = onLongPress
                 )
@@ -787,6 +983,7 @@ private fun TvPosterCard(
     onRequesterReady: (String, FocusRequester) -> Unit,
     onRequesterDisposed: (String, FocusRequester) -> Unit,
     onMoveLeft: (() -> Unit)?,
+    onMoveUp: (() -> Unit)?,
     onOpen: (TvHomeEntry) -> Unit,
     onLongPress: (TvHomeEntry) -> Unit
 ) {
@@ -805,7 +1002,7 @@ private fun TvPosterCard(
 
     val emphasized = focused || optionsActive
     val scale by animateFloatAsState(
-        targetValue = if (emphasized) 1.055f else 1f,
+        targetValue = if (emphasized) 1.045f else 1f,
         animationSpec = tween(durationMillis = 150),
         label = "posterScale"
     )
@@ -815,8 +1012,8 @@ private fun TvPosterCard(
 
     Surface(
         modifier = Modifier
-            .width(146.dp)
-            .height(219.dp)
+            .width(154.dp)
+            .height(231.dp)
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
@@ -833,6 +1030,13 @@ private fun TvPosterCard(
                         event.key == Key.DirectionLeft &&
                         onMoveLeft != null -> {
                         onMoveLeft()
+                        true
+                    }
+
+                    event.type == KeyEventType.KeyDown &&
+                        event.key == Key.DirectionUp &&
+                        onMoveUp != null -> {
+                        onMoveUp()
                         true
                     }
 
@@ -910,6 +1114,7 @@ private fun TvContinueCard(
     onRequesterReady: (String, FocusRequester) -> Unit,
     onRequesterDisposed: (String, FocusRequester) -> Unit,
     onMoveLeft: (() -> Unit)?,
+    onMoveUp: (() -> Unit)?,
     onOpen: (TvHomeEntry) -> Unit,
     onLongPress: (TvHomeEntry) -> Unit
 ) {
@@ -958,6 +1163,13 @@ private fun TvContinueCard(
                         event.key == Key.DirectionLeft &&
                         onMoveLeft != null -> {
                         onMoveLeft()
+                        true
+                    }
+
+                    event.type == KeyEventType.KeyDown &&
+                        event.key == Key.DirectionUp &&
+                        onMoveUp != null -> {
+                        onMoveUp()
                         true
                     }
 
@@ -1089,6 +1301,7 @@ private fun TvHomeOptionsOverlay(
     entry: TvHomeEntry,
     saved: Boolean,
     onDismiss: () -> Unit,
+    onPlay: () -> Unit,
     onOpen: () -> Unit,
     onToggleSaved: () -> Unit,
     onClearContinue: (() -> Unit)?
@@ -1140,8 +1353,16 @@ private fun TvHomeOptionsOverlay(
                 )
 
                 TvHomeOptionButton(
-                    label = "Open details",
+                    label = when {
+                        entry.continueEntry?.nextUp == true -> "Play next"
+                        entry.continueEntry?.hasProgress == true -> "Resume"
+                        else -> "Play"
+                    },
                     focusRequester = firstRequester,
+                    onClick = onPlay
+                )
+                TvHomeOptionButton(
+                    label = "More Info",
                     onClick = onOpen
                 )
                 TvHomeOptionButton(
@@ -1257,41 +1478,82 @@ private fun homeContinueStatusLine(local: LocalMediaEntry): String {
 }
 
 @Composable
-private fun TvHomeLoading(
+private fun TvHomeSkeleton(
     modifier: Modifier = Modifier
 ) {
-    Surface(
-        modifier = modifier,
-        color = TvColors.BackgroundElevated.copy(alpha = 0.94f),
-        shape = RoundedCornerShape(18.dp),
-        border = BorderStroke(
-            1.dp,
-            Color.White.copy(alpha = 0.10f)
-        )
+    Box(
+        modifier = modifier
+            .background(TvColors.Background)
+            .padding(start = 56.dp, end = 40.dp)
     ) {
-        Row(
-            modifier = Modifier.padding(
-                horizontal = 22.dp,
-                vertical = 16.dp
-            ),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalAlignment = Alignment.CenterVertically
+        Column(
+            modifier = Modifier
+                .align(Alignment.CenterStart)
+                .padding(bottom = 128.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            CircularProgressIndicator(
-                modifier = Modifier.size(22.dp),
-                strokeWidth = 2.dp
+            Box(
+                modifier = Modifier
+                    .width(250.dp)
+                    .height(52.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Color.White.copy(alpha = 0.08f))
             )
-            Text(
-                text = "Loading Home...",
-                color = TvColors.TextSecondary,
-                fontSize = 14.sp
+            Box(
+                modifier = Modifier
+                    .width(330.dp)
+                    .height(14.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(Color.White.copy(alpha = 0.06f))
+            )
+            Box(
+                modifier = Modifier
+                    .width(390.dp)
+                    .height(54.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Color.White.copy(alpha = 0.05f))
             )
         }
+
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(bottom = 54.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .width(190.dp)
+                    .height(18.dp)
+                    .clip(RoundedCornerShape(5.dp))
+                    .background(Color.White.copy(alpha = 0.08f))
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                repeat(6) {
+                    Box(
+                        modifier = Modifier
+                            .width(154.dp)
+                            .height(231.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(Color.White.copy(alpha = 0.055f))
+                    )
+                }
+            }
+        }
+
+        CircularProgressIndicator(
+            modifier = Modifier
+                .align(Alignment.Center)
+                .size(22.dp),
+            strokeWidth = 2.dp
+        )
     }
 }
 
 @Composable
 private fun TvHomeEmpty(
+    title: String,
+    message: String,
     onReload: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -1299,15 +1561,12 @@ private fun TvHomeEmpty(
 
     Surface(
         modifier = modifier
-            .width(440.dp)
+            .width(460.dp)
             .onFocusChanged { focused = it.hasFocus }
             .onPreviewKeyEvent { event ->
                 if (
                     event.type == KeyEventType.KeyDown &&
-                    (
-                        event.key == Key.DirectionCenter ||
-                            event.key == Key.Enter
-                        )
+                    isHomeSelectKey(event.key)
                 ) {
                     onReload()
                     true
@@ -1316,8 +1575,8 @@ private fun TvHomeEmpty(
                 }
             }
             .focusable(),
-        shape = RoundedCornerShape(18.dp),
-        color = TvColors.BackgroundElevated,
+        shape = RoundedCornerShape(16.dp),
+        color = TvColors.BackgroundElevated.copy(alpha = 0.96f),
         border = BorderStroke(
             if (focused) 2.dp else 1.dp,
             if (focused) {
@@ -1328,7 +1587,7 @@ private fun TvHomeEmpty(
         )
     ) {
         Column(
-            modifier = Modifier.padding(26.dp),
+            modifier = Modifier.padding(28.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(9.dp)
         ) {
@@ -1339,16 +1598,26 @@ private fun TvHomeEmpty(
                 modifier = Modifier.size(30.dp)
             )
             Text(
-                text = "No catalog available",
+                text = title,
                 color = TvColors.TextPrimary,
                 fontWeight = FontWeight.SemiBold,
                 fontSize = 20.sp
             )
             Text(
-                text = "Enable a catalog source, then press OK to retry.",
+                text = message,
                 color = TvColors.TextSecondary,
-                fontSize = 14.sp
+                fontSize = 14.sp,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = "Press OK to retry",
+                color = if (focused) TvColors.TextPrimary else TvColors.TextSecondary,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold
             )
         }
     }
 }
+
