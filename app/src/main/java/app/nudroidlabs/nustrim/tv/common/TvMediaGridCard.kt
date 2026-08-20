@@ -52,6 +52,7 @@ fun TvMediaGridCard(
     progressFraction: Float? = null,
     onFocused: (FocusRequester) -> Unit,
     onMoveLeft: (() -> Unit)? = null,
+    onMoveUp: (() -> Unit)? = null,
     onLongPress: ((TvHomeEntry) -> Unit)? = null,
     onOpen: (TvHomeEntry) -> Unit
 ) {
@@ -92,6 +93,13 @@ fun TvMediaGridCard(
                             event.key == Key.DirectionLeft &&
                             onMoveLeft != null -> {
                             onMoveLeft()
+                            true
+                        }
+
+                        event.type == KeyEventType.KeyDown &&
+                            event.key == Key.DirectionUp &&
+                            onMoveUp != null -> {
+                            onMoveUp()
                             true
                         }
 
