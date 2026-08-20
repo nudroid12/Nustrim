@@ -164,6 +164,9 @@ fun TvDetailsScreen(
     var playingStream by remember(entry.stableKey) {
         mutableStateOf<StreamSource?>(null)
     }
+    var bingeAutoNextCount by remember(entry.stableKey) {
+        mutableIntStateOf(0)
+    }
     var sourcePlayerReturnToken by remember(entry.stableKey) {
         mutableIntStateOf(0)
     }
@@ -700,7 +703,15 @@ fun TvDetailsScreen(
         .takeIf { it >= 0 && it + 1 < sortedEpisodes.size }
         ?.let { sortedEpisodes[it + 1] }
 
-    fun switchPlayerEpisode(episode: MediaEpisode) {
+    fun switchPlayerEpisode(
+        episode: MediaEpisode,
+        automatic: Boolean = false
+    ) {
+        if (automatic) {
+            bingeAutoNextCount += 1
+        } else {
+            bingeAutoNextCount = 0
+        }
         val currentStream = playingStream
         episode.season
             ?.takeIf { it in seasons }
@@ -1408,6 +1419,43 @@ fun TvDetailsScreen(
                 episodeTitle = sourcePreview?.episode?.displayTitle,
                 previousEpisodeTitle = previousEpisode?.displayTitle,
                 nextEpisodeTitle = nextEpisode?.displayTitle,
+                sourceRequest = sourcePreview,
+                episodes = sortedEpisodes,
+                currentEpisode = sourcePreview?.episode,
+                isEpisodeWatched = { episode ->
+                    mediaStore.isEpisodeWatched(
+                        sourceUrl = entry.sourceUrl,
+                        item = detailedItem,
+                        episode = episode
+                    )
+                },
+                onSelectSource = { selected ->
+                    playingStream = selected
+                },
+                onSelectEpisode = { episode ->
+                    switchPlayerEpisode(episode)
+                },
+                onSelectEpisodeSource = { episode, selected ->
+                    bingeAutoNextCount = 0
+                    episode.season
+                        ?.takeIf { it in seasons }
+                        ?.let { selectedSeason = it }
+                    lastFocusedEpisodeKey = episodeFocusKey(episode)
+                    pendingEpisodeFocusRestoreKey = episodeFocusKey(episode)
+                    sourcePreview = (sourcePreview ?: TvSourcePreviewRequest(
+                        sourceUrl = entry.sourceUrl,
+                        session = resolvedSession,
+                        item = detailedItem,
+                        episode = episode
+                    )).copy(
+                        episode = episode,
+                        autoPlay = false,
+                        preferredProviderId = selected.providerId,
+                        preferredProviderName = selected.providerName,
+                        startFromBeginning = false
+                    )
+                    playingStream = selected
+                },
                 onPreviousEpisode = previousEpisode?.let { episode ->
                     {
                         switchPlayerEpisode(episode)
@@ -1415,6 +1463,21 @@ fun TvDetailsScreen(
                 },
                 onNextEpisode = nextEpisode?.let { episode ->
                     {
+                        switchPlayerEpisode(episode)
+                    }
+                },
+                onAutoNextEpisode = nextEpisode?.let { episode ->
+                    {
+                        switchPlayerEpisode(
+                            episode = episode,
+                            automatic = true
+                        )
+                    }
+                },
+                stillWatchingGate = bingeAutoNextCount >= 2,
+                onStillWatchingContinue = nextEpisode?.let { episode ->
+                    {
+                        bingeAutoNextCount = 0
                         switchPlayerEpisode(episode)
                     }
                 },
