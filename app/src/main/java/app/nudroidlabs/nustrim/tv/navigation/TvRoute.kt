@@ -1,5 +1,6 @@
 package app.nudroidlabs.nustrim.tv.navigation
 
+import app.nudroidlabs.nustrim.core.model.MediaEpisode
 import app.nudroidlabs.nustrim.core.model.MediaItem
 
 enum class TvRootDestination {
@@ -39,13 +40,18 @@ sealed interface TvRoute {
 
     data class Sources(
         val mediaKey: String,
-        val selectionKey: String? = null,
+        val sourceUrl: String,
+        val media: MediaItem,
+        val episode: MediaEpisode? = null,
         val returnFocus: TvReturnFocus? = null,
     ) : TvRoute {
         override val stableKey: String = buildString {
             append("sources/")
             append(mediaKey)
-            selectionKey?.let { append("/").append(it) }
+            episode?.id?.takeIf { it.isNotBlank() }?.let {
+                append("/")
+                append(it)
+            }
         }
         override val focusScope: String = stableKey
     }

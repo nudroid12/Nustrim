@@ -28,7 +28,7 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.unit.dp
 import app.nudroidlabs.nustrim.tv.common.TvFoundationScreen
-import app.nudroidlabs.nustrim.tv.episode.TvEpisodeAuditEntry
+import app.nudroidlabs.nustrim.tv.details.TvDetailsEntry
 import app.nudroidlabs.nustrim.tv.focus.TvFocusRegistry
 import app.nudroidlabs.nustrim.tv.home.TvHomeEntry
 import app.nudroidlabs.nustrim.tv.library.TvLibraryEntry
@@ -210,15 +210,49 @@ private fun TvRouteContent(
             )
         }
 
-        is TvRoute.Details -> TvEpisodeAuditEntry(
+        is TvRoute.Details -> TvDetailsEntry(
             route = route,
             focusRegistry = focusRegistry,
             focusRequestToken = focusRequestToken,
+            onPlayMovie = { snapshot ->
+                navigator.push(
+                    TvRoute.Sources(
+                        mediaKey = route.contentKey,
+                        sourceUrl = route.sourceUrl,
+                        media = snapshot.item,
+                        returnFocus = TvReturnFocus(
+                            scopeKey = route.focusScope,
+                            anchorKey = focusRegistry.lastFocused(route.focusScope),
+                        ),
+                    ),
+                )
+            },
+            onPlayEpisode = { snapshot, episode ->
+                navigator.push(
+                    TvRoute.Sources(
+                        mediaKey = route.contentKey,
+                        sourceUrl = route.sourceUrl,
+                        media = snapshot.item,
+                        episode = episode.providerEpisode,
+                        returnFocus = TvReturnFocus(
+                            scopeKey = route.focusScope,
+                            anchorKey = focusRegistry.lastFocused(route.focusScope),
+                        ),
+                    ),
+                )
+            },
             modifier = rootModifier,
         )
 
         is TvRoute.Sources -> TvFoundationScreen(
-            title = "Sources route foundation",
+            title = buildString {
+                append("Sources foundation • ")
+                append(route.media.title)
+                route.episode?.let { episode ->
+                    append(" • ")
+                    append(episode.title)
+                }
+            },
             scopeKey = route.focusScope,
             focusRegistry = focusRegistry,
             focusRequestToken = focusRequestToken,
