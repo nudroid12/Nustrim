@@ -588,7 +588,10 @@ private fun TvPauseOverlay(request: TvPlaybackRequest) {
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
-            val release = request.media.releaseInfo.trim()
+            val release = Regex("""\b(?:19|20)\d{2}\b""")
+                .find(request.media.releaseInfo)
+                ?.value
+                .orEmpty()
             val episode = request.episode
             val coordinate = episode?.let { item ->
                 val season = item.season
@@ -613,7 +616,10 @@ private fun TvPauseOverlay(request: TvPlaybackRequest) {
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            request.media.description.takeIf { it.isNotBlank() }?.let { description ->
+            val pauseDescription = episode?.overview
+                ?.takeIf { it.isNotBlank() }
+                ?: request.media.description
+            pauseDescription.takeIf { it.isNotBlank() }?.let { description ->
                 Spacer(Modifier.height(18.dp))
                 Text(
                     text = description,

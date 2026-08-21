@@ -12,6 +12,7 @@ import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
+import java.util.Locale
 import app.nudroidlabs.nustrim.core.player.PlayerFactory
 
 @OptIn(UnstableApi::class)
@@ -163,15 +164,18 @@ class TvPlayerRuntime(
                         if (!group.isTrackSupported(index, true)) continue
                         ordinal += 1
                         val format = group.getTrackFormat(index)
-                        val language = format.language.orEmpty().trim()
-                        val rawLabel = format.label.orEmpty().trim()
-                        val label = rawLabel
+                        val languageCode = canonicalLanguageCode(format.language.orEmpty())
+                        val language = displayLanguageName(languageCode)
+                        val rawLabel = format.label.orEmpty()
                             .replace(PROVIDER_SEPARATOR, " · ")
-                            .ifBlank {
-                                language.takeIf { it.isNotBlank() }
-                                    ?.uppercase()
-                                    ?: "$fallback $ordinal"
-                            }
+                            .trim()
+                        val label = cleanTrackLabel(
+                            rawLabel = rawLabel,
+                            languageCode = languageCode,
+                            languageLabel = language,
+                            fallback = fallback,
+                            ordinal = ordinal,
+                        )
                         add(
                             TvPlayerTrack(
                                 key = buildString {
@@ -191,6 +195,61 @@ class TvPlayerRuntime(
                     }
                 }
         }
+    }
+
+    private fun canonicalLanguageCode(raw: String): String {
+        val base = raw.trim().lowercase(Locale.ROOT).substringBefore('-').substringBefore('_')
+        return when (base) {
+            "", "und", "unknown", "mul", "zxx" -> ""
+            "eng" -> "en"
+            "msa", "may" -> "ms"
+            "ind" -> "id"
+            "spa" -> "es"
+            "por" -> "pt"
+            "fra", "fre" -> "fr"
+            "deu", "ger" -> "de"
+            "ita" -> "it"
+            "jpn" -> "ja"
+            "kor" -> "ko"
+            "zho", "chi" -> "zh"
+            "ara" -> "ar"
+            "tha" -> "th"
+            "vie" -> "vi"
+            "rus" -> "ru"
+            "hin" -> "hi"
+            else -> base.takeIf { it.length in 2..3 }.orEmpty()
+        }
+    }
+
+    private fun displayLanguageName(code: String): String {
+        if (code.isBlank()) return ""
+        val display = Locale.forLanguageTag(code).getDisplayLanguage(Locale.ENGLISH).trim()
+        return display
+            .takeIf { it.isNotBlank() && !it.equals(code, ignoreCase = true) }
+            ?: code.uppercase(Locale.ROOT)
+    }
+
+    private fun cleanTrackLabel(
+        rawLabel: String,
+        languageCode: String,
+        languageLabel: String,
+        fallback: String,
+        ordinal: Int,
+    ): String {
+        val normalizedRaw = rawLabel.trim()
+        val rawKey = normalizedRaw.lowercase(Locale.ROOT)
+        val languageKey = languageLabel.lowercase(Locale.ROOT)
+        val codeKey = languageCode.lowercase(Locale.ROOT)
+        val genericLanguageLabel = normalizedRaw.isBlank() ||
+            rawKey == languageKey ||
+            rawKey == codeKey ||
+            rawKey == "unknown" ||
+            rawKey == "und"
+
+        if (genericLanguageLabel) {
+            return languageLabel.ifBlank { "$fallback $ordinal" }
+        }
+        return normalizedRaw
     }
 
     private companion object {

@@ -276,42 +276,22 @@ fun TvPlayerAudioPanel(
         delay(180)
         requesters.getOrNull(selectedIndex)?.requestFocus()
     }
-    TvPlayerBottomOverlayScaffold(title = "Audio", width = 724.dp, modifier = modifier) {
+    TvPlayerBottomOverlayScaffold(title = "Audio", width = 620.dp, modifier = modifier) {
         if (tracks.isEmpty()) {
             Text("No selectable audio tracks", color = Color.White.copy(alpha = 0.72f))
         } else {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(18.dp),
-                verticalAlignment = Alignment.Top,
-            ) {
-                TvTrackList(
-                    tracks = tracks,
-                    requesters = requesters,
-                    onSelect = onSelect,
-                    modifier = Modifier.width(444.dp).height(360.dp),
-                )
-                Column(
-                    modifier = Modifier
-                        .width(240.dp)
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(Color.White.copy(alpha = 0.06f))
-                        .padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Text("Current track", color = Color.White.copy(alpha = 0.58f), fontSize = 12.sp)
-                    val selected = tracks.getOrNull(selectedIndex)
-                    Text(
-                        selected?.label ?: "Auto",
-                        color = Color.White,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    selected?.language?.takeIf { it.isNotBlank() }?.let {
-                        Text(it.uppercase(), color = Color.White.copy(alpha = 0.62f), fontSize = 12.sp)
-                    }
-                }
-            }
+            Text(
+                text = "Tracks",
+                color = Color.White.copy(alpha = 0.54f),
+                fontSize = 12.sp,
+            )
+            Spacer(Modifier.height(8.dp))
+            TvTrackList(
+                tracks = tracks,
+                requesters = requesters,
+                onSelect = onSelect,
+                modifier = Modifier.width(540.dp).height(330.dp),
+            )
         }
     }
 }
@@ -326,6 +306,12 @@ fun TvPlayerSubtitlePanel(
     val offRequester = remember { FocusRequester() }
     val requesters = remember(tracks.map { it.key }) { tracks.map { FocusRequester() } }
     val selectedIndex = tracks.indexOfFirst { it.selected }
+    val languages = tracks
+        .map { it.language.trim() }
+        .filter { it.isNotBlank() }
+        .distinct()
+    val showLanguageRail = languages.size > 1
+
     LaunchedEffect(tracks.map { it.key }) {
         delay(180)
         if (selectedIndex >= 0) {
@@ -334,50 +320,57 @@ fun TvPlayerSubtitlePanel(
             offRequester.requestFocus()
         }
     }
+
     TvPlayerBottomOverlayScaffold(title = "Subtitles", width = 760.dp, modifier = modifier) {
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(18.dp),
-            verticalAlignment = Alignment.Top,
-        ) {
-            Column(
-                modifier = Modifier.width(220.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+        if (tracks.isEmpty()) {
+            TvPanelTextRow(
+                title = "Off",
+                subtitle = "No subtitle tracks available",
+                selected = true,
+                focusRequester = offRequester,
+                onClick = onDisable,
+            )
+        } else {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(18.dp),
+                verticalAlignment = Alignment.Top,
             ) {
-                Text("Languages", color = Color.White.copy(alpha = 0.54f), fontSize = 12.sp)
-                TvPanelTextRow(
-                    title = "Off",
-                    subtitle = "Disable subtitles",
-                    selected = tracks.none { it.selected },
-                    focusRequester = offRequester,
-                    onClick = onDisable,
-                )
-                tracks
-                    .map { it.language.ifBlank { "Unknown" } }
-                    .distinct()
-                    .take(7)
-                    .forEach { language ->
-                        val isSelected = tracks.any { it.selected && it.language.ifBlank { "Unknown" } == language }
-                        TvPanelTextRow(
-                            title = language.uppercase(),
-                            subtitle = "",
-                            selected = isSelected,
-                            onClick = {
-                                tracks.firstOrNull { it.language.ifBlank { "Unknown" } == language }?.let(onSelect)
-                            },
-                        )
+                Column(
+                    modifier = Modifier.width(if (showLanguageRail) 220.dp else 180.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text("Options", color = Color.White.copy(alpha = 0.54f), fontSize = 12.sp)
+                    TvPanelTextRow(
+                        title = "Off",
+                        subtitle = "Disable subtitles",
+                        selected = tracks.none { it.selected },
+                        focusRequester = offRequester,
+                        onClick = onDisable,
+                    )
+                    if (showLanguageRail) {
+                        Spacer(Modifier.height(4.dp))
+                        Text("Languages", color = Color.White.copy(alpha = 0.54f), fontSize = 12.sp)
+                        languages.take(7).forEach { language ->
+                            val isSelected = tracks.any { it.selected && it.language == language }
+                            TvPanelTextRow(
+                                title = language,
+                                subtitle = "",
+                                selected = isSelected,
+                                onClick = {
+                                    tracks.firstOrNull { it.language == language }?.let(onSelect)
+                                },
+                            )
+                        }
                     }
-            }
-            Column(modifier = Modifier.width(500.dp)) {
-                Text("Tracks", color = Color.White.copy(alpha = 0.54f), fontSize = 12.sp)
-                Spacer(Modifier.height(8.dp))
-                if (tracks.isEmpty()) {
-                    Text("No subtitle tracks", color = Color.White.copy(alpha = 0.72f))
-                } else {
+                }
+                Column(modifier = Modifier.width(if (showLanguageRail) 500.dp else 540.dp)) {
+                    Text("Tracks", color = Color.White.copy(alpha = 0.54f), fontSize = 12.sp)
+                    Spacer(Modifier.height(8.dp))
                     TvTrackList(
                         tracks = tracks,
                         requesters = requesters,
                         onSelect = onSelect,
-                        modifier = Modifier.height(360.dp),
+                        modifier = Modifier.height(330.dp),
                     )
                 }
             }
@@ -430,7 +423,9 @@ private fun TvTrackList(
         itemsIndexed(tracks, key = { _, track -> track.key }) { index, track ->
             TvPanelTextRow(
                 title = track.label,
-                subtitle = track.language.uppercase(),
+                subtitle = track.language
+                    .takeIf { it.isNotBlank() && !it.equals(track.label, ignoreCase = true) }
+                    .orEmpty(),
                 selected = track.selected,
                 focusRequester = requesters.getOrNull(index),
                 onClick = { onSelect(track) },
@@ -546,26 +541,26 @@ private fun TvSourcePanelRow(
             .clip(RoundedCornerShape(14.dp))
             .background(
                 when {
-                    focused -> Color.White
-                    current -> Color.White.copy(alpha = 0.15f)
-                    else -> Color.White.copy(alpha = 0.06f)
+                    focused -> Color.White.copy(alpha = 0.18f)
+                    current -> Color.White.copy(alpha = 0.12f)
+                    else -> Color.White.copy(alpha = 0.05f)
                 },
             )
             .border(
                 1.dp,
-                if (focused) Color.White else Color.White.copy(alpha = 0.14f),
+                if (focused) Color.White.copy(alpha = 0.92f) else Color.White.copy(alpha = 0.12f),
                 RoundedCornerShape(14.dp),
             )
             .clickable(onClick = onClick)
             .focusable()
-            .padding(horizontal = 14.dp, vertical = 12.dp),
+            .padding(horizontal = 14.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = source.stream.name.ifBlank { source.sourceLabel },
-                color = if (focused) Color.Black else Color.White,
+                color = Color.White,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -577,7 +572,7 @@ private fun TvSourcePanelRow(
                     if (source.qualityLabel.isNotBlank()) append(" · ${source.qualityLabel}")
                     if (source.transportLabel.isNotBlank()) append(" · ${source.transportLabel}")
                 },
-                color = if (focused) Color.Black.copy(alpha = 0.70f) else Color.White.copy(alpha = 0.62f),
+                color = Color.White.copy(alpha = if (focused) 0.82f else 0.62f),
                 fontSize = 11.sp,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -587,7 +582,7 @@ private fun TvSourcePanelRow(
             Icon(
                 imageVector = Icons.Default.Check,
                 contentDescription = "Current source",
-                tint = if (focused) Color.Black else Color.White,
+                tint = Color.White,
                 modifier = Modifier.size(20.dp),
             )
         }
@@ -611,10 +606,15 @@ private fun TvPanelTextRow(
             .clip(RoundedCornerShape(12.dp))
             .background(
                 when {
-                    focused -> Color.White
-                    selected -> Color.White.copy(alpha = 0.15f)
-                    else -> Color.White.copy(alpha = 0.06f)
+                    focused -> Color.White.copy(alpha = 0.18f)
+                    selected -> Color.White.copy(alpha = 0.12f)
+                    else -> Color.White.copy(alpha = 0.05f)
                 },
+            )
+            .border(
+                width = if (focused) 2.dp else 1.dp,
+                color = if (focused) Color.White.copy(alpha = 0.92f) else Color.Transparent,
+                shape = RoundedCornerShape(12.dp),
             )
             .clickable(onClick = onClick)
             .focusable()
@@ -624,14 +624,14 @@ private fun TvPanelTextRow(
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 title,
-                color = if (focused) Color.Black else Color.White,
+                color = Color.White,
                 fontWeight = FontWeight.Medium,
             )
             subtitle.takeIf { it.isNotBlank() }?.let {
                 Spacer(Modifier.height(2.dp))
                 Text(
                     it,
-                    color = if (focused) Color.Black.copy(alpha = 0.65f) else Color.White.copy(alpha = 0.56f),
+                    color = Color.White.copy(alpha = if (focused) 0.78f else 0.56f),
                     fontSize = 11.sp,
                 )
             }
@@ -640,7 +640,7 @@ private fun TvPanelTextRow(
             Icon(
                 imageVector = Icons.Default.Check,
                 contentDescription = "Selected",
-                tint = if (focused) Color.Black else Color.White,
+                tint = Color.White,
             )
         }
     }
