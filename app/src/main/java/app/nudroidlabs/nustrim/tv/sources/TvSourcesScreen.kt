@@ -325,10 +325,10 @@ private fun SourcesRightPane(
                     focusRegistry = focusRegistry,
                     onRetry = onRefresh,
                 )
-                is TvSourcesUiState.Empty -> SourcesEmpty()
+                is TvSourcesUiState.Empty -> SourcesEmpty(state.snapshot.attempts)
                 is TvSourcesUiState.Ready -> {
                     if (visibleStreams.isEmpty()) {
-                        SourcesEmpty()
+                        SourcesEmpty(snapshot?.attempts.orEmpty())
                     } else {
                         SourcesList(
                             streams = visibleStreams,
@@ -757,7 +757,7 @@ private fun SourcesError(
 }
 
 @Composable
-private fun SourcesEmpty() {
+private fun SourcesEmpty(attempts: List<TvSourceAttempt>) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -778,6 +778,39 @@ private fun SourcesEmpty() {
             fontSize = 14.sp,
             textAlign = TextAlign.Center,
         )
+        if (attempts.isNotEmpty()) {
+            Spacer(Modifier.height(18.dp))
+            Text(
+                text = attempts
+                    .take(5)
+                    .joinToString("\n") { attempt ->
+                        buildString {
+                            append(attempt.sourceLabel)
+                            append(": ")
+                            append(
+                                when (attempt.status) {
+                                    TvSourceAttemptStatus.SUCCESS ->
+                                        "${attempt.streamCount} stream(s)"
+                                    TvSourceAttemptStatus.EMPTY ->
+                                        "0 streams"
+                                    TvSourceAttemptStatus.ERROR ->
+                                        "error"
+                                }
+                            )
+                            if (attempt.message.isNotBlank()) {
+                                append(" · ")
+                                append(attempt.message)
+                            }
+                        }
+                    },
+                color = Color.White.copy(alpha = 0.64f),
+                fontSize = 12.sp,
+                lineHeight = 16.sp,
+                textAlign = TextAlign.Center,
+                maxLines = 10,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
     }
 }
 

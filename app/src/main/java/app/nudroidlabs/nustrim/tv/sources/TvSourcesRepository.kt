@@ -120,10 +120,6 @@ class TvSourcesRepository(context: Context) {
             )
         }
 
-        if (session is SearchableSourceSession) {
-            return resolveSearchableProvider(route, sourceUrl, session, session)
-        }
-
         if (session is ChildSourceOpener && session.kind == SourceKind.CLOUDSTREAM) {
             return resolveChildContainer(
                 route = route,
@@ -135,6 +131,151 @@ class TvSourcesRepository(context: Context) {
             )
         }
 
+        if (session.kind == SourceKind.STREMIO) {
+            return resolveStremioSource(
+                route = route,
+                sourceUrl = sourceUrl,
+                fallbackLabel = fallbackLabel,
+                session = session,
+            )
+        }
+
+        if (session is SearchableSourceSession) {
+            return resolveSearchableProvider(route, sourceUrl, session, session)
+        }
+
+        return resolveDirectSession(
+            route = route,
+            sourceUrl = sourceUrl,
+            fallbackLabel = fallbackLabel,
+            session = session,
+        )
+    }
+
+    private suspend fun resolveStremioSource(
+        route: TvRoute.Sources,
+        sourceUrl: String,
+        fallbackLabel: String,
+        session: SourceSession,
+    ): SourceResolveResult {
+        val label = session.displayName.ifBlank { fallbackLabel }
+        val resources = session.capabilities.resources
+            .map { it.trim().lowercase() }
+            .toSet()
+
+        // Metadata/catalogue/subtitle-only Stremio addons are not playback sources.
+        if ("stream" !in resources) {
+            return SourceResolveResult()
+        }
+
+        val direct = runCatching {
+            session.awaitStreams(route.media, route.episode)
+        }
+
+        direct.getOrNull()
+            ?.takeIf { it.isNotEmpty() }
+            ?.let { streams ->
+                return SourceResolveResult(
+                    attempts = listOf(
+                        TvSourceAttempt(
+                            sourceLabel = label,
+                            status = TvSourceAttemptStatus.SUCCESS,
+                            streamCount = streams.size,
+                            message = "Direct stream ID",
+                        ),
+                    ),
+                    streams = streams.map { stream ->
+                        TvSourceStream(
+                            sourceLabel = label,
+                            sourceUrl = sourceUrl,
+                            stream = stream,
+                        )
+                    },
+                )
+            }
+
+        // Direct stream IDs are the normal Stremio path. Search is only fallback
+        // for stream addons that internally use addon-native metadata IDs.
+        if (session is SearchableSourceSession && session.capabilities.searchable) {
+            val fallback = resolveSearchableProvider(
+                route = route,
+                sourceUrl = sourceUrl,
+                session = session,
+                searchable = session,
+            )
+
+            if (fallback.streams.isNotEmpty()) {
+                return fallback.copy(
+                    attempts = fallback.attempts.map { attempt ->
+                        attempt.copy(
+                            message = listOf(
+                                "Direct stream ID returned 0",
+                                attempt.message,
+                            ).filter { it.isNotBlank() }.joinToString(" · "),
+                        )
+                    },
+                )
+            }
+
+            val fallbackMessage = fallback.attempts
+                .mapNotNull { it.message.takeIf(String::isNotBlank) }
+                .distinct()
+                .joinToString(" · ")
+
+            return SourceResolveResult(
+                attempts = listOf(
+                    TvSourceAttempt(
+                        sourceLabel = label,
+                        status = if (direct.isFailure) {
+                            TvSourceAttemptStatus.ERROR
+                        } else {
+                            TvSourceAttemptStatus.EMPTY
+                        },
+                        message = buildList {
+                            direct.exceptionOrNull()?.let { error ->
+                                add(
+                                    "Direct stream request: " +
+                                        error.message.orEmpty().ifBlank {
+                                            error::class.java.simpleName
+                                        }
+                                )
+                            } ?: add("Direct stream ID returned 0")
+                            if (fallbackMessage.isNotBlank()) {
+                                add("Search fallback: $fallbackMessage")
+                            }
+                        }.joinToString(" · "),
+                    ),
+                ),
+            )
+        }
+
+        val directError = direct.exceptionOrNull()
+        return SourceResolveResult(
+            attempts = listOf(
+                TvSourceAttempt(
+                    sourceLabel = label,
+                    status = if (directError != null) {
+                        TvSourceAttemptStatus.ERROR
+                    } else {
+                        TvSourceAttemptStatus.EMPTY
+                    },
+                    message = directError?.let { error ->
+                        "Direct stream request: " +
+                            error.message.orEmpty().ifBlank {
+                                error::class.java.simpleName
+                            }
+                    }.orEmpty().ifBlank { "Direct stream ID returned 0" },
+                ),
+            ),
+        )
+    }
+
+    private suspend fun resolveDirectSession(
+        route: TvRoute.Sources,
+        sourceUrl: String,
+        fallbackLabel: String,
+        session: SourceSession,
+    ): SourceResolveResult {
         val label = session.displayName.ifBlank { fallbackLabel }
         return runCatching {
             val streams = session.awaitStreams(route.media, route.episode)
@@ -142,7 +283,11 @@ class TvSourcesRepository(context: Context) {
                 attempts = listOf(
                     TvSourceAttempt(
                         sourceLabel = label,
-                        status = if (streams.isEmpty()) TvSourceAttemptStatus.EMPTY else TvSourceAttemptStatus.SUCCESS,
+                        status = if (streams.isEmpty()) {
+                            TvSourceAttemptStatus.EMPTY
+                        } else {
+                            TvSourceAttemptStatus.SUCCESS
+                        },
                         streamCount = streams.size,
                     ),
                 ),
@@ -160,7 +305,9 @@ class TvSourcesRepository(context: Context) {
                     TvSourceAttempt(
                         sourceLabel = label,
                         status = TvSourceAttemptStatus.ERROR,
-                        message = error.message.orEmpty().ifBlank { error::class.java.simpleName },
+                        message = error.message.orEmpty().ifBlank {
+                            error::class.java.simpleName
+                        },
                     ),
                 ),
             )
