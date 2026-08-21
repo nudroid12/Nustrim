@@ -39,6 +39,8 @@ import app.nudroidlabs.nustrim.tv.navigation.TvReturnFocus
 import app.nudroidlabs.nustrim.tv.navigation.TvRoute
 import app.nudroidlabs.nustrim.tv.navigation.resolveTvBackAction
 import app.nudroidlabs.nustrim.tv.search.TvSearchEntry
+import app.nudroidlabs.nustrim.tv.sources.TvSourcesEntry
+import app.nudroidlabs.nustrim.tv.player.TvPlaybackRequest
 import app.nudroidlabs.nustrim.tv.settings.TvSettingsEntry
 import app.nudroidlabs.nustrim.tv.theme.TvTokens
 
@@ -244,23 +246,38 @@ private fun TvRouteContent(
             modifier = rootModifier,
         )
 
-        is TvRoute.Sources -> TvFoundationScreen(
-            title = buildString {
-                append("Sources foundation • ")
-                append(route.media.title)
-                route.episode?.let { episode ->
-                    append(" • ")
-                    append(episode.title)
-                }
-            },
-            scopeKey = route.focusScope,
+        is TvRoute.Sources -> TvSourcesEntry(
+            route = route,
             focusRegistry = focusRegistry,
             focusRequestToken = focusRequestToken,
+            onStreamSelected = { selected ->
+                navigator.push(
+                    TvRoute.Player(
+                        request = TvPlaybackRequest(
+                            mediaKey = route.mediaKey,
+                            sourceUrl = route.sourceUrl,
+                            media = route.media,
+                            episode = route.episode,
+                            stream = selected.stream,
+                            streamSourceLabel = selected.sourceLabel,
+                        ),
+                        returnFocus = TvReturnFocus(
+                            scopeKey = route.focusScope,
+                            anchorKey = focusRegistry.lastFocused(route.focusScope),
+                        ),
+                    ),
+                )
+            },
             modifier = rootModifier,
         )
 
         is TvRoute.Player -> TvFoundationScreen(
-            title = "Player route foundation",
+            title = buildString {
+                append("Player foundation • ")
+                append(route.request.media.title)
+                append(" • ")
+                append(route.request.stream.name)
+            },
             scopeKey = route.focusScope,
             focusRegistry = focusRegistry,
             focusRequestToken = focusRequestToken,

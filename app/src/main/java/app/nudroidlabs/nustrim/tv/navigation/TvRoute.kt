@@ -2,6 +2,7 @@ package app.nudroidlabs.nustrim.tv.navigation
 
 import app.nudroidlabs.nustrim.core.model.MediaEpisode
 import app.nudroidlabs.nustrim.core.model.MediaItem
+import app.nudroidlabs.nustrim.tv.player.TvPlaybackRequest
 
 enum class TvRootDestination {
     HOME,
@@ -57,10 +58,10 @@ sealed interface TvRoute {
     }
 
     data class Player(
-        val playbackRequestKey: String,
+        val request: TvPlaybackRequest,
         val returnFocus: TvReturnFocus? = null,
     ) : TvRoute {
-        override val stableKey: String = "player/$playbackRequestKey"
+        override val stableKey: String = "player/${request.stableKey}"
         override val focusScope: String = stableKey
     }
 }
