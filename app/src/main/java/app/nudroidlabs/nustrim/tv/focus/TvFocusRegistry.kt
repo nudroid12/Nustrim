@@ -58,6 +58,14 @@ class TvFocusRegistry {
     fun rowItemIndex(scopeKey: String, rowKey: String): Int =
         homeRowItemPositions[scopeKey to rowKey] ?: 0
 
+    fun requestAnchor(scopeKey: String, anchorKey: String): Boolean {
+        val requester = requesters[TvFocusAddress(scopeKey, anchorKey)] ?: return false
+        return runCatching {
+            requester.requestFocus()
+            true
+        }.getOrDefault(false)
+    }
+
     fun requestFocus(scopeKey: String, fallbackAnchorKey: String? = null): Boolean {
         val remembered = lastFocusedAnchor[scopeKey]
         val preferred = remembered?.let { requesters[TvFocusAddress(scopeKey, it)] }

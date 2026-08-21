@@ -172,6 +172,9 @@ private fun DetailsReady(
                         selectedIndex = selectedSeasonIndex,
                         scopeKey = scopeKey,
                         focusRegistry = focusRegistry,
+                        rememberedEpisodeKey = selectedSeason?.let { season ->
+                            memory.lastEpisodeBySeason[season.stableKey]
+                        },
                         onSeasonFocused = { pendingSeasonIndex = it },
                         onSeasonSelected = { index ->
                             selectedSeasonIndex = index
@@ -189,6 +192,7 @@ private fun DetailsReady(
                                 scopeKey = scopeKey,
                                 focusRegistry = focusRegistry,
                                 rememberedEpisodeKey = memory.lastEpisodeBySeason[season.stableKey],
+                                upAnchorKey = seasonAnchorKey(season.stableKey),
                                 onFocused = { episode ->
                                     memory.selectedSeasonKey = season.stableKey
                                     memory.lastEpisodeBySeason[season.stableKey] = episode.identity.stableKey
@@ -393,6 +397,7 @@ private fun SeasonTabs(
     selectedIndex: Int,
     scopeKey: String,
     focusRegistry: TvFocusRegistry,
+    rememberedEpisodeKey: String?,
     onSeasonFocused: (Int) -> Unit,
     onSeasonSelected: (Int) -> Unit,
 ) {
@@ -410,6 +415,13 @@ private fun SeasonTabs(
                 selected = index == selectedIndex,
                 scopeKey = scopeKey,
                 focusRegistry = focusRegistry,
+                downAnchorKey = if (index == selectedIndex) {
+                    val target = season.episodes.firstOrNull { it.identity.stableKey == rememberedEpisodeKey }
+                        ?: season.episodes.firstOrNull()
+                    target?.let { episodeAnchorKey(it.identity.stableKey) }
+                } else {
+                    null
+                },
                 onFocused = { onSeasonFocused(index) },
                 onClick = { onSeasonSelected(index) },
             )
@@ -423,6 +435,7 @@ private fun SeasonTab(
     selected: Boolean,
     scopeKey: String,
     focusRegistry: TvFocusRegistry,
+    downAnchorKey: String?,
     onFocused: () -> Unit,
     onClick: () -> Unit,
 ) {
@@ -446,10 +459,18 @@ private fun SeasonTab(
                 if (it.isFocused) onFocused()
             }
             .onKeyEvent { event ->
-                if (event.type == KeyEventType.KeyDown && (event.key == Key.DirectionCenter || event.key == Key.Enter)) {
-                    onClick()
-                    true
-                } else false
+                if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
+                when (event.key) {
+                    Key.DirectionDown -> {
+                        val target = downAnchorKey ?: return@onKeyEvent false
+                        focusRegistry.requestAnchor(scopeKey, target)
+                    }
+                    Key.DirectionCenter, Key.Enter -> {
+                        onClick()
+                        true
+                    }
+                    else -> false
+                }
             }
             .focusable()
             .padding(horizontal = 20.dp, vertical = 10.dp),
@@ -470,6 +491,7 @@ private fun EpisodeRow(
     scopeKey: String,
     focusRegistry: TvFocusRegistry,
     rememberedEpisodeKey: String?,
+    upAnchorKey: String,
     onFocused: (TvCanonicalEpisode) -> Unit,
     onOpen: (TvCanonicalEpisode) -> Unit,
 ) {
@@ -501,6 +523,7 @@ private fun EpisodeRow(
                     metrics = metrics,
                     scopeKey = scopeKey,
                     focusRegistry = focusRegistry,
+                    upAnchorKey = upAnchorKey,
                     onFocused = { onFocused(episode) },
                     onOpen = { onOpen(episode) },
                 )
@@ -537,6 +560,7 @@ private fun EpisodeCard(
     metrics: EpisodeMetrics,
     scopeKey: String,
     focusRegistry: TvFocusRegistry,
+    upAnchorKey: String,
     onFocused: () -> Unit,
     onOpen: () -> Unit,
 ) {
@@ -558,10 +582,15 @@ private fun EpisodeCard(
                 if (it.isFocused) onFocused()
             }
             .onKeyEvent { event ->
-                if (event.type == KeyEventType.KeyDown && (event.key == Key.DirectionCenter || event.key == Key.Enter)) {
-                    onOpen()
-                    true
-                } else false
+                if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
+                when (event.key) {
+                    Key.DirectionUp -> focusRegistry.requestAnchor(scopeKey, upAnchorKey)
+                    Key.DirectionCenter, Key.Enter -> {
+                        onOpen()
+                        true
+                    }
+                    else -> false
+                }
             }
             .focusable(),
     ) {
