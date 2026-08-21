@@ -38,9 +38,15 @@ fun TvEpisodeAuditEntry(
             TvEpisodeUiState.Empty(
                 snapshot = snapshot,
                 message = if (snapshot.item.type.name in setOf("MOVIE", "LIVE")) {
-                    "This title does not expose an episode catalogue."
+                    "Episode QA is not applicable to this ${snapshot.item.type.name.lowercase()} title. Press Back and open a series."
                 } else {
-                    "The provider returned no episodes for this title."
+                    buildString {
+                        append("The provider returned no episodes. ")
+                        append("Loaded type: ").append(snapshot.item.type.name)
+                        route.media.ref?.mediaType?.takeIf { it.isNotBlank() }?.let {
+                            append(" · Provider type: ").append(it)
+                        }
+                    }
                 },
             )
         } else {

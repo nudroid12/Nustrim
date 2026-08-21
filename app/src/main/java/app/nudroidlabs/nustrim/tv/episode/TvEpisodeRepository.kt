@@ -2,7 +2,6 @@ package app.nudroidlabs.nustrim.tv.episode
 
 import android.content.Context
 import app.nudroidlabs.nustrim.core.model.MediaItem
-import app.nudroidlabs.nustrim.core.model.MediaType
 import app.nudroidlabs.nustrim.core.source.SourceEngine
 import app.nudroidlabs.nustrim.core.source.SourceSession
 import app.nudroidlabs.nustrim.tv.navigation.TvRoute
@@ -14,12 +13,9 @@ class TvEpisodeRepository(context: Context) {
 
     suspend fun load(route: TvRoute.Details): TvEpisodeSnapshot = withTimeout(DETAIL_TIMEOUT_MS) {
         val session = openSession(route.sourceUrl)
-        val seed = MediaItem(
-            id = route.mediaId,
-            title = route.mediaId,
-            type = MediaType.from(route.contentType),
-        )
-        val detailed = loadDetails(session, seed)
+        // Preserve the exact catalogue item from the provider. SourceSession implementations
+        // may depend on MediaRef.mediaType/metaId and other provider-owned fields.
+        val detailed = loadDetails(session, route.media)
         val parentIdentity = detailed.ref?.metaId
             ?.takeIf { it.isNotBlank() }
             ?: detailed.id

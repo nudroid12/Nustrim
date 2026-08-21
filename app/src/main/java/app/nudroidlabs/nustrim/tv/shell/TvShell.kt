@@ -176,8 +176,7 @@ private fun TvRouteContent(
                         TvRoute.Details(
                             contentKey = media.stableKey,
                             sourceUrl = media.sourceUrl,
-                            mediaId = media.item.id,
-                            contentType = media.item.type.name,
+                            media = media.item,
                             returnFocus = TvReturnFocus(
                                 scopeKey = route.focusScope,
                                 row = rowIndex,

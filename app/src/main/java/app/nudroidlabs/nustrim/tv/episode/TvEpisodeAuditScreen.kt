@@ -70,16 +70,27 @@ fun TvEpisodeAuditScreen(
             modifier = modifier,
         )
 
-        is TvEpisodeUiState.Empty -> EpisodeActionScreen(
-            title = state.snapshot.item.title.ifBlank { "No episodes" },
-            message = state.message,
-            actionLabel = "Retry",
-            scopeKey = scopeKey,
-            focusRegistry = focusRegistry,
-            focusRequestToken = focusRequestToken,
-            onAction = onRetry,
-            modifier = modifier,
-        )
+        is TvEpisodeUiState.Empty -> {
+            if (state.snapshot.item.type.name in setOf("MOVIE", "LIVE")) {
+                EpisodeMessageScreen(
+                    title = state.snapshot.item.title.ifBlank { "Episode QA" },
+                    message = state.message,
+                    loading = false,
+                    modifier = modifier,
+                )
+            } else {
+                EpisodeActionScreen(
+                    title = state.snapshot.item.title.ifBlank { "No episodes" },
+                    message = state.message,
+                    actionLabel = "Retry",
+                    scopeKey = scopeKey,
+                    focusRegistry = focusRegistry,
+                    focusRequestToken = focusRequestToken,
+                    onAction = onRetry,
+                    modifier = modifier,
+                )
+            }
+        }
 
         is TvEpisodeUiState.Ready -> EpisodeCatalogueScreen(
             snapshot = state.snapshot,
