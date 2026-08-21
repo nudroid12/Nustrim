@@ -1,11 +1,12 @@
 generation=cleanroom-v1
 reference=nuvio-tv-0.8.6-beta
-subsystem=4-details
+subsystem=4.1-details-episode-title-fix
 status=build-candidate
 preserve=source-provider-engine,stream-resolver,playback-engine,mobile-ui
 home=cleanroom-s2-accepted
 episode-domain=cleanroom-s3-accepted
 details=cleanroom-s4
+episode-title-normalization=coordinate-safe
 details-layout=sticky-backdrop-single-scroll-surface
 details-hero-height=540dp
 details-season-focus-settle=150ms

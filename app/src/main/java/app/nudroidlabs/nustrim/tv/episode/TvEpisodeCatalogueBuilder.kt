@@ -45,9 +45,11 @@ object TvEpisodeCatalogueBuilder {
                     sourceIndex = index,
                 ),
                 providerEpisodeId = raw.id.trim(),
-                title = raw.title.trim().ifBlank {
-                    cleanEpisode?.let { "Episode $it" } ?: "Episode ${index + 1}"
-                },
+                title = canonicalEpisodeTitle(
+                    rawTitle = raw.title,
+                    episodeNumber = cleanEpisode,
+                    sourceIndex = index,
+                ),
                 seasonNumber = cleanSeason,
                 episodeNumber = cleanEpisode,
                 displaySeasonNumber = cleanSeason,
@@ -157,11 +159,43 @@ object TvEpisodeCatalogueBuilder {
         )
     }
 
+    private fun canonicalEpisodeTitle(
+        rawTitle: String,
+        episodeNumber: Int?,
+        sourceIndex: Int,
+    ): String {
+        val clean = rawTitle.trim()
+        if (clean.isBlank()) {
+            return episodeNumber?.let { "Episode $it" } ?: "Episode ${sourceIndex + 1}"
+        }
+
+        val genericNumber = genericEpisodeTitle
+            .matchEntire(clean)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.toIntOrNull()
+
+        return if (genericNumber != null && episodeNumber != null && genericNumber != episodeNumber) {
+            "Episode $episodeNumber"
+        } else {
+            clean
+        }
+    }
+
+    private val genericEpisodeTitle = Regex("(?i)^episode\\s+(\\d+)$")
+
+    private fun mergeEpisodeTitle(first: String, later: String): String = when {
+        first.isBlank() -> later
+        later.isBlank() -> first
+        genericEpisodeTitle.matches(first) && !genericEpisodeTitle.matches(later) -> later
+        else -> first
+    }
+
     private fun mergeDuplicate(
         first: TvCanonicalEpisode,
         later: TvCanonicalEpisode,
     ): TvCanonicalEpisode = first.copy(
-        title = first.title.ifBlank { later.title },
+        title = mergeEpisodeTitle(first.title, later.title),
         seasonNumber = first.seasonNumber ?: later.seasonNumber,
         episodeNumber = first.episodeNumber ?: later.episodeNumber,
         displaySeasonNumber = first.displaySeasonNumber ?: later.displaySeasonNumber,
