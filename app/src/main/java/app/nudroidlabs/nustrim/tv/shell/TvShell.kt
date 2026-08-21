@@ -28,6 +28,7 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.unit.dp
 import app.nudroidlabs.nustrim.tv.common.TvFoundationScreen
+import app.nudroidlabs.nustrim.tv.episode.TvEpisodeAuditEntry
 import app.nudroidlabs.nustrim.tv.focus.TvFocusRegistry
 import app.nudroidlabs.nustrim.tv.home.TvHomeEntry
 import app.nudroidlabs.nustrim.tv.library.TvLibraryEntry
@@ -210,9 +211,8 @@ private fun TvRouteContent(
             )
         }
 
-        is TvRoute.Details -> TvFoundationScreen(
-            title = "Details route foundation",
-            scopeKey = route.focusScope,
+        is TvRoute.Details -> TvEpisodeAuditEntry(
+            route = route,
             focusRegistry = focusRegistry,
             focusRequestToken = focusRequestToken,
             modifier = rootModifier,

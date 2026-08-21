@@ -1,8 +1,10 @@
 generation=cleanroom-v1
 reference=nuvio-tv-0.8.6-beta
-subsystem=2-home-modern
+subsystem=3-episode-domain
 status=build-candidate
 preserve=source-provider-engine,stream-resolver,playback-engine,mobile-ui
-home=cleanroom-modern-catalogues
-continue-watching=deferred-untrusted-progress-rebuild
-legacy-tv-source=replaced
+episode-identity=provider-id-primary
+episode-coordinate-inference=disabled
+episode-slot-collisions=retained
+legacy-episode-engine=unused-by-cleanroom-tv
+details=temporary-episode-domain-qa
