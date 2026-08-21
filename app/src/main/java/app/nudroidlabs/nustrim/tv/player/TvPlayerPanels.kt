@@ -6,6 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -18,6 +19,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -42,6 +45,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -147,6 +151,9 @@ fun TvPlayerSourcesPanel(
     onSourceSelected: (TvSourceStream) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    var selectedFilter by remember(snapshot?.sourceLabels, currentRequest.mediaKey) {
+        mutableStateOf<String?>(null)
+    }
     TvPlayerSidePanelScaffold(
         title = "Sources",
         modifier = modifier,
@@ -158,18 +165,45 @@ fun TvPlayerSourcesPanel(
         ) {
             Text(
                 text = currentRequest.streamSourceLabel.ifBlank { "Current source" },
-                color = Color.White.copy(alpha = 0.72f),
+                color = Color.White.copy(alpha = 0.68f),
                 fontSize = 12.sp,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
             )
+            Spacer(Modifier.width(10.dp))
             TvPanelAction(
-                label = "Refresh",
+                label = "Reload",
                 icon = Icons.Default.Refresh,
                 onClick = onRefresh,
             )
         }
-        Spacer(Modifier.height(14.dp))
+        val labels = snapshot?.sourceLabels.orEmpty()
+        if (labels.isNotEmpty()) {
+            Spacer(Modifier.height(14.dp))
+            LazyRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                contentPadding = PaddingValues(vertical = 2.dp),
+            ) {
+                item {
+                    TvPanelChip(
+                        text = "All",
+                        selected = selectedFilter == null,
+                        onFocus = {},
+                        onClick = { selectedFilter = null },
+                    )
+                }
+                items(labels, key = { it }) { label ->
+                    TvPanelChip(
+                        text = label,
+                        selected = selectedFilter == label,
+                        onFocus = {},
+                        onClick = { selectedFilter = label },
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(16.dp))
 
         when {
             loading && snapshot == null -> {
@@ -195,30 +229,34 @@ fun TvPlayerSourcesPanel(
                 }
             }
             else -> {
-                val streams = snapshot!!.streams.filter { it.playable }
-                val currentIndex = streams.indexOfFirst {
-                    it.stream.url == currentRequest.stream.url &&
-                        it.sourceLabel == currentRequest.streamSourceLabel
-                }.takeIf { it >= 0 } ?: 0
-                val requesters = remember(snapshot.streams, currentRequest.stableKey) {
-                    streams.map { FocusRequester() }
-                }
-                LaunchedEffect(snapshot, currentRequest.stableKey) {
-                    delay(180)
-                    requesters.getOrNull(currentIndex)?.requestFocus()
-                }
-                LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    itemsIndexed(
-                        items = streams,
-                        key = { _, item -> item.stableKey },
-                    ) { index, item ->
-                        TvSourcePanelRow(
-                            source = item,
-                            current = item.stream.url == currentRequest.stream.url &&
-                                item.sourceLabel == currentRequest.streamSourceLabel,
-                            focusRequester = requesters[index],
-                            onClick = { onSourceSelected(item) },
-                        )
+                val streams = snapshot!!.filtered(selectedFilter).filter { it.playable }
+                if (streams.isEmpty()) {
+                    Text("No streams for this source", color = Color.White.copy(alpha = 0.70f))
+                } else {
+                    val currentIndex = streams.indexOfFirst {
+                        it.stream.url == currentRequest.stream.url &&
+                            it.sourceLabel == currentRequest.streamSourceLabel
+                    }.takeIf { it >= 0 } ?: 0
+                    val requesters = remember(streams.map { it.stableKey }, currentRequest.stableKey) {
+                        streams.map { FocusRequester() }
+                    }
+                    LaunchedEffect(streams.map { it.stableKey }, currentRequest.stableKey) {
+                        delay(180)
+                        requesters.getOrNull(currentIndex)?.requestFocus()
+                    }
+                    LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        itemsIndexed(
+                            items = streams,
+                            key = { _, item -> item.stableKey },
+                        ) { index, item ->
+                            TvSourcePanelRow(
+                                source = item,
+                                current = item.stream.url == currentRequest.stream.url &&
+                                    item.sourceLabel == currentRequest.streamSourceLabel,
+                                focusRequester = requesters[index],
+                                onClick = { onSourceSelected(item) },
+                            )
+                        }
                     }
                 }
             }
@@ -235,14 +273,45 @@ fun TvPlayerAudioPanel(
     val requesters = remember(tracks.map { it.key }) { tracks.map { FocusRequester() } }
     val selectedIndex = tracks.indexOfFirst { it.selected }.takeIf { it >= 0 } ?: 0
     LaunchedEffect(tracks.map { it.key }) {
-        delay(160)
+        delay(180)
         requesters.getOrNull(selectedIndex)?.requestFocus()
     }
-    TvPlayerSidePanelScaffold(title = "Audio", modifier = modifier) {
+    TvPlayerBottomOverlayScaffold(title = "Audio", width = 724.dp, modifier = modifier) {
         if (tracks.isEmpty()) {
             Text("No selectable audio tracks", color = Color.White.copy(alpha = 0.72f))
         } else {
-            TvTrackList(tracks = tracks, requesters = requesters, onSelect = onSelect)
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(18.dp),
+                verticalAlignment = Alignment.Top,
+            ) {
+                TvTrackList(
+                    tracks = tracks,
+                    requesters = requesters,
+                    onSelect = onSelect,
+                    modifier = Modifier.width(444.dp).height(360.dp),
+                )
+                Column(
+                    modifier = Modifier
+                        .width(240.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(Color.White.copy(alpha = 0.06f))
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text("Current track", color = Color.White.copy(alpha = 0.58f), fontSize = 12.sp)
+                    val selected = tracks.getOrNull(selectedIndex)
+                    Text(
+                        selected?.label ?: "Auto",
+                        color = Color.White,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    selected?.language?.takeIf { it.isNotBlank() }?.let {
+                        Text(it.uppercase(), color = Color.White.copy(alpha = 0.62f), fontSize = 12.sp)
+                    }
+                }
+            }
         }
     }
 }
@@ -258,26 +327,60 @@ fun TvPlayerSubtitlePanel(
     val requesters = remember(tracks.map { it.key }) { tracks.map { FocusRequester() } }
     val selectedIndex = tracks.indexOfFirst { it.selected }
     LaunchedEffect(tracks.map { it.key }) {
-        delay(160)
+        delay(180)
         if (selectedIndex >= 0) {
             requesters.getOrNull(selectedIndex)?.requestFocus()
         } else {
             offRequester.requestFocus()
         }
     }
-    TvPlayerSidePanelScaffold(title = "Subtitles", modifier = modifier) {
-        TvPanelTextRow(
-            title = "Off",
-            subtitle = "Disable subtitles",
-            selected = tracks.none { it.selected },
-            focusRequester = offRequester,
-            onClick = onDisable,
-        )
-        Spacer(Modifier.height(8.dp))
-        if (tracks.isEmpty()) {
-            Text("No subtitle tracks", color = Color.White.copy(alpha = 0.72f))
-        } else {
-            TvTrackList(tracks = tracks, requesters = requesters, onSelect = onSelect)
+    TvPlayerBottomOverlayScaffold(title = "Subtitles", width = 760.dp, modifier = modifier) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(18.dp),
+            verticalAlignment = Alignment.Top,
+        ) {
+            Column(
+                modifier = Modifier.width(220.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text("Languages", color = Color.White.copy(alpha = 0.54f), fontSize = 12.sp)
+                TvPanelTextRow(
+                    title = "Off",
+                    subtitle = "Disable subtitles",
+                    selected = tracks.none { it.selected },
+                    focusRequester = offRequester,
+                    onClick = onDisable,
+                )
+                tracks
+                    .map { it.language.ifBlank { "Unknown" } }
+                    .distinct()
+                    .take(7)
+                    .forEach { language ->
+                        val isSelected = tracks.any { it.selected && it.language.ifBlank { "Unknown" } == language }
+                        TvPanelTextRow(
+                            title = language.uppercase(),
+                            subtitle = "",
+                            selected = isSelected,
+                            onClick = {
+                                tracks.firstOrNull { it.language.ifBlank { "Unknown" } == language }?.let(onSelect)
+                            },
+                        )
+                    }
+            }
+            Column(modifier = Modifier.width(500.dp)) {
+                Text("Tracks", color = Color.White.copy(alpha = 0.54f), fontSize = 12.sp)
+                Spacer(Modifier.height(8.dp))
+                if (tracks.isEmpty()) {
+                    Text("No subtitle tracks", color = Color.White.copy(alpha = 0.72f))
+                } else {
+                    TvTrackList(
+                        tracks = tracks,
+                        requesters = requesters,
+                        onSelect = onSelect,
+                        modifier = Modifier.height(360.dp),
+                    )
+                }
+            }
         }
     }
 }
@@ -297,7 +400,7 @@ fun TvPlayerSpeedPanel(
         delay(160)
         requesters.getOrNull(selectedIndex)?.requestFocus()
     }
-    TvPlayerSidePanelScaffold(title = "Playback speed", modifier = modifier) {
+    TvPlayerBottomOverlayScaffold(title = "Playback speed", width = 380.dp, modifier = modifier) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             speeds.forEachIndexed { index, speed ->
                 TvPanelTextRow(
@@ -317,9 +420,14 @@ private fun TvTrackList(
     tracks: List<TvPlayerTrack>,
     requesters: List<FocusRequester>,
     onSelect: (TvPlayerTrack) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        tracks.forEachIndexed { index, track ->
+    LazyColumn(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+        contentPadding = PaddingValues(bottom = 8.dp),
+    ) {
+        itemsIndexed(tracks, key = { _, track -> track.key }) { index, track ->
             TvPanelTextRow(
                 title = track.label,
                 subtitle = track.language.uppercase(),
@@ -344,60 +452,80 @@ private fun TvEpisodePanelRow(
             .fillMaxWidth()
             .focusRequester(focusRequester)
             .onFocusChanged { focused = it.isFocused }
-            .clip(RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(16.dp))
             .background(
                 when {
-                    focused -> Color.White
-                    current -> Color.White.copy(alpha = 0.15f)
-                    else -> Color.White.copy(alpha = 0.06f)
+                    focused -> Color.White.copy(alpha = 0.16f)
+                    current -> Color.White.copy(alpha = 0.10f)
+                    else -> Color.White.copy(alpha = 0.04f)
                 },
             )
             .border(
-                1.dp,
-                if (focused) Color.White else Color.White.copy(alpha = 0.15f),
-                RoundedCornerShape(14.dp),
+                if (focused) 2.dp else 1.dp,
+                if (focused) Color.White else Color.White.copy(alpha = 0.12f),
+                RoundedCornerShape(16.dp),
             )
             .clickable(onClick = onClick)
             .focusable()
             .padding(10.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+        verticalAlignment = Alignment.Top,
     ) {
-        AsyncImage(
-            model = episode.thumbnailUrl,
-            contentDescription = null,
+        Box(
             modifier = Modifier
-                .width(116.dp)
-                .height(66.dp)
-                .clip(RoundedCornerShape(9.dp))
-                .background(Color.Black.copy(alpha = 0.35f)),
-        )
-        Column(modifier = Modifier.weight(1f)) {
+                .width(130.dp)
+                .height(90.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(Color.White.copy(alpha = 0.05f)),
+        ) {
+            AsyncImage(
+                model = episode.thumbnailUrl,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+            )
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(7.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(Color.Black.copy(alpha = 0.76f))
+                    .padding(horizontal = 7.dp, vertical = 4.dp),
+            ) {
+                Text(episode.coordinateLabel, color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+            }
+            if (current) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(6.dp)
+                        .size(22.dp)
+                        .clip(RoundedCornerShape(11.dp))
+                        .background(Color.White),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(Icons.Default.Check, contentDescription = "Current episode", tint = Color.Black, modifier = Modifier.size(14.dp))
+                }
+            }
+        }
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
             Text(
-                text = "${episode.coordinateLabel} · ${episode.title}",
-                color = if (focused) Color.Black else Color.White,
-                fontWeight = FontWeight.SemiBold,
+                text = episode.title,
+                color = Color.White,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Medium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
             if (episode.overview.isNotBlank()) {
-                Spacer(Modifier.height(4.dp))
                 Text(
                     text = episode.overview,
-                    color = if (focused) Color.Black.copy(alpha = 0.70f) else Color.White.copy(alpha = 0.62f),
-                    fontSize = 11.sp,
+                    color = Color.White.copy(alpha = 0.66f),
+                    fontSize = 12.sp,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-        }
-        if (current) {
-            Icon(
-                imageVector = Icons.Default.Check,
-                contentDescription = "Current episode",
-                tint = if (focused) Color.Black else Color.White,
-                modifier = Modifier.size(20.dp),
-            )
         }
     }
 }
@@ -586,27 +714,62 @@ private fun TvPlayerSidePanelScaffold(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(
-                Brush.horizontalGradient(
-                    listOf(Color.Transparent, Color.Black.copy(alpha = 0.45f), Color.Black.copy(alpha = 0.94f)),
-                ),
-            ),
+            .background(Color.Black.copy(alpha = 0.45f)),
     ) {
         Column(
             modifier = Modifier
                 .align(Alignment.CenterEnd)
                 .fillMaxHeight()
-                .width(580.dp)
-                .background(Color(0xEF101114))
-                .padding(horizontal = 26.dp, vertical = 28.dp),
+                .width(520.dp)
+                .clip(RoundedCornerShape(topStart = 20.dp, bottomStart = 20.dp))
+                .background(Color(0xF217181D))
+                .padding(24.dp),
         ) {
             Text(
                 text = title,
                 color = Color.White,
                 style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.SemiBold,
+                fontWeight = FontWeight.Medium,
             )
             Spacer(Modifier.height(18.dp))
+            content()
+        }
+    }
+}
+
+@Composable
+private fun TvPlayerBottomOverlayScaffold(
+    title: String,
+    width: androidx.compose.ui.unit.Dp,
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .background(
+                Brush.horizontalGradient(
+                    listOf(
+                        Color.Black.copy(alpha = 0.84f),
+                        Color.Black.copy(alpha = 0.58f),
+                        Color.Transparent,
+                    ),
+                ),
+            ),
+    ) {
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .width(width)
+                .padding(start = 44.dp, end = 24.dp, bottom = 64.dp),
+        ) {
+            Text(
+                text = title,
+                color = Color.White,
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Medium,
+            )
+            Spacer(Modifier.height(14.dp))
             content()
         }
     }

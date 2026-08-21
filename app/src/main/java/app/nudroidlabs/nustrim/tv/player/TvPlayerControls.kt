@@ -1,10 +1,10 @@
 package app.nudroidlabs.nustrim.tv.player
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -17,10 +17,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.ClosedCaption
@@ -68,8 +69,10 @@ fun TvPlayerControls(
     hasEpisodes: Boolean,
     hasNextEpisode: Boolean,
     aspectMode: TvPlayerAspectMode,
+    showMoreActions: Boolean,
     onInteraction: () -> Unit,
     onHideControls: () -> Unit,
+    onToggleMoreActions: () -> Unit,
     onOpenEpisodes: () -> Unit,
     onOpenSources: () -> Unit,
     onOpenAudio: () -> Unit,
@@ -81,24 +84,11 @@ fun TvPlayerControls(
 ) {
     AnimatedVisibility(
         visible = visible,
-        enter = fadeIn(),
-        exit = fadeOut(),
+        enter = fadeIn(animationSpec = tween(200)),
+        exit = fadeOut(animationSpec = tween(200)),
         modifier = modifier,
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(
-                            Color.Transparent,
-                            Color.Transparent,
-                            Color.Black.copy(alpha = 0.14f),
-                            Color.Black.copy(alpha = 0.92f),
-                        ),
-                    ),
-                ),
-        ) {
+        Box(modifier = Modifier.fillMaxSize()) {
             Box(
                 modifier = Modifier
                     .align(Alignment.TopCenter)
@@ -108,8 +98,21 @@ fun TvPlayerControls(
                         Brush.verticalGradient(
                             colors = listOf(
                                 Color.Black.copy(alpha = 0.70f),
-                                Color.Black.copy(alpha = 0.18f),
                                 Color.Transparent,
+                            ),
+                        ),
+                    ),
+            )
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .height(220.dp)
+                    .background(
+                        Brush.verticalGradient(
+                            colors = listOf(
+                                Color.Transparent,
+                                Color.Black.copy(alpha = 0.82f),
                             ),
                         ),
                     ),
@@ -117,20 +120,20 @@ fun TvPlayerControls(
 
             Column(
                 modifier = Modifier
-                    .align(Alignment.BottomStart)
+                    .align(Alignment.BottomCenter)
                     .fillMaxWidth()
-                    .padding(horizontal = 42.dp, vertical = 30.dp),
+                    .padding(horizontal = 42.dp, vertical = 28.dp),
             ) {
                 Text(
                     text = request.media.title,
-                    style = MaterialTheme.typography.headlineSmall,
+                    style = MaterialTheme.typography.headlineMedium,
                     color = Color.White,
-                    fontWeight = FontWeight.SemiBold,
+                    fontWeight = FontWeight.Medium,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
                 request.episode?.let { episode ->
-                    Spacer(Modifier.height(3.dp))
+                    Spacer(Modifier.height(2.dp))
                     Text(
                         text = buildString {
                             val season = episode.season
@@ -140,135 +143,160 @@ fun TvPlayerControls(
                                 append(season)
                                 append("E")
                                 append(number)
-                                append(" · ")
                             }
-                            append(episode.title)
+                            if (episode.title.isNotBlank()) {
+                                if (isNotEmpty()) append(" · ")
+                                append(episode.title)
+                            }
                         },
+                        style = MaterialTheme.typography.titleMedium,
+                        color = Color.White.copy(alpha = 0.90f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                if (!runtime.isPlaying && request.streamSourceLabel.isNotBlank()) {
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = "via ${request.streamSourceLabel.replace("\n", " · ")}",
                         style = MaterialTheme.typography.bodyMedium,
-                        color = Color.White.copy(alpha = 0.78f),
+                        color = Color.White.copy(alpha = 0.68f),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
 
-                Spacer(Modifier.height(14.dp))
+                Spacer(Modifier.height(12.dp))
                 TvPlayerProgressBar(
                     runtime = runtime,
                     focusRequester = progressFocusRequester,
                     downFocusRequester = playPauseFocusRequester,
                     onInteraction = onInteraction,
+                    onUp = onHideControls,
                 )
-                Spacer(Modifier.height(7.dp))
+                Spacer(Modifier.height(16.dp))
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        TvPlayerControlButton(
+                            icon = if (runtime.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                            contentDescription = if (runtime.isPlaying) "Pause" else "Play",
+                            focusRequester = playPauseFocusRequester,
+                            upFocusRequester = progressFocusRequester,
+                            onFocused = onInteraction,
+                            onDown = onHideControls,
+                            onClick = {
+                                runtime.togglePlayPause()
+                                onInteraction()
+                            },
+                        )
+                        if (hasNextEpisode) {
+                            TvPlayerControlButton(
+                                icon = Icons.Default.SkipNext,
+                                contentDescription = "Next episode",
+                                upFocusRequester = progressFocusRequester,
+                                onFocused = onInteraction,
+                                onDown = onHideControls,
+                                onClick = onPlayNext,
+                            )
+                        }
+                        if (runtime.subtitleTracks.isNotEmpty() || request.stream.subtitles.isNotEmpty()) {
+                            TvPlayerControlButton(
+                                icon = Icons.Default.ClosedCaption,
+                                contentDescription = "Subtitles",
+                                upFocusRequester = progressFocusRequester,
+                                onFocused = onInteraction,
+                                onDown = onHideControls,
+                                onClick = onOpenSubtitles,
+                            )
+                        }
+                        if (runtime.audioTracks.isNotEmpty()) {
+                            TvPlayerControlButton(
+                                icon = Icons.Default.VolumeUp,
+                                contentDescription = "Audio",
+                                upFocusRequester = progressFocusRequester,
+                                onFocused = onInteraction,
+                                onDown = onHideControls,
+                                onClick = onOpenAudio,
+                            )
+                        }
+                        TvPlayerControlButton(
+                            icon = Icons.Default.Dns,
+                            contentDescription = "Sources",
+                            upFocusRequester = progressFocusRequester,
+                            onFocused = onInteraction,
+                            onDown = onHideControls,
+                            onClick = onOpenSources,
+                        )
+                        if (hasEpisodes) {
+                            TvPlayerControlButton(
+                                icon = Icons.AutoMirrored.Filled.List,
+                                contentDescription = "Episodes",
+                                upFocusRequester = progressFocusRequester,
+                                onFocused = onInteraction,
+                                onDown = onHideControls,
+                                onClick = onOpenEpisodes,
+                            )
+                        }
+                        AnimatedVisibility(
+                            visible = showMoreActions,
+                            enter = fadeIn(animationSpec = tween(160)),
+                            exit = fadeOut(animationSpec = tween(140)),
+                        ) {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                TvPlayerControlButton(
+                                    icon = Icons.Default.Speed,
+                                    contentDescription = "Playback speed",
+                                    upFocusRequester = progressFocusRequester,
+                                    onFocused = onInteraction,
+                                    onDown = onHideControls,
+                                    onClick = onOpenSpeed,
+                                )
+                                TvPlayerControlButton(
+                                    icon = Icons.Default.AspectRatio,
+                                    contentDescription = "Aspect ratio: ${aspectMode.label}",
+                                    upFocusRequester = progressFocusRequester,
+                                    onFocused = onInteraction,
+                                    onDown = onHideControls,
+                                    onClick = {
+                                        onToggleAspect()
+                                        onInteraction()
+                                    },
+                                )
+                            }
+                        }
+                        TvPlayerControlButton(
+                            icon = if (showMoreActions) {
+                                Icons.AutoMirrored.Filled.KeyboardArrowLeft
+                            } else {
+                                Icons.AutoMirrored.Filled.KeyboardArrowRight
+                            },
+                            contentDescription = if (showMoreActions) "Close more actions" else "More actions",
+                            upFocusRequester = progressFocusRequester,
+                            onFocused = onInteraction,
+                            onDown = onHideControls,
+                            onClick = {
+                                onToggleMoreActions()
+                                onInteraction()
+                            },
+                        )
+                    }
                     Text(
                         text = "${formatPlayerTime(runtime.positionMs)} / ${formatPlayerTime(runtime.durationMs)}",
-                        color = Color.White.copy(alpha = 0.88f),
-                        fontSize = 13.sp,
-                    )
-                    Text(
-                        text = buildString {
-                            append(request.streamSourceLabel.ifBlank { request.stream.providerName })
-                            val speed = runtime.playbackSpeed
-                            if (kotlin.math.abs(speed - 1f) > 0.01f) {
-                                append(" · ")
-                                append(String.format(java.util.Locale.US, "%.2fx", speed))
-                            }
-                        },
-                        color = Color.White.copy(alpha = 0.70f),
-                        fontSize = 12.sp,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color.White.copy(alpha = 0.90f),
                         maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
                     )
-                }
-
-                Spacer(Modifier.height(14.dp))
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    TvPlayerControlButton(
-                        icon = if (runtime.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                        label = if (runtime.isPlaying) "Pause" else "Play",
-                        focusRequester = playPauseFocusRequester,
-                        upFocusRequester = progressFocusRequester,
-                        onFocused = onInteraction,
-                        onDown = onHideControls,
-                        onClick = {
-                            runtime.togglePlayPause()
-                            onInteraction()
-                        },
-                    )
-                    if (hasEpisodes) {
-                        TvPlayerControlButton(
-                            icon = Icons.AutoMirrored.Filled.List,
-                            label = "Episodes",
-                            upFocusRequester = progressFocusRequester,
-                            onFocused = onInteraction,
-                            onDown = onHideControls,
-                            onClick = onOpenEpisodes,
-                        )
-                    }
-                    TvPlayerControlButton(
-                        icon = Icons.Default.Dns,
-                        label = "Sources",
-                        upFocusRequester = progressFocusRequester,
-                        onFocused = onInteraction,
-                        onDown = onHideControls,
-                        onClick = onOpenSources,
-                    )
-                    if (runtime.audioTracks.isNotEmpty()) {
-                        TvPlayerControlButton(
-                            icon = Icons.Default.VolumeUp,
-                            label = "Audio",
-                            upFocusRequester = progressFocusRequester,
-                            onFocused = onInteraction,
-                            onDown = onHideControls,
-                            onClick = onOpenAudio,
-                        )
-                    }
-                    if (runtime.subtitleTracks.isNotEmpty() || request.stream.subtitles.isNotEmpty()) {
-                        TvPlayerControlButton(
-                            icon = Icons.Default.ClosedCaption,
-                            label = "Subtitles",
-                            upFocusRequester = progressFocusRequester,
-                            onFocused = onInteraction,
-                            onDown = onHideControls,
-                            onClick = onOpenSubtitles,
-                        )
-                    }
-                    TvPlayerControlButton(
-                        icon = Icons.Default.Speed,
-                        label = "Speed",
-                        upFocusRequester = progressFocusRequester,
-                        onFocused = onInteraction,
-                        onDown = onHideControls,
-                        onClick = onOpenSpeed,
-                    )
-                    TvPlayerControlButton(
-                        icon = Icons.Default.AspectRatio,
-                        label = aspectMode.label,
-                        upFocusRequester = progressFocusRequester,
-                        onFocused = onInteraction,
-                        onDown = onHideControls,
-                        onClick = {
-                            onToggleAspect()
-                            onInteraction()
-                        },
-                    )
-                    if (hasNextEpisode) {
-                        TvPlayerControlButton(
-                            icon = Icons.Default.SkipNext,
-                            label = "Next",
-                            upFocusRequester = progressFocusRequester,
-                            onFocused = onInteraction,
-                            onDown = onHideControls,
-                            onClick = onPlayNext,
-                        )
-                    }
                 }
             }
         }
@@ -278,7 +306,7 @@ fun TvPlayerControls(
 @Composable
 private fun TvPlayerControlButton(
     icon: ImageVector,
-    label: String,
+    contentDescription: String,
     focusRequester: FocusRequester? = null,
     upFocusRequester: FocusRequester,
     onFocused: () -> Unit,
@@ -286,55 +314,37 @@ private fun TvPlayerControlButton(
     onClick: () -> Unit,
 ) {
     var focused by remember { mutableStateOf(false) }
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(5.dp),
-    ) {
-        IconButton(
-            onClick = onClick,
-            modifier = Modifier
-                .then(
-                    if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier,
-                )
-                .size(52.dp)
-                .onFocusChanged {
-                    focused = it.isFocused
-                    if (it.isFocused) onFocused()
-                }
-                .onKeyEvent { event ->
-                    if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
-                    when (event.key) {
-                        Key.DirectionUp -> {
-                            runCatching { upFocusRequester.requestFocus() }
-                            true
-                        }
-                        Key.DirectionDown -> {
-                            onDown()
-                            true
-                        }
-                        else -> false
+    IconButton(
+        onClick = onClick,
+        modifier = Modifier
+            .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
+            .size(48.dp)
+            .onFocusChanged {
+                focused = it.isFocused
+                if (it.isFocused) onFocused()
+            }
+            .onKeyEvent { event ->
+                if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
+                when (event.key) {
+                    Key.DirectionUp -> {
+                        runCatching { upFocusRequester.requestFocus() }
+                        true
                     }
+                    Key.DirectionDown -> {
+                        onDown()
+                        true
+                    }
+                    else -> false
                 }
-                .clip(CircleShape)
-                .background(if (focused) Color.White else Color.Black.copy(alpha = 0.56f))
-                .border(
-                    width = if (focused) 2.dp else 1.dp,
-                    color = if (focused) Color.White else Color.White.copy(alpha = 0.24f),
-                    shape = CircleShape,
-                ),
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = label,
-                tint = if (focused) Color.Black else Color.White,
-                modifier = Modifier.size(25.dp),
-            )
-        }
-        Text(
-            text = label,
-            color = if (focused) Color.White else Color.White.copy(alpha = 0.72f),
-            fontSize = 10.sp,
-            maxLines = 1,
+            }
+            .clip(CircleShape)
+            .background(if (focused) Color.White else Color.Transparent),
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = contentDescription,
+            tint = if (focused) Color.Black else Color.White,
+            modifier = Modifier.size(27.dp),
         )
     }
 }
@@ -345,15 +355,17 @@ private fun TvPlayerProgressBar(
     focusRequester: FocusRequester,
     downFocusRequester: FocusRequester,
     onInteraction: () -> Unit,
+    onUp: () -> Unit,
 ) {
     var focused by remember { mutableStateOf(false) }
     val duration = runtime.durationMs.coerceAtLeast(1L)
     val played = (runtime.positionMs.toFloat() / duration.toFloat()).coerceIn(0f, 1f)
     val buffered = (runtime.bufferedPositionMs.toFloat() / duration.toFloat()).coerceIn(0f, 1f)
 
-    Column(
+    Box(
         modifier = Modifier
             .fillMaxWidth()
+            .height(if (focused) 12.dp else 8.dp)
             .focusRequester(focusRequester)
             .onFocusChanged {
                 focused = it.isFocused
@@ -376,18 +388,23 @@ private fun TvPlayerProgressBar(
                         runCatching { downFocusRequester.requestFocus() }
                         true
                     }
+                    Key.DirectionUp -> {
+                        onUp()
+                        true
+                    }
                     else -> false
                 }
             }
             .focusable()
-            .padding(vertical = 8.dp),
+            .padding(vertical = 2.dp),
+        contentAlignment = Alignment.CenterStart,
     ) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(if (focused) 7.dp else 5.dp)
+                .height(if (focused) 8.dp else 4.dp)
                 .clip(RoundedCornerShape(99.dp))
-                .background(Color.White.copy(alpha = 0.20f)),
+                .background(Color.White.copy(alpha = 0.18f)),
         ) {
             Box(
                 modifier = Modifier

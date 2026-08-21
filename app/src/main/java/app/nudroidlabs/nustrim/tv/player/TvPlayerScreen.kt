@@ -1,5 +1,6 @@
 package app.nudroidlabs.nustrim.tv.player
 
+import android.text.format.DateFormat
 import android.view.KeyEvent as AndroidKeyEvent
 import androidx.activity.compose.BackHandler
 import androidx.annotation.OptIn
@@ -7,6 +8,8 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -42,7 +45,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.platform.LocalContext
@@ -63,6 +68,7 @@ import app.nudroidlabs.nustrim.tv.sources.TvSourceStream
 import app.nudroidlabs.nustrim.tv.sources.TvSourcesSnapshot
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.delay
+import java.util.Date
 
 @OptIn(UnstableApi::class)
 @Composable
@@ -86,6 +92,7 @@ fun TvPlayerScreen(
     val progressFocusRequester = remember { FocusRequester() }
 
     var showControls by remember(request.stableKey) { mutableStateOf(true) }
+    var showMoreActions by remember(request.stableKey) { mutableStateOf(false) }
     var activePanel by remember(request.stableKey) { mutableStateOf<TvPlayerPanel?>(null) }
     var pauseOverlay by remember(request.stableKey) { mutableStateOf(false) }
     var aspectMode by remember(request.mediaKey) { mutableStateOf(TvPlayerAspectMode.FIT) }
@@ -112,6 +119,7 @@ fun TvPlayerScreen(
 
     fun revealControls() {
         pauseOverlay = false
+        showMoreActions = false
         showControls = true
         interact()
     }
@@ -139,6 +147,7 @@ fun TvPlayerScreen(
 
     fun openPanel(panel: TvPlayerPanel) {
         pauseOverlay = false
+        showMoreActions = false
         showControls = false
         activePanel = panel
         interact()
@@ -162,6 +171,11 @@ fun TvPlayerScreen(
         pauseOverlay -> {
             pauseOverlay = false
             showControls = true
+            interact()
+            true
+        }
+        showMoreActions -> {
+            showMoreActions = false
             interact()
             true
         }
@@ -201,6 +215,7 @@ fun TvPlayerScreen(
             return@LaunchedEffect
         }
         delay(CONTROL_HIDE_MS)
+        showMoreActions = false
         showControls = false
         if (!runtime.isPlaying && runtime.readyOrEnded && !runtime.ended) {
             pauseOverlay = true
@@ -214,7 +229,7 @@ fun TvPlayerScreen(
     }
 
     LaunchedEffect(showControls, activePanel, runtime.ended) {
-        delay(120)
+        delay(250)
         when {
             runtime.ended -> Unit
             showControls && activePanel == null -> runCatching { playPauseFocusRequester.requestFocus() }
@@ -361,12 +376,18 @@ fun TvPlayerScreen(
             hasEpisodes = episodeCatalogue.episodes.isNotEmpty() && request.episode != null,
             hasNextEpisode = nextEpisode != null,
             aspectMode = aspectMode,
+            showMoreActions = showMoreActions,
             onInteraction = ::interact,
             onHideControls = {
+                showMoreActions = false
                 showControls = false
                 if (!runtime.isPlaying && runtime.readyOrEnded && !runtime.ended) {
                     pauseOverlay = true
                 }
+            },
+            onToggleMoreActions = {
+                showMoreActions = !showMoreActions
+                interact()
             },
             onOpenEpisodes = { openPanel(TvPlayerPanel.EPISODES) },
             onOpenSources = { openPanel(TvPlayerPanel.SOURCES) },
@@ -419,6 +440,7 @@ fun TvPlayerScreen(
                 onSelect = { track ->
                     runtime.selectAudio(track)
                     activePanel = null
+                    showMoreActions = false
                     showControls = true
                     interact()
                 },
@@ -429,12 +451,14 @@ fun TvPlayerScreen(
                 onDisable = {
                     runtime.selectSubtitle(null)
                     activePanel = null
+                    showMoreActions = false
                     showControls = true
                     interact()
                 },
                 onSelect = { track ->
                     runtime.selectSubtitle(track)
                     activePanel = null
+                    showMoreActions = false
                     showControls = true
                     interact()
                 },
@@ -445,6 +469,7 @@ fun TvPlayerScreen(
                 onSelect = { speed ->
                     runtime.setSpeed(speed)
                     activePanel = null
+                    showMoreActions = false
                     showControls = true
                     interact()
                 },
@@ -474,52 +499,52 @@ private fun TvPlayerLoadingOverlay(request: TvPlaybackRequest) {
         AsyncImage(
             model = request.media.backgroundUrl.ifBlank { request.media.posterUrl },
             contentDescription = null,
+            contentScale = ContentScale.Crop,
             modifier = Modifier.fillMaxSize(),
         )
         Box(
             Modifier
                 .fillMaxSize()
                 .background(
-                    Brush.horizontalGradient(
-                        listOf(Color.Black.copy(alpha = 0.92f), Color.Black.copy(alpha = 0.54f), Color.Black.copy(alpha = 0.76f)),
+                    Brush.verticalGradient(
+                        colorStops = arrayOf(
+                            0f to Color.Black.copy(alpha = 0.32f),
+                            0.36f to Color.Black.copy(alpha = 0.58f),
+                            0.72f to Color.Black.copy(alpha = 0.80f),
+                            1f to Color.Black.copy(alpha = 0.92f),
+                        ),
                     ),
                 ),
         )
         Column(
-            modifier = Modifier
-                .align(Alignment.CenterStart)
-                .width(520.dp)
-                .padding(start = 54.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+            modifier = Modifier.align(Alignment.Center),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(18.dp),
         ) {
             request.media.logoUrl.takeIf { it.isNotBlank() }?.let { logo ->
                 AsyncImage(
                     model = logo,
                     contentDescription = request.media.title,
-                    modifier = Modifier.width(260.dp).height(96.dp),
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.width(320.dp).height(160.dp),
                 )
             } ?: Text(
                 text = request.media.title,
                 color = Color.White,
-                style = MaterialTheme.typography.displaySmall,
-                fontWeight = FontWeight.Bold,
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 2,
             )
-            request.episode?.let { episode ->
-                Text(
-                    text = buildString {
-                        val season = episode.season
-                        val number = episode.episode
-                        if (season != null && number != null) append("S${season}E${number} · ")
-                        append(episode.title)
-                    },
-                    color = Color.White.copy(alpha = 0.78f),
-                    fontSize = 15.sp,
-                )
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                CircularProgressIndicator(color = Color.White, modifier = Modifier.size(28.dp), strokeWidth = 3.dp)
-                Text("Loading stream", color = Color.White.copy(alpha = 0.78f), fontSize = 13.sp)
-            }
+            CircularProgressIndicator(
+                color = Color.White,
+                modifier = Modifier.size(34.dp),
+                strokeWidth = 3.dp,
+            )
+            Text(
+                text = "Loading stream",
+                color = Color.White.copy(alpha = 0.74f),
+                style = MaterialTheme.typography.bodyMedium,
+            )
         }
     }
 }
@@ -529,55 +554,100 @@ private fun TvPauseOverlay(request: TvPlaybackRequest) {
     Box(
         Modifier
             .fillMaxSize()
-            .background(
-                Brush.horizontalGradient(
-                    listOf(Color.Black.copy(alpha = 0.94f), Color.Black.copy(alpha = 0.65f), Color.Transparent),
-                ),
-            ),
+            .background(Color.Black.copy(alpha = 0.74f)),
     ) {
+        TvPauseClock(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = 40.dp, end = 54.dp),
+        )
         Column(
             modifier = Modifier
-                .align(Alignment.CenterStart)
-                .width(560.dp)
-                .padding(start = 54.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+                .align(Alignment.BottomStart)
+                .fillMaxWidth(0.72f)
+                .padding(start = 64.dp, end = 42.dp, bottom = 120.dp),
         ) {
-            request.media.logoUrl.takeIf { it.isNotBlank() }?.let { logo ->
-                AsyncImage(model = logo, contentDescription = request.media.title, modifier = Modifier.width(260.dp).height(92.dp))
-            } ?: Text(
-                request.media.title,
-                color = Color.White,
-                style = MaterialTheme.typography.displaySmall,
-                fontWeight = FontWeight.Bold,
-            )
-            request.episode?.let { episode ->
-                Text(
-                    text = buildString {
-                        val season = episode.season
-                        val number = episode.episode
-                        if (season != null && number != null) append("S${season}E${number} · ")
-                        append(episode.title)
-                    },
-                    color = Color.White,
-                    fontWeight = FontWeight.SemiBold,
-                )
-            }
-            request.media.description.takeIf { it.isNotBlank() }?.let {
-                Text(
-                    text = it,
-                    color = Color.White.copy(alpha = 0.70f),
-                    maxLines = 4,
-                    overflow = TextOverflow.Ellipsis,
-                    lineHeight = 20.sp,
-                )
-            }
             Text(
-                text = "Press OK to resume",
-                color = Color.White.copy(alpha = 0.52f),
-                fontSize = 12.sp,
+                text = "You are watching",
+                color = Color.White.copy(alpha = 0.58f),
+                style = MaterialTheme.typography.bodyLarge,
             )
+            Spacer(Modifier.height(14.dp))
+            request.media.logoUrl.takeIf { it.isNotBlank() }?.let { logo ->
+                AsyncImage(
+                    model = logo,
+                    contentDescription = request.media.title,
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.width(320.dp).height(96.dp),
+                )
+            } ?: Text(
+                text = request.media.title,
+                color = Color.White,
+                style = MaterialTheme.typography.headlineLarge,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            val release = request.media.releaseInfo.trim()
+            val episode = request.episode
+            val coordinate = episode?.let { item ->
+                val season = item.season
+                val number = item.episode
+                if (season != null && number != null) "S${season}E${number}" else ""
+            }.orEmpty()
+            if (release.isNotBlank() || coordinate.isNotBlank()) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = listOf(release, coordinate).filter { it.isNotBlank() }.joinToString(" · "),
+                    color = Color.White.copy(alpha = 0.76f),
+                    style = MaterialTheme.typography.bodyLarge,
+                )
+            }
+            episode?.title?.takeIf { it.isNotBlank() }?.let { title ->
+                Spacer(Modifier.height(14.dp))
+                Text(
+                    text = title,
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleLarge,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            request.media.description.takeIf { it.isNotBlank() }?.let { description ->
+                Spacer(Modifier.height(18.dp))
+                Text(
+                    text = description,
+                    color = Color.White.copy(alpha = 0.72f),
+                    style = MaterialTheme.typography.bodyLarge,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                    lineHeight = 22.sp,
+                )
+            }
         }
     }
+}
+
+@Composable
+private fun TvPauseClock(modifier: Modifier = Modifier) {
+    var nowMillis by remember { mutableStateOf(System.currentTimeMillis()) }
+    val context = LocalContext.current
+    val formatter = remember(context) { DateFormat.getTimeFormat(context) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            val current = System.currentTimeMillis()
+            nowMillis = current
+            delay((60_000L - (current % 60_000L)).coerceAtLeast(1_000L))
+        }
+    }
+    Text(
+        text = formatter.format(Date(nowMillis)),
+        color = Color.White.copy(alpha = 0.94f),
+        style = MaterialTheme.typography.headlineSmall,
+        fontSize = 34.sp,
+        fontWeight = FontWeight.Normal,
+        modifier = modifier,
+    )
 }
 
 @Composable
@@ -665,70 +735,104 @@ private fun TvPostPlayOverlay(
     val nextRequester = remember { FocusRequester() }
     val backRequester = remember { FocusRequester() }
     LaunchedEffect(nextEpisode?.identity?.stableKey) {
-        delay(160)
+        delay(180)
         if (nextEpisode != null) nextRequester.requestFocus() else backRequester.requestFocus()
     }
 
-    Box(
-        Modifier
-            .fillMaxSize()
-            .background(
-                Brush.horizontalGradient(
-                    listOf(Color.Black.copy(alpha = 0.88f), Color.Black.copy(alpha = 0.70f), Color.Black.copy(alpha = 0.82f)),
-                ),
-            ),
-    ) {
-        Column(
-            modifier = Modifier
-                .align(Alignment.CenterEnd)
-                .width(560.dp)
-                .padding(end = 54.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            Text(
-                text = if (nextEpisode != null) "Up next" else "Playback finished",
-                color = Color.White.copy(alpha = 0.72f),
-                fontSize = 14.sp,
-            )
-            if (nextEpisode != null) {
+    Box(Modifier.fillMaxSize()) {
+        if (nextEpisode != null) {
+            var focused by remember { mutableStateOf(false) }
+            Row(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 26.dp, bottom = 30.dp)
+                    .width(420.dp)
+                    .focusRequester(nextRequester)
+                    .onFocusChanged { focused = it.isFocused }
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(Color(0xE3191919))
+                    .border(
+                        if (focused) 2.dp else 1.dp,
+                        if (focused) Color.White else Color.White.copy(alpha = 0.16f),
+                        RoundedCornerShape(14.dp),
+                    )
+                    .clickable(onClick = onNext)
+                    .focusable()
+                    .padding(horizontal = 10.dp, vertical = 9.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 AsyncImage(
                     model = nextEpisode.thumbnailUrl,
                     contentDescription = null,
-                    modifier = Modifier.fillMaxWidth().height(220.dp).clip(RoundedCornerShape(18.dp)),
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .width(118.dp)
+                        .height(70.dp)
+                        .clip(RoundedCornerShape(10.dp)),
                 )
+                Spacer(Modifier.width(10.dp))
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.Center) {
+                    Text(
+                        text = "Next episode",
+                        color = Color.White.copy(alpha = 0.78f),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium,
+                    )
+                    Spacer(Modifier.height(3.dp))
+                    Text(
+                        text = "${nextEpisode.coordinateLabel} · ${nextEpisode.title}",
+                        color = Color.White,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = "Press OK to play",
+                        color = Color.White.copy(alpha = 0.58f),
+                        fontSize = 11.sp,
+                    )
+                }
+                Icon(
+                    imageVector = Icons.Default.PlayArrow,
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier.size(22.dp),
+                )
+            }
+        } else {
+            var focused by remember { mutableStateOf(false) }
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 26.dp, bottom = 30.dp)
+                    .width(360.dp)
+                    .focusRequester(backRequester)
+                    .onFocusChanged { focused = it.isFocused }
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(Color(0xE3191919))
+                    .border(
+                        if (focused) 2.dp else 1.dp,
+                        if (focused) Color.White else Color.White.copy(alpha = 0.16f),
+                        RoundedCornerShape(14.dp),
+                    )
+                    .clickable(onClick = onBackToDetails)
+                    .focusable()
+                    .padding(16.dp),
+            ) {
+                Text("Playback finished", color = Color.White.copy(alpha = 0.76f), fontSize = 12.sp)
+                Spacer(Modifier.height(5.dp))
                 Text(
-                    text = "${nextEpisode.coordinateLabel} · ${nextEpisode.title}",
+                    request.media.title,
                     color = Color.White,
-                    style = MaterialTheme.typography.headlineSmall,
+                    style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
-                    maxLines = 2,
+                    maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                nextEpisode.overview.takeIf { it.isNotBlank() }?.let {
-                    Text(it, color = Color.White.copy(alpha = 0.68f), maxLines = 3, overflow = TextOverflow.Ellipsis)
-                }
-            } else {
-                Text(request.media.title, color = Color.White, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                if (nextEpisode != null) {
-                    Button(
-                        onClick = onNext,
-                        modifier = Modifier.focusRequester(nextRequester),
-                        colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.Black),
-                    ) {
-                        Icon(Icons.Default.PlayArrow, contentDescription = null)
-                        Spacer(Modifier.width(8.dp))
-                        Text("Play next")
-                    }
-                }
-                Button(
-                    onClick = onBackToDetails,
-                    modifier = Modifier.focusRequester(backRequester),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color.White.copy(alpha = 0.14f), contentColor = Color.White),
-                ) {
-                    Text("Back to details")
-                }
+                Spacer(Modifier.height(5.dp))
+                Text("Press OK to return to details", color = Color.White.copy(alpha = 0.58f), fontSize = 11.sp)
             }
         }
     }
@@ -741,4 +845,4 @@ private fun seekStepForRepeat(repeatCount: Int): Long = when {
     else -> 10_000L
 }
 
-private const val CONTROL_HIDE_MS = 4_500L
+private const val CONTROL_HIDE_MS = 5_000L
