@@ -21,4 +21,16 @@ data class TvPlaybackRequest(
         append('/')
         append(stream.url.hashCode().toString(16))
     }
+
+    val playerTitle: String = buildString {
+        append(media.title)
+        val season = episode?.season
+        val number = episode?.episode
+        if (season != null && number != null) {
+            append(" · S")
+            append(season)
+            append('E')
+            append(number)
+        }
+    }
 }

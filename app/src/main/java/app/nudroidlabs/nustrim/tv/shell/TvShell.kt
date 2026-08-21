@@ -27,7 +27,6 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.unit.dp
-import app.nudroidlabs.nustrim.tv.common.TvFoundationScreen
 import app.nudroidlabs.nustrim.tv.details.TvDetailsEntry
 import app.nudroidlabs.nustrim.tv.focus.TvFocusRegistry
 import app.nudroidlabs.nustrim.tv.home.TvHomeEntry
@@ -41,6 +40,7 @@ import app.nudroidlabs.nustrim.tv.navigation.resolveTvBackAction
 import app.nudroidlabs.nustrim.tv.search.TvSearchEntry
 import app.nudroidlabs.nustrim.tv.sources.TvSourcesEntry
 import app.nudroidlabs.nustrim.tv.player.TvPlaybackRequest
+import app.nudroidlabs.nustrim.tv.player.TvPlayerEntry
 import app.nudroidlabs.nustrim.tv.settings.TvSettingsEntry
 import app.nudroidlabs.nustrim.tv.theme.TvTokens
 
@@ -271,16 +271,30 @@ private fun TvRouteContent(
             modifier = rootModifier,
         )
 
-        is TvRoute.Player -> TvFoundationScreen(
-            title = buildString {
-                append("Player foundation • ")
-                append(route.request.media.title)
-                append(" • ")
-                append(route.request.stream.name)
+        is TvRoute.Player -> TvPlayerEntry(
+            route = route,
+            onExitPlayer = {
+                navigator.pop()
             },
-            scopeKey = route.focusScope,
-            focusRegistry = focusRegistry,
-            focusRequestToken = focusRequestToken,
+            onReturnToDetails = {
+                navigator.pop()
+                navigator.pop()
+            },
+            onOpenEpisode = { episode ->
+                navigator.pop()
+                navigator.replace(
+                    TvRoute.Sources(
+                        mediaKey = route.request.mediaKey,
+                        sourceUrl = route.request.sourceUrl,
+                        media = route.request.media,
+                        episode = episode.providerEpisode,
+                        returnFocus = TvReturnFocus(
+                            scopeKey = "details/${route.request.mediaKey}",
+                            anchorKey = "details:episode:${episode.identity.stableKey}",
+                        ),
+                    ),
+                )
+            },
             modifier = rootModifier,
         )
     }
