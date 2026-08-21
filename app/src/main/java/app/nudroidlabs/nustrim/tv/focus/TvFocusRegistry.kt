@@ -15,28 +15,26 @@ private data class TvFocusAddress(
     val anchorKey: String,
 )
 
+private data class TvHomeFocusPosition(
+    val rowKey: String,
+    val rowIndex: Int,
+    val itemIndex: Int,
+)
+
 @Stable
 class TvFocusRegistry {
     private val requesters = mutableMapOf<TvFocusAddress, FocusRequester>()
     private val lastFocusedAnchor = mutableStateMapOf<String, String>()
+    private val homePositions = mutableMapOf<String, TvHomeFocusPosition>()
+    private val homeRowItemPositions = mutableMapOf<Pair<String, String>, Int>()
 
-    fun register(
-        scopeKey: String,
-        anchorKey: String,
-        requester: FocusRequester,
-    ) {
+    fun register(scopeKey: String, anchorKey: String, requester: FocusRequester) {
         requesters[TvFocusAddress(scopeKey, anchorKey)] = requester
     }
 
-    fun unregister(
-        scopeKey: String,
-        anchorKey: String,
-        requester: FocusRequester,
-    ) {
+    fun unregister(scopeKey: String, anchorKey: String, requester: FocusRequester) {
         val address = TvFocusAddress(scopeKey, anchorKey)
-        if (requesters[address] === requester) {
-            requesters.remove(address)
-        }
+        if (requesters[address] === requester) requesters.remove(address)
     }
 
     fun rememberFocused(scopeKey: String, anchorKey: String) {
@@ -45,10 +43,22 @@ class TvFocusRegistry {
 
     fun lastFocused(scopeKey: String): String? = lastFocusedAnchor[scopeKey]
 
-    fun requestFocus(
+    fun rememberHomePosition(
         scopeKey: String,
-        fallbackAnchorKey: String? = null,
-    ): Boolean {
+        rowKey: String,
+        rowIndex: Int,
+        itemIndex: Int,
+    ) {
+        homePositions[scopeKey] = TvHomeFocusPosition(rowKey, rowIndex, itemIndex)
+        homeRowItemPositions[scopeKey to rowKey] = itemIndex
+    }
+
+    fun homeRowIndex(scopeKey: String): Int = homePositions[scopeKey]?.rowIndex ?: 0
+
+    fun rowItemIndex(scopeKey: String, rowKey: String): Int =
+        homeRowItemPositions[scopeKey to rowKey] ?: 0
+
+    fun requestFocus(scopeKey: String, fallbackAnchorKey: String? = null): Boolean {
         val remembered = lastFocusedAnchor[scopeKey]
         val preferred = remembered?.let { requesters[TvFocusAddress(scopeKey, it)] }
         val fallback = fallbackAnchorKey?.let { requesters[TvFocusAddress(scopeKey, it)] }
@@ -79,9 +89,7 @@ fun rememberTvFocusAnchor(
 
     DisposableEffect(registry, scopeKey, anchorKey, requester) {
         registry.register(scopeKey, anchorKey, requester)
-        onDispose {
-            registry.unregister(scopeKey, anchorKey, requester)
-        }
+        onDispose { registry.unregister(scopeKey, anchorKey, requester) }
     }
 
     return remember(registry, scopeKey, anchorKey, requester) {
@@ -94,6 +102,4 @@ fun rememberTvFocusAnchor(
 
 fun Modifier.tvFocusAnchor(anchor: TvFocusAnchor): Modifier =
     focusRequester(anchor.requester)
-        .onFocusChanged { state ->
-            if (state.isFocused) anchor.onFocused()
-        }
+        .onFocusChanged { state -> if (state.isFocused) anchor.onFocused() }

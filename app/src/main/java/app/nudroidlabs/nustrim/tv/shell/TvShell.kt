@@ -34,6 +34,7 @@ import app.nudroidlabs.nustrim.tv.library.TvLibraryEntry
 import app.nudroidlabs.nustrim.tv.navigation.TvBackAction
 import app.nudroidlabs.nustrim.tv.navigation.TvNavigator
 import app.nudroidlabs.nustrim.tv.navigation.TvRootDestination
+import app.nudroidlabs.nustrim.tv.navigation.TvReturnFocus
 import app.nudroidlabs.nustrim.tv.navigation.TvRoute
 import app.nudroidlabs.nustrim.tv.navigation.resolveTvBackAction
 import app.nudroidlabs.nustrim.tv.search.TvSearchEntry
@@ -110,6 +111,7 @@ fun TvShell(
                 focusRequestToken = contentFocusRequestToken,
                 focusManager = focusManager,
                 sidebarOpen = sidebarOpen,
+                navigator = navigator,
                 onOpenSidebar = ::openSidebar,
                 modifier = Modifier
                     .fillMaxSize()
@@ -143,6 +145,7 @@ private fun TvRouteContent(
     focusRequestToken: Int,
     focusManager: FocusManager,
     sidebarOpen: Boolean,
+    navigator: TvNavigator,
     onOpenSidebar: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -167,6 +170,21 @@ private fun TvRouteContent(
                 scopeKey = route.focusScope,
                 focusRegistry = focusRegistry,
                 focusRequestToken = focusRequestToken,
+                onOpen = { media, rowIndex, itemIndex ->
+                    navigator.push(
+                        TvRoute.Details(
+                            contentKey = media.stableKey,
+                            sourceUrl = media.sourceUrl,
+                            mediaId = media.item.id,
+                            contentType = media.item.type.name,
+                            returnFocus = TvReturnFocus(
+                                scopeKey = route.focusScope,
+                                row = rowIndex,
+                                column = itemIndex,
+                            ),
+                        ),
+                    )
+                },
                 modifier = rootModifier,
             )
 

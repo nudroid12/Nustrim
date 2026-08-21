@@ -1,6 +1,8 @@
 generation=cleanroom-v1
 reference=nuvio-tv-0.8.6-beta
-subsystem=1-shell-navigation-focus
+subsystem=2-home-modern
 status=build-candidate
 preserve=source-provider-engine,stream-resolver,playback-engine,mobile-ui
+home=cleanroom-modern-catalogues
+continue-watching=deferred-untrusted-progress-rebuild
 legacy-tv-source=replaced

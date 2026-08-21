@@ -27,6 +27,8 @@ sealed interface TvRoute {
 
     data class Details(
         val contentKey: String,
+        val sourceUrl: String,
+        val mediaId: String,
         val contentType: String? = null,
         val returnFocus: TvReturnFocus? = null,
     ) : TvRoute {
