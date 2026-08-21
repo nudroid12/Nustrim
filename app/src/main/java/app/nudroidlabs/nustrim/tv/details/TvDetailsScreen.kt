@@ -172,8 +172,8 @@ private fun DetailsReady(
                         selectedIndex = selectedSeasonIndex,
                         scopeKey = scopeKey,
                         focusRegistry = focusRegistry,
-                        rememberedEpisodeKey = selectedSeason?.let { season ->
-                            memory.lastEpisodeBySeason[season.stableKey]
+                        rememberedEpisodeKeyForSeason = { seasonKey ->
+                            memory.lastEpisodeBySeason[seasonKey]
                         },
                         onSeasonFocused = { pendingSeasonIndex = it },
                         onSeasonSelected = { index ->
@@ -397,7 +397,7 @@ private fun SeasonTabs(
     selectedIndex: Int,
     scopeKey: String,
     focusRegistry: TvFocusRegistry,
-    rememberedEpisodeKey: String?,
+    rememberedEpisodeKeyForSeason: (String) -> String?,
     onSeasonFocused: (Int) -> Unit,
     onSeasonSelected: (Int) -> Unit,
 ) {
@@ -415,10 +415,13 @@ private fun SeasonTabs(
                 selected = index == selectedIndex,
                 scopeKey = scopeKey,
                 focusRegistry = focusRegistry,
-                downAnchorKey = if (index == selectedIndex) {
-                    val target = season.episodes.firstOrNull { it.identity.stableKey == rememberedEpisodeKey }
-                        ?: season.episodes.firstOrNull()
-                    target?.let { episodeAnchorKey(it.identity.stableKey) }
+                downAnchorResolver = if (index == selectedIndex) {
+                    {
+                        val rememberedEpisodeKey = rememberedEpisodeKeyForSeason(season.stableKey)
+                        val target = season.episodes.firstOrNull { it.identity.stableKey == rememberedEpisodeKey }
+                            ?: season.episodes.firstOrNull()
+                        target?.let { episodeAnchorKey(it.identity.stableKey) }
+                    }
                 } else {
                     null
                 },
@@ -435,7 +438,7 @@ private fun SeasonTab(
     selected: Boolean,
     scopeKey: String,
     focusRegistry: TvFocusRegistry,
-    downAnchorKey: String?,
+    downAnchorResolver: (() -> String?)?,
     onFocused: () -> Unit,
     onClick: () -> Unit,
 ) {
@@ -462,7 +465,7 @@ private fun SeasonTab(
                 if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
                 when (event.key) {
                     Key.DirectionDown -> {
-                        val target = downAnchorKey ?: return@onKeyEvent false
+                        val target = downAnchorResolver?.invoke() ?: return@onKeyEvent false
                         focusRegistry.requestAnchor(scopeKey, target)
                     }
                     Key.DirectionCenter, Key.Enter -> {
@@ -584,7 +587,12 @@ private fun EpisodeCard(
             .onKeyEvent { event ->
                 if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
                 when (event.key) {
-                    Key.DirectionUp -> focusRegistry.requestAnchor(scopeKey, upAnchorKey)
+                    Key.DirectionUp -> {
+                        // Commit the exact episode under the cursor immediately before focus leaves
+                        // the row. The season tab resolves its Down target from this live memory.
+                        onFocused()
+                        focusRegistry.requestAnchor(scopeKey, upAnchorKey)
+                    }
                     Key.DirectionCenter, Key.Enter -> {
                         onOpen()
                         true
