@@ -194,6 +194,19 @@ private fun TvRouteContent(
                 scopeKey = route.focusScope,
                 focusRegistry = focusRegistry,
                 focusRequestToken = focusRequestToken,
+                onOpen = { media, _, _ ->
+                    navigator.push(
+                        TvRoute.Details(
+                            contentKey = media.stableKey,
+                            sourceUrl = media.sourceUrl,
+                            media = media.item,
+                            returnFocus = TvReturnFocus(
+                                scopeKey = route.focusScope,
+                                anchorKey = focusRegistry.lastFocused(route.focusScope),
+                            ),
+                        ),
+                    )
+                },
                 modifier = rootModifier,
             )
 
