@@ -20,6 +20,7 @@ class TvPlayerRuntime(
     context: Context,
     request: TvPlaybackRequest,
     startPositionMs: Long,
+    preferredSubtitleLanguage: String = "",
 ) {
     val player: ExoPlayer = PlayerFactory.create(
         context = context.applicationContext,
@@ -75,6 +76,15 @@ class TvPlayerRuntime(
     }
 
     init {
+        canonicalLanguageCode(preferredSubtitleLanguage)
+            .takeIf { it.isNotBlank() }
+            ?.let { language ->
+                player.trackSelectionParameters = player.trackSelectionParameters
+                    .buildUpon()
+                    .setPreferredTextLanguage(language)
+                    .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                    .build()
+            }
         player.addListener(listener)
         isPlaying = player.isPlaying
         playbackState = player.playbackState
