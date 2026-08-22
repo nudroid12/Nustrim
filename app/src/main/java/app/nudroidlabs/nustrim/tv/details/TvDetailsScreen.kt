@@ -1,6 +1,5 @@
 package app.nudroidlabs.nustrim.tv.details
 
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
@@ -63,6 +62,8 @@ import app.nudroidlabs.nustrim.tv.focus.TvFocusRegistry
 import app.nudroidlabs.nustrim.tv.focus.TvFocusRestoreEffect
 import app.nudroidlabs.nustrim.tv.focus.rememberTvFocusAnchor
 import app.nudroidlabs.nustrim.tv.focus.tvFocusAnchor
+import app.nudroidlabs.nustrim.tv.theme.TvTokens
+import app.nudroidlabs.nustrim.tv.theme.animateTvFocusScale
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.delay
 
@@ -365,7 +366,7 @@ private fun SaveButton(
 ) {
     val anchor = rememberTvFocusAnchor(focusRegistry, scopeKey, HERO_SAVE_ANCHOR)
     var focused by remember { mutableStateOf(false) }
-    val scale by animateFloatAsState(if (focused) 1.035f else 1f, label = "details-save-scale")
+    val scale = animateTvFocusScale(focused = focused, label = "details-save-scale")
     val background = if (focused) Color.White else Color(0xD9292B31)
     val foreground = if (focused) Color(0xFF101114) else Color.White
     Row(
@@ -411,7 +412,7 @@ private fun PlayButton(
 ) {
     val anchor = rememberTvFocusAnchor(focusRegistry, scopeKey, HERO_PLAY_ANCHOR)
     var focused by remember { mutableStateOf(false) }
-    val scale by animateFloatAsState(if (focused) 1.035f else 1f, label = "details-play-scale")
+    val scale = animateTvFocusScale(focused = focused, label = "details-play-scale")
     Row(
         modifier = Modifier
             .scale(scale)
@@ -636,7 +637,11 @@ private fun EpisodeCard(
     val anchorKey = episodeAnchorKey(episode.identity.stableKey)
     val anchor = rememberTvFocusAnchor(focusRegistry, scopeKey, anchorKey)
     var focused by remember(anchorKey) { mutableStateOf(false) }
-    val scale by animateFloatAsState(if (focused) 1.03f else 1f, label = "details-episode-scale")
+    val scale = animateTvFocusScale(
+        focused = focused,
+        focusedScale = TvTokens.SubtleFocusScale,
+        label = "details-episode-scale",
+    )
     Box(
         modifier = Modifier
             .width(metrics.width)

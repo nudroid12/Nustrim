@@ -1,6 +1,5 @@
 package app.nudroidlabs.nustrim.tv.sources
 
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
@@ -59,6 +58,8 @@ import app.nudroidlabs.nustrim.tv.focus.TvFocusRegistry
 import app.nudroidlabs.nustrim.tv.focus.TvFocusRestoreEffect
 import app.nudroidlabs.nustrim.tv.focus.rememberTvFocusAnchor
 import app.nudroidlabs.nustrim.tv.focus.tvFocusAnchor
+import app.nudroidlabs.nustrim.tv.theme.TvTokens
+import app.nudroidlabs.nustrim.tv.theme.animateTvFocusScale
 import coil3.compose.AsyncImage
 
 @Composable
@@ -565,7 +566,11 @@ private fun SourceStreamCard(
 ) {
     val anchor = rememberTvFocusAnchor(focusRegistry, scopeKey, streamAnchorKey(stream.stableKey))
     var focused by remember(stream.stableKey) { mutableStateOf(false) }
-    val scale by animateFloatAsState(if (focused) 1.012f else 1f, label = "source-stream-scale")
+    val scale = animateTvFocusScale(
+        focused = focused,
+        focusedScale = TvTokens.SubtleFocusScale,
+        label = "source-stream-scale",
+    )
     val background = when {
         focused -> Color(0xFFF0F0F2)
         else -> Color(0xC51A1C21)

@@ -1,7 +1,7 @@
 package app.nudroidlabs.nustrim.tv.shell
 
 import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.focusable
@@ -38,7 +38,6 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -49,7 +48,9 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import app.nudroidlabs.nustrim.tv.navigation.TvRootDestination
+import app.nudroidlabs.nustrim.tv.theme.TvColors
 import app.nudroidlabs.nustrim.tv.theme.TvTokens
+import app.nudroidlabs.nustrim.tv.theme.animateTvFocusScale
 
 private data class SidebarItem(
     val destination: TvRootDestination,
@@ -75,15 +76,18 @@ fun TvSidebar(
 ) {
     val width by animateDpAsState(
         targetValue = if (expanded) TvTokens.SidebarExpandedWidth else TvTokens.SidebarCollapsedWidth,
+        animationSpec = tween(TvTokens.MediumMotionMillis),
         label = "tv-sidebar-width",
     )
     val requesters = remember { TvRootDestination.entries.associateWith { FocusRequester() } }
 
     LaunchedEffect(expanded, selected, focusRequestToken) {
         if (!expanded) return@LaunchedEffect
-        withFrameNanos { }
-        withFrameNanos { }
-        runCatching { requesters[selected]?.requestFocus() }
+        repeat(TvTokens.FocusRestoreAttempts) {
+            withFrameNanos { }
+            val restored = runCatching { requesters[selected]?.requestFocus() == true }.getOrDefault(false)
+            if (restored) return@LaunchedEffect
+        }
     }
 
     Box(
@@ -91,7 +95,7 @@ fun TvSidebar(
             .width(width)
             .fillMaxHeight()
             .background(
-                if (expanded) Color(0xFA0A0B0E) else Color(0xF20A0B0E),
+                if (expanded) TvColors.SidebarExpanded else TvColors.SidebarCollapsed,
             )
             .onPreviewKeyEvent { event ->
                 if (
@@ -149,8 +153,8 @@ private fun SidebarNavigationItem(
     onSelect: () -> Unit,
 ) {
     var focused by remember { mutableStateOf(false) }
-    val scale by animateFloatAsState(
-        targetValue = if (focused) 1.035f else 1f,
+    val scale = animateTvFocusScale(
+        focused = focused,
         label = "sidebar-item-scale",
     )
 
@@ -161,9 +165,9 @@ private fun SidebarNavigationItem(
             .scale(scale)
             .background(
                 color = when {
-                    focused -> Color(0xFFF1F1F3)
-                    selected && expanded -> Color(0xFF24262D)
-                    else -> Color.Transparent
+                    focused -> TvColors.FocusSurface
+                    selected && expanded -> TvColors.SurfaceSelected
+                    else -> androidx.compose.ui.graphics.Color.Transparent
                 },
                 shape = RoundedCornerShape(10.dp),
             )
@@ -189,13 +193,13 @@ private fun SidebarNavigationItem(
             imageVector = item.icon,
             contentDescription = item.label,
             modifier = Modifier.size(24.dp),
-            tint = if (focused) Color(0xFF111216) else MaterialTheme.colorScheme.onSurface,
+            tint = if (focused) TvColors.TextInverse else MaterialTheme.colorScheme.onSurface,
         )
         if (expanded) {
             Spacer(Modifier.width(16.dp))
             Text(
                 text = item.label,
-                color = if (focused) Color(0xFF111216) else MaterialTheme.colorScheme.onSurface,
+                color = if (focused) TvColors.TextInverse else MaterialTheme.colorScheme.onSurface,
                 fontWeight = if (selected || focused) FontWeight.SemiBold else FontWeight.Normal,
             )
         }

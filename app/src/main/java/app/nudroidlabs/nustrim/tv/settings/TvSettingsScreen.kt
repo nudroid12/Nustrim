@@ -1,6 +1,5 @@
 package app.nudroidlabs.nustrim.tv.settings
 
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -60,6 +59,8 @@ import app.nudroidlabs.nustrim.tv.focus.TvFocusRegistry
 import app.nudroidlabs.nustrim.tv.focus.TvFocusRestoreEffect
 import app.nudroidlabs.nustrim.tv.focus.rememberTvFocusAnchor
 import app.nudroidlabs.nustrim.tv.focus.tvFocusAnchor
+import app.nudroidlabs.nustrim.tv.theme.TvTokens
+import app.nudroidlabs.nustrim.tv.theme.animateTvFocusScale
 import app.nudroidlabs.nustrim.ui.SubtitleDisplayMode
 
 @Composable
@@ -530,7 +531,11 @@ private fun SettingsActionRow(
 ) {
     val anchor = rememberTvFocusAnchor(focusRegistry, scopeKey, anchorKey)
     var focused by remember { mutableStateOf(false) }
-    val scale by animateFloatAsState(if (focused) 1.012f else 1f, label = "settings-row-scale")
+    val scale = animateTvFocusScale(
+        focused = focused,
+        focusedScale = TvTokens.SubtleFocusScale,
+        label = "settings-row-scale",
+    )
     val foreground = when {
         !enabled -> Color(0xFF71747C)
         focused -> Color(0xFF101114)

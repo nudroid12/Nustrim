@@ -60,21 +60,13 @@ class TvFocusRegistry {
 
     fun requestAnchor(scopeKey: String, anchorKey: String): Boolean {
         val requester = requesters[TvFocusAddress(scopeKey, anchorKey)] ?: return false
-        return runCatching {
-            requester.requestFocus()
-            true
-        }.getOrDefault(false)
+        return runCatching { requester.requestFocus() }.getOrDefault(false)
     }
 
     fun requestFocus(scopeKey: String, fallbackAnchorKey: String? = null): Boolean {
         val remembered = lastFocusedAnchor[scopeKey]
-        val preferred = remembered?.let { requesters[TvFocusAddress(scopeKey, it)] }
-        val fallback = fallbackAnchorKey?.let { requesters[TvFocusAddress(scopeKey, it)] }
-        val requester = preferred ?: fallback ?: return false
-        return runCatching {
-            requester.requestFocus()
-            true
-        }.getOrDefault(false)
+        val candidates = listOfNotNull(remembered, fallbackAnchorKey).distinct()
+        return candidates.any { anchorKey -> requestAnchor(scopeKey, anchorKey) }
     }
 }
 

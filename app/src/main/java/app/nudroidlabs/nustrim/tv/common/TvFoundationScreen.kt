@@ -1,6 +1,5 @@
 package app.nudroidlabs.nustrim.tv.common
 
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
@@ -34,6 +33,7 @@ import app.nudroidlabs.nustrim.tv.focus.TvFocusRestoreEffect
 import app.nudroidlabs.nustrim.tv.focus.rememberTvFocusAnchor
 import app.nudroidlabs.nustrim.tv.focus.tvFocusAnchor
 import app.nudroidlabs.nustrim.tv.theme.TvTokens
+import app.nudroidlabs.nustrim.tv.theme.animateTvFocusScale
 
 @Composable
 fun TvFoundationScreen(
@@ -107,8 +107,8 @@ private fun FoundationFocusCard(
 ) {
     val anchor = rememberTvFocusAnchor(focusRegistry, scopeKey, anchorKey)
     var focused by remember { mutableStateOf(false) }
-    val scale by animateFloatAsState(
-        targetValue = if (focused) TvTokens.FocusScale else 1f,
+    val scale = animateTvFocusScale(
+        focused = focused,
         label = "foundation-card-scale",
     )
 

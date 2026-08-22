@@ -1,6 +1,5 @@
 package app.nudroidlabs.nustrim.tv.home
 
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -47,7 +46,7 @@ import androidx.compose.ui.unit.sp
 import app.nudroidlabs.nustrim.tv.focus.TvFocusRegistry
 import app.nudroidlabs.nustrim.tv.focus.rememberTvFocusAnchor
 import app.nudroidlabs.nustrim.tv.focus.tvFocusAnchor
-import app.nudroidlabs.nustrim.tv.theme.TvTokens
+import app.nudroidlabs.nustrim.tv.theme.animateTvFocusScale
 import coil3.compose.AsyncImage
 
 @Composable
@@ -144,9 +143,8 @@ private fun TvHomePosterCard(
     val anchorKey = homeAnchorKey(rowKey, media.stableKey)
     val anchor = rememberTvFocusAnchor(focusRegistry, scopeKey, anchorKey)
     var focused by remember { mutableStateOf(false) }
-    val scale by animateFloatAsState(
-        targetValue = if (focused) TvTokens.FocusScale else 1f,
-        animationSpec = androidx.compose.animation.core.tween(TvTokens.FastMotionMillis),
+    val scale = animateTvFocusScale(
+        focused = focused,
         label = "home-card-scale",
     )
 

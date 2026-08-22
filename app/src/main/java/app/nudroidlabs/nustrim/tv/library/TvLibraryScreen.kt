@@ -1,6 +1,5 @@
 package app.nudroidlabs.nustrim.tv.library
 
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -53,6 +52,7 @@ import app.nudroidlabs.nustrim.tv.focus.TvFocusRegistry
 import app.nudroidlabs.nustrim.tv.focus.TvFocusRestoreEffect
 import app.nudroidlabs.nustrim.tv.focus.rememberTvFocusAnchor
 import app.nudroidlabs.nustrim.tv.focus.tvFocusAnchor
+import app.nudroidlabs.nustrim.tv.theme.animateTvFocusScale
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.flow.distinctUntilChanged
 
@@ -292,7 +292,7 @@ private fun LibraryPosterCard(
 ) {
     val anchor = rememberTvFocusAnchor(focusRegistry, scopeKey, libraryMediaAnchorKey(media.stableKey))
     var focused by remember { mutableStateOf(false) }
-    val scale by animateFloatAsState(if (focused) 1.045f else 1f, label = "library-card-scale")
+    val scale = animateTvFocusScale(focused = focused, label = "library-card-scale")
     Column(
         modifier = Modifier
             .scale(scale)
