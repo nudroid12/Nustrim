@@ -72,16 +72,13 @@ import java.util.Date
 
 @OptIn(UnstableApi::class)
 @Composable
-internal fun TvPlayerScreen(
+fun TvPlayerScreen(
     request: TvPlaybackRequest,
     runtime: TvPlayerRuntime,
     episodeCatalogue: TvEpisodeCatalogue,
     sourceSnapshot: TvSourcesSnapshot?,
     sourcesLoading: Boolean,
     sourcesError: String?,
-    parentalGuide: TvParentalGuide?,
-    showParentalGuideOnStart: Boolean,
-    onParentalGuideShown: () -> Unit,
     onRefreshSources: () -> Unit,
     onSwitchSource: (TvSourceStream) -> Unit,
     onEpisodeSelected: (TvCanonicalEpisode) -> Unit,
@@ -94,7 +91,7 @@ internal fun TvPlayerScreen(
     val playPauseFocusRequester = remember { FocusRequester() }
     val progressFocusRequester = remember { FocusRequester() }
 
-    var showControls by remember(request.stableKey) { mutableStateOf(false) }
+    var showControls by remember(request.stableKey) { mutableStateOf(true) }
     var showMoreActions by remember(request.stableKey) { mutableStateOf(false) }
     var activePanel by remember(request.stableKey) { mutableStateOf<TvPlayerPanel?>(null) }
     var pauseOverlay by remember(request.stableKey) { mutableStateOf(false) }
@@ -102,10 +99,6 @@ internal fun TvPlayerScreen(
     var interactionToken by remember { mutableIntStateOf(0) }
     var seekOverlayToken by remember { mutableIntStateOf(0) }
     var showSeekOverlay by remember { mutableStateOf(false) }
-    var showParentalGuide by remember(
-        request.mediaKey,
-        request.episode?.id,
-    ) { mutableStateOf(false) }
 
     val currentCanonical = remember(episodeCatalogue, request.episode?.id) {
         request.episode?.id?.let { id ->
@@ -207,28 +200,6 @@ internal fun TvPlayerScreen(
 
     LaunchedEffect(runtime.isPlaying) {
         if (runtime.isPlaying) pauseOverlay = false
-    }
-
-    LaunchedEffect(
-        request.mediaKey,
-        request.episode?.id,
-        parentalGuide?.items,
-        runtime.playbackState,
-    ) {
-        val guide = parentalGuide
-        if (
-            !showParentalGuideOnStart ||
-            guide?.hasItems != true ||
-            !runtime.readyOrEnded ||
-            runtime.positionMs > PARENTAL_GUIDE_START_WINDOW_MS
-        ) {
-            return@LaunchedEffect
-        }
-        onParentalGuideShown()
-        delay(350)
-        showParentalGuide = true
-        delay(PARENTAL_GUIDE_VISIBLE_MS)
-        showParentalGuide = false
     }
 
     LaunchedEffect(
@@ -395,23 +366,6 @@ internal fun TvPlayerScreen(
             }
         }
 
-        AnimatedVisibility(
-            visible = showParentalGuide &&
-                !showControls &&
-                activePanel == null &&
-                !pauseOverlay &&
-                runtime.errorMessage == null &&
-                !runtime.ended &&
-                !initialLoading,
-            enter = fadeIn(),
-            exit = fadeOut(),
-            modifier = Modifier.align(Alignment.TopStart),
-        ) {
-            parentalGuide?.let { guide ->
-                TvParentalGuideOverlay(guide = guide)
-            }
-        }
-
         TvPlayerControls(
             visible = showControls && activePanel == null && !pauseOverlay &&
                 runtime.errorMessage == null && !runtime.ended && !initialLoading,
@@ -540,50 +494,8 @@ internal fun TvPlayerScreen(
 }
 
 @Composable
-private fun TvParentalGuideOverlay(
-    guide: TvParentalGuide,
-    modifier: Modifier = Modifier,
-) {
-    if (!guide.hasItems) return
-
-    Row(
-        modifier = modifier
-            .padding(start = 56.dp, top = 54.dp)
-            .clip(RoundedCornerShape(10.dp))
-            .background(Color.Black.copy(alpha = 0.34f))
-            .padding(horizontal = 14.dp, vertical = 12.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(
-            modifier = Modifier
-                .width(3.dp)
-                .height((guide.items.size * 32).dp)
-                .clip(RoundedCornerShape(99.dp))
-                .background(Color.White.copy(alpha = 0.92f)),
-        )
-        Column(
-            verticalArrangement = Arrangement.spacedBy(5.dp),
-        ) {
-            guide.items.forEach { item ->
-                Text(
-                    text = "${item.label} · ${item.severity}",
-                    color = Color.White.copy(alpha = 0.94f),
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontSize = 14.sp,
-                    maxLines = 1,
-                )
-            }
-        }
-    }
-}
-
-@Composable
-internal fun TvPlayerLoadingOverlay(
-    request: TvPlaybackRequest,
-    modifier: Modifier = Modifier,
-) {
-    Box(modifier.fillMaxSize().background(Color.Black)) {
+private fun TvPlayerLoadingOverlay(request: TvPlaybackRequest) {
+    Box(Modifier.fillMaxSize().background(Color.Black)) {
         AsyncImage(
             model = request.media.backgroundUrl.ifBlank { request.media.posterUrl },
             contentDescription = null,
@@ -931,9 +843,6 @@ private fun TvPostPlayOverlay(
         }
     }
 }
-
-private const val PARENTAL_GUIDE_VISIBLE_MS = 7_000L
-private const val PARENTAL_GUIDE_START_WINDOW_MS = 20_000L
 
 private fun seekStepForRepeat(repeatCount: Int): Long = when {
     repeatCount >= 14 -> 60_000L

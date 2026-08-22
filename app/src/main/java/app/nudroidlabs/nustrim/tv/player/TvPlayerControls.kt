@@ -1,6 +1,5 @@
 package app.nudroidlabs.nustrim.tv.player
 
-import android.text.format.DateFormat
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -37,7 +36,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -56,14 +54,10 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import kotlinx.coroutines.delay
-import java.util.Date
-import kotlin.math.ceil
 
 @Composable
 fun TvPlayerControls(
@@ -130,58 +124,46 @@ fun TvPlayerControls(
                     .fillMaxWidth()
                     .padding(horizontal = 42.dp, vertical = 28.dp),
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.Bottom,
-                ) {
-                    Column(
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Text(
-                            text = request.media.title,
-                            style = MaterialTheme.typography.headlineMedium,
-                            color = Color.White,
-                            fontWeight = FontWeight.Medium,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        request.episode?.let { episode ->
-                            Spacer(Modifier.height(2.dp))
-                            Text(
-                                text = buildString {
-                                    val season = episode.season
-                                    val number = episode.episode
-                                    if (season != null && number != null) {
-                                        append("S")
-                                        append(season)
-                                        append("E")
-                                        append(number)
-                                    }
-                                    if (episode.title.isNotBlank()) {
-                                        if (isNotEmpty()) append(" · ")
-                                        append(episode.title)
-                                    }
-                                },
-                                style = MaterialTheme.typography.titleMedium,
-                                color = Color.White.copy(alpha = 0.90f),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
-                        if (!runtime.isPlaying && request.streamSourceLabel.isNotBlank()) {
-                            Spacer(Modifier.height(2.dp))
-                            Text(
-                                text = "via ${request.streamSourceLabel.replace("\n", " · ")}",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = Color.White.copy(alpha = 0.68f),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
-                    }
-                    Spacer(Modifier.size(20.dp))
-                    TvPlayerClockEstimate(runtime = runtime)
+                Text(
+                    text = request.media.title,
+                    style = MaterialTheme.typography.headlineMedium,
+                    color = Color.White,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                request.episode?.let { episode ->
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = buildString {
+                            val season = episode.season
+                            val number = episode.episode
+                            if (season != null && number != null) {
+                                append("S")
+                                append(season)
+                                append("E")
+                                append(number)
+                            }
+                            if (episode.title.isNotBlank()) {
+                                if (isNotEmpty()) append(" · ")
+                                append(episode.title)
+                            }
+                        },
+                        style = MaterialTheme.typography.titleMedium,
+                        color = Color.White.copy(alpha = 0.90f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                if (!runtime.isPlaying && request.streamSourceLabel.isNotBlank()) {
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = "via ${request.streamSourceLabel.replace("\n", " · ")}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color.White.copy(alpha = 0.68f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
 
                 Spacer(Modifier.height(12.dp))
@@ -435,59 +417,6 @@ private fun TvPlayerProgressBar(
                     .fillMaxHeight()
                     .fillMaxWidth(played)
                     .background(Color.White),
-            )
-        }
-    }
-}
-
-@Composable
-private fun TvPlayerClockEstimate(
-    runtime: TvPlayerRuntime,
-    modifier: Modifier = Modifier,
-) {
-    val context = LocalContext.current
-    val formatter = remember(context) { DateFormat.getTimeFormat(context) }
-    var nowMillis by remember { mutableStateOf(System.currentTimeMillis()) }
-
-    LaunchedEffect(Unit) {
-        while (true) {
-            nowMillis = System.currentTimeMillis()
-            delay(30_000L)
-        }
-    }
-
-    val effectiveSpeed = runtime.playbackSpeed.takeIf { it > 0f } ?: 1f
-    val remainingMediaMs = (runtime.durationMs - runtime.positionMs).coerceAtLeast(0L)
-    val remainingRealMs = if (runtime.durationMs > 0L) {
-        ceil(remainingMediaMs.toDouble() / effectiveSpeed.toDouble()).toLong()
-    } else {
-        0L
-    }
-    val endTime = if (remainingRealMs > 0L) {
-        formatter.format(Date(nowMillis + remainingRealMs))
-    } else {
-        ""
-    }
-
-    Column(
-        modifier = modifier,
-        horizontalAlignment = Alignment.End,
-    ) {
-        Text(
-            text = formatter.format(Date(nowMillis)),
-            color = Color.White.copy(alpha = 0.96f),
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Medium,
-            maxLines = 1,
-        )
-        if (endTime.isNotBlank()) {
-            Spacer(Modifier.height(1.dp))
-            Text(
-                text = "Ends at $endTime",
-                color = Color.White.copy(alpha = 0.72f),
-                style = MaterialTheme.typography.bodySmall,
-                fontSize = 11.sp,
-                maxLines = 1,
             )
         }
     }

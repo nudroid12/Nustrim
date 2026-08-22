@@ -31,30 +31,12 @@ fun TvPlayerEntry(
     val sourcesRepository = remember(context.applicationContext) {
         TvSourcesRepository(context.applicationContext)
     }
-    val subtitleRepository = remember(context.applicationContext) {
-        TvSubtitleRepository(context.applicationContext)
-    }
-    val parentalGuideRepository = remember(context.applicationContext) {
-        TvParentalGuideRepository(context.applicationContext)
-    }
 
     var activeRequest by remember(route.request.stableKey) {
         mutableStateOf(route.request)
     }
     var resumePositionMs by remember(route.request.stableKey) {
         mutableStateOf(0L)
-    }
-    var preparedRequest by remember(activeRequest.stableKey) {
-        mutableStateOf<TvPlaybackRequest?>(null)
-    }
-    var parentalGuide by remember(activeRequest.mediaKey) {
-        mutableStateOf<TvParentalGuide?>(null)
-    }
-    var parentalGuideConsumed by remember(
-        route.request.mediaKey,
-        route.request.episode?.id,
-    ) {
-        mutableStateOf(false)
     }
     var sourceSnapshot by remember(activeRequest.mediaKey, activeRequest.episode?.id) {
         mutableStateOf<TvSourcesSnapshot?>(null)
@@ -90,117 +72,77 @@ fun TvPlayerEntry(
         )
     }
 
-    LaunchedEffect(activeRequest.stableKey) {
-        preparedRequest = runCatching {
-            subtitleRepository.enrich(activeRequest)
-        }.getOrElse {
-            activeRequest
-        }
-    }
-
-    LaunchedEffect(activeRequest.mediaKey) {
-        parentalGuide = parentalGuideRepository.load(activeRequest.media)
-    }
-
     LaunchedEffect(sourceRoute.stableKey, refreshToken) {
         sourcesLoading = true
         sourcesError = null
-        runCatching {
-            sourcesRepository.load(
-                sourceRoute,
-                forceRefresh = refreshToken > 0,
-            )
-        }.onSuccess { sourceSnapshot = it }
+        runCatching { sourcesRepository.load(sourceRoute, forceRefresh = refreshToken > 0) }
+            .onSuccess { sourceSnapshot = it }
             .onFailure { error ->
-                sourcesError = error.message.orEmpty().ifBlank {
-                    error::class.java.simpleName
-                }
+                sourcesError = error.message.orEmpty().ifBlank { error::class.java.simpleName }
             }
         sourcesLoading = false
     }
 
-    val playbackRequest = preparedRequest
-    if (playbackRequest == null) {
-        TvPlayerLoadingOverlay(
-            request = activeRequest,
-            modifier = modifier,
-        )
-    } else {
-        val subtitleFingerprint = remember(playbackRequest.stream.subtitles) {
-            playbackRequest.stream.subtitles.joinToString("|") { subtitle ->
-                "${subtitle.url}#${subtitle.language}#${subtitle.label}"
-            }.hashCode()
+    key(activeRequest.stableKey) {
+        val runtimeResult = remember(activeRequest.stableKey, resumePositionMs) {
+            runCatching {
+                TvPlayerRuntime(
+                    context = context,
+                    request = activeRequest,
+                    startPositionMs = resumePositionMs,
+                )
+            }
         }
-        val runtimeKey = "${playbackRequest.stableKey}/subs/$subtitleFingerprint"
+        val runtime = runtimeResult.getOrNull()
 
-        key(runtimeKey) {
-            val runtimeResult = remember(runtimeKey, resumePositionMs) {
-                runCatching {
-                    TvPlayerRuntime(
-                        context = context,
-                        request = playbackRequest,
-                        startPositionMs = resumePositionMs,
+        if (runtime == null) {
+            TvPlayerFatalError(
+                message = runtimeResult.exceptionOrNull()?.message
+                    .orEmpty()
+                    .ifBlank { "Unable to create player" },
+                onBack = onExitPlayer,
+                modifier = modifier,
+            )
+        } else {
+            DisposableEffect(runtime) {
+                onDispose { runtime.release() }
+            }
+
+            LaunchedEffect(runtime) {
+                while (true) {
+                    runtime.syncTimeline()
+                    delay(250)
+                }
+            }
+
+            TvPlayerScreen(
+                request = activeRequest,
+                runtime = runtime,
+                episodeCatalogue = episodeCatalogue,
+                sourceSnapshot = sourceSnapshot,
+                sourcesLoading = sourcesLoading,
+                sourcesError = sourcesError,
+                onRefreshSources = {
+                    refreshToken += 1
+                },
+                onSwitchSource = { selected ->
+                    switchPlayerSource(
+                        currentRequest = activeRequest,
+                        currentPositionMs = runtime.positionMs,
+                        selected = selected,
+                        onResumePosition = { resumePositionMs = it },
+                        onRequestChanged = { activeRequest = it },
                     )
-                }
-            }
-            val runtime = runtimeResult.getOrNull()
-
-            if (runtime == null) {
-                TvPlayerFatalError(
-                    message = runtimeResult.exceptionOrNull()?.message
-                        .orEmpty()
-                        .ifBlank { "Unable to create player" },
-                    onBack = onExitPlayer,
-                    modifier = modifier,
-                )
-            } else {
-                DisposableEffect(runtime) {
-                    onDispose { runtime.release() }
-                }
-
-                LaunchedEffect(runtime) {
-                    while (true) {
-                        runtime.syncTimeline()
-                        delay(250)
-                    }
-                }
-
-                TvPlayerScreen(
-                    request = playbackRequest,
-                    runtime = runtime,
-                    episodeCatalogue = episodeCatalogue,
-                    sourceSnapshot = sourceSnapshot,
-                    sourcesLoading = sourcesLoading,
-                    sourcesError = sourcesError,
-                    parentalGuide = parentalGuide,
-                    showParentalGuideOnStart = !parentalGuideConsumed &&
-                        resumePositionMs < PARENTAL_GUIDE_RESUME_LIMIT_MS,
-                    onParentalGuideShown = {
-                        parentalGuideConsumed = true
-                    },
-                    onRefreshSources = {
-                        refreshToken += 1
-                    },
-                    onSwitchSource = { selected ->
-                        switchPlayerSource(
-                            currentRequest = activeRequest,
-                            currentPositionMs = runtime.positionMs,
-                            selected = selected,
-                            onResumePosition = { resumePositionMs = it },
-                            onRequestChanged = { activeRequest = it },
-                        )
-                    },
-                    onEpisodeSelected = onOpenEpisode,
-                    onExitPlayer = onExitPlayer,
-                    onReturnToDetails = onReturnToDetails,
-                    modifier = modifier,
-                )
-            }
+                },
+                onEpisodeSelected = onOpenEpisode,
+                onExitPlayer = onExitPlayer,
+                onReturnToDetails = onReturnToDetails,
+                modifier = modifier,
+            )
         }
     }
-}
 
-private const val PARENTAL_GUIDE_RESUME_LIMIT_MS = 15_000L
+}
 
 private fun switchPlayerSource(
     currentRequest: TvPlaybackRequest,

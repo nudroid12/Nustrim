@@ -34,7 +34,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -84,65 +83,15 @@ fun TvPlayerEpisodesPanel(
     var selectedSeasonIndex by remember(catalogue.parentKey) {
         mutableIntStateOf(currentSeasonIndex.coerceIn(catalogue.seasons.indices))
     }
-    var pendingSeasonIndex by remember(catalogue.parentKey) { mutableStateOf<Int?>(null) }
-    val lastFocusedEpisodeBySeason = remember(catalogue.parentKey) {
-        mutableStateMapOf<String, String>()
-    }
-    val seasonRequesters = remember(catalogue.parentKey, catalogue.seasons.size) {
-        catalogue.seasons.map { FocusRequester() }
-    }
-
-    LaunchedEffect(currentEpisodeId, catalogue.parentKey) {
-        val currentSeason = catalogue.seasons.firstOrNull { candidate ->
-            candidate.episodes.any { it.providerEpisodeId == currentEpisodeId }
-        }
-        val currentEpisode = currentSeason?.episodes?.firstOrNull {
-            it.providerEpisodeId == currentEpisodeId
-        }
-        if (currentSeason != null && currentEpisode != null) {
-            lastFocusedEpisodeBySeason[currentSeason.stableKey] = currentEpisode.identity.stableKey
-        }
-    }
+    var pendingSeasonIndex by remember { mutableStateOf<Int?>(null) }
 
     LaunchedEffect(pendingSeasonIndex) {
         val pending = pendingSeasonIndex ?: return@LaunchedEffect
         delay(150)
-        if (pendingSeasonIndex == pending) {
-            selectedSeasonIndex = pending.coerceIn(catalogue.seasons.indices)
-        }
+        if (pendingSeasonIndex == pending) selectedSeasonIndex = pending
     }
 
     val season = catalogue.seasons[selectedSeasonIndex]
-    val episodeRequesters = remember(season.stableKey, season.episodes.size) {
-        season.episodes.map { FocusRequester() }
-    }
-    val initialEpisodeIndex = season.episodes.indexOfFirst {
-        it.providerEpisodeId == currentEpisodeId
-    }.takeIf { it >= 0 } ?: 0
-
-    LaunchedEffect(catalogue.parentKey, currentEpisodeId) {
-        delay(180)
-        episodeRequesters.getOrNull(initialEpisodeIndex)?.requestFocus()
-    }
-
-    fun rememberEpisode(episode: TvCanonicalEpisode) {
-        lastFocusedEpisodeBySeason[season.stableKey] = episode.identity.stableKey
-    }
-
-    fun restoreEpisodeForActiveSeason(): Boolean {
-        val rememberedKey = lastFocusedEpisodeBySeason[season.stableKey]
-            ?: season.episodes.firstOrNull { it.providerEpisodeId == currentEpisodeId }
-                ?.identity?.stableKey
-            ?: season.episodes.firstOrNull()?.identity?.stableKey
-            ?: return false
-        val index = season.episodes.indexOfFirst { it.identity.stableKey == rememberedKey }
-            .takeIf { it >= 0 }
-            ?: return false
-        return runCatching {
-            episodeRequesters[index].requestFocus()
-            true
-        }.getOrDefault(false)
-    }
 
     TvPlayerSidePanelScaffold(
         title = "Episodes",
@@ -156,21 +105,23 @@ fun TvPlayerEpisodesPanel(
                 TvPanelChip(
                     text = item.label,
                     selected = index == selectedSeasonIndex,
-                    focusRequester = seasonRequesters[index],
                     onFocus = { pendingSeasonIndex = index },
-                    onDown = if (index == selectedSeasonIndex) {
-                        { restoreEpisodeForActiveSeason() }
-                    } else {
-                        null
-                    },
-                    onClick = {
-                        pendingSeasonIndex = null
-                        selectedSeasonIndex = index
-                    },
+                    onClick = { selectedSeasonIndex = index },
                 )
             }
         }
         Spacer(Modifier.height(16.dp))
+
+        val requesters = remember(season.stableKey, season.episodes.size) {
+            season.episodes.map { FocusRequester() }
+        }
+        val currentIndex = season.episodes.indexOfFirst { it.providerEpisodeId == currentEpisodeId }
+            .takeIf { it >= 0 }
+            ?: 0
+        LaunchedEffect(season.stableKey) {
+            delay(180)
+            requesters.getOrNull(currentIndex)?.requestFocus()
+        }
 
         LazyColumn(
             verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -182,9 +133,7 @@ fun TvPlayerEpisodesPanel(
                 TvEpisodePanelRow(
                     episode = episode,
                     current = episode.providerEpisodeId == currentEpisodeId,
-                    focusRequester = episodeRequesters[index],
-                    upFocusRequester = seasonRequesters[selectedSeasonIndex],
-                    onFocused = { rememberEpisode(episode) },
+                    focusRequester = requesters[index],
                     onClick = { onEpisodeSelected(episode) },
                 )
             }
@@ -490,8 +439,6 @@ private fun TvEpisodePanelRow(
     episode: TvCanonicalEpisode,
     current: Boolean,
     focusRequester: FocusRequester,
-    upFocusRequester: FocusRequester,
-    onFocused: () -> Unit,
     onClick: () -> Unit,
 ) {
     var focused by remember { mutableStateOf(false) }
@@ -499,20 +446,7 @@ private fun TvEpisodePanelRow(
         modifier = Modifier
             .fillMaxWidth()
             .focusRequester(focusRequester)
-            .onFocusChanged {
-                focused = it.isFocused
-                if (it.isFocused) onFocused()
-            }
-            .onKeyEvent { event ->
-                if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
-                if (event.key == Key.DirectionUp) {
-                    onFocused()
-                    runCatching { upFocusRequester.requestFocus() }
-                    true
-                } else {
-                    false
-                }
-            }
+            .onFocusChanged { focused = it.isFocused }
             .clip(RoundedCornerShape(16.dp))
             .background(
                 when {
@@ -716,32 +650,15 @@ private fun TvPanelTextRow(
 private fun TvPanelChip(
     text: String,
     selected: Boolean,
-    focusRequester: FocusRequester? = null,
     onFocus: () -> Unit,
-    onDown: (() -> Boolean)? = null,
     onClick: () -> Unit,
 ) {
     var focused by remember { mutableStateOf(false) }
     Box(
         modifier = Modifier
-            .then(
-                if (focusRequester != null) {
-                    Modifier.focusRequester(focusRequester)
-                } else {
-                    Modifier
-                },
-            )
             .onFocusChanged {
                 focused = it.isFocused
                 if (it.isFocused) onFocus()
-            }
-            .onKeyEvent { event ->
-                if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
-                if (event.key == Key.DirectionDown && onDown != null) {
-                    onDown()
-                } else {
-                    false
-                }
             }
             .clip(RoundedCornerShape(99.dp))
             .background(
