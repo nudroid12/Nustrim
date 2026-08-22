@@ -23,6 +23,8 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -72,6 +74,8 @@ fun TvDetailsScreen(
     focusRegistry: TvFocusRegistry,
     focusRequestToken: Int,
     onRetry: () -> Unit,
+    isSaved: Boolean,
+    onToggleSaved: (TvDetailsSnapshot) -> Unit,
     onPlayMovie: (TvDetailsSnapshot) -> Unit,
     onPlayEpisode: (TvDetailsSnapshot, TvCanonicalEpisode) -> Unit,
     modifier: Modifier = Modifier,
@@ -92,6 +96,8 @@ fun TvDetailsScreen(
             scopeKey = scopeKey,
             focusRegistry = focusRegistry,
             focusRequestToken = focusRequestToken,
+            isSaved = isSaved,
+            onToggleSaved = onToggleSaved,
             onPlayMovie = onPlayMovie,
             onPlayEpisode = onPlayEpisode,
             modifier = modifier,
@@ -106,6 +112,8 @@ private fun DetailsReady(
     scopeKey: String,
     focusRegistry: TvFocusRegistry,
     focusRequestToken: Int,
+    isSaved: Boolean,
+    onToggleSaved: (TvDetailsSnapshot) -> Unit,
     onPlayMovie: (TvDetailsSnapshot) -> Unit,
     onPlayEpisode: (TvDetailsSnapshot, TvCanonicalEpisode) -> Unit,
     modifier: Modifier,
@@ -153,6 +161,8 @@ private fun DetailsReady(
                     focusRegistry = focusRegistry,
                     isSeries = isSeries,
                     selectedSeason = selectedSeason,
+                    isSaved = isSaved,
+                    onToggleSaved = { onToggleSaved(snapshot) },
                     onPlay = {
                         if (!isSeries) {
                             onPlayMovie(snapshot)
@@ -255,6 +265,8 @@ private fun DetailsHero(
     focusRegistry: TvFocusRegistry,
     isSeries: Boolean,
     selectedSeason: TvEpisodeSeason?,
+    isSaved: Boolean,
+    onToggleSaved: () -> Unit,
     onPlay: () -> Unit,
 ) {
     val item = snapshot.item
@@ -290,16 +302,24 @@ private fun DetailsHero(
         Spacer(Modifier.height(18.dp))
 
         val heroEpisode = if (isSeries) selectedSeason?.episodes?.firstOrNull() else null
-        PlayButton(
-            label = if (heroEpisode != null && heroEpisode.seasonNumber != null && heroEpisode.episodeNumber != null) {
-                "Play S${heroEpisode.seasonNumber} E${heroEpisode.episodeNumber}"
-            } else {
-                "Play"
-            },
-            scopeKey = scopeKey,
-            focusRegistry = focusRegistry,
-            onClick = onPlay,
-        )
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            PlayButton(
+                label = if (heroEpisode != null && heroEpisode.seasonNumber != null && heroEpisode.episodeNumber != null) {
+                    "Play S${heroEpisode.seasonNumber} E${heroEpisode.episodeNumber}"
+                } else {
+                    "Play"
+                },
+                scopeKey = scopeKey,
+                focusRegistry = focusRegistry,
+                onClick = onPlay,
+            )
+            SaveButton(
+                saved = isSaved,
+                scopeKey = scopeKey,
+                focusRegistry = focusRegistry,
+                onClick = onToggleSaved,
+            )
+        }
         Spacer(Modifier.height(22.dp))
 
         val creditLine = when {
@@ -333,6 +353,52 @@ private fun DetailsHero(
         }
 
         MetaLine(snapshot)
+    }
+}
+
+@Composable
+private fun SaveButton(
+    saved: Boolean,
+    scopeKey: String,
+    focusRegistry: TvFocusRegistry,
+    onClick: () -> Unit,
+) {
+    val anchor = rememberTvFocusAnchor(focusRegistry, scopeKey, HERO_SAVE_ANCHOR)
+    var focused by remember { mutableStateOf(false) }
+    val scale by animateFloatAsState(if (focused) 1.035f else 1f, label = "details-save-scale")
+    val background = if (focused) Color.White else Color(0xD9292B31)
+    val foreground = if (focused) Color(0xFF101114) else Color.White
+    Row(
+        modifier = Modifier
+            .scale(scale)
+            .clip(RoundedCornerShape(28.dp))
+            .background(background)
+            .border(2.dp, if (focused) Color.White else Color(0xFF62656D), RoundedCornerShape(28.dp))
+            .tvFocusAnchor(anchor)
+            .onFocusChanged { focused = it.isFocused }
+            .onKeyEvent { event ->
+                if (event.type == KeyEventType.KeyDown && (event.key == Key.DirectionCenter || event.key == Key.Enter)) {
+                    onClick()
+                    true
+                } else false
+            }
+            .focusable()
+            .padding(horizontal = 20.dp, vertical = 13.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Icon(
+            imageVector = if (saved) Icons.Default.Bookmark else Icons.Default.BookmarkBorder,
+            contentDescription = null,
+            tint = foreground,
+            modifier = Modifier.size(20.dp),
+        )
+        Text(
+            text = if (saved) "Saved" else "Save",
+            color = foreground,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.SemiBold,
+        )
     }
 }
 
@@ -738,5 +804,6 @@ private fun DetailsError(
 private fun seasonAnchorKey(seasonKey: String) = "details:season:$seasonKey"
 private fun episodeAnchorKey(episodeKey: String) = "details:episode:$episodeKey"
 private const val HERO_PLAY_ANCHOR = "details:hero:play"
+private const val HERO_SAVE_ANCHOR = "details:hero:save"
 private const val SEASON_FOCUS_SETTLE_MS = 150L
 private val DETAIL_BACKGROUND = Color(0xFF08090B)

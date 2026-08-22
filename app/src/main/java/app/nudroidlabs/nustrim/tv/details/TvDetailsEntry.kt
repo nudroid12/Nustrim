@@ -9,6 +9,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import app.nudroidlabs.nustrim.core.library.LocalMediaStore
 import app.nudroidlabs.nustrim.tv.focus.TvFocusRegistry
 import app.nudroidlabs.nustrim.tv.navigation.TvRoute
 import app.nudroidlabs.nustrim.tv.episode.TvCanonicalEpisode
@@ -24,8 +25,12 @@ fun TvDetailsEntry(
 ) {
     val context = LocalContext.current
     val repository = remember(context) { TvDetailsRepository(context) }
+    val mediaStore = remember(context) { LocalMediaStore(context) }
     var reloadToken by remember(route.stableKey) { mutableIntStateOf(0) }
     var state by remember(route.stableKey) { mutableStateOf<TvDetailsUiState>(TvDetailsUiState.Loading) }
+    var saved by remember(route.stableKey) {
+        mutableStateOf(mediaStore.isSaved(route.sourceUrl, route.media))
+    }
 
     LaunchedEffect(route.stableKey, reloadToken) {
         state = TvDetailsUiState.Loading
@@ -48,6 +53,12 @@ fun TvDetailsEntry(
         focusRegistry = focusRegistry,
         focusRequestToken = focusRequestToken,
         onRetry = { reloadToken += 1 },
+        isSaved = saved,
+        onToggleSaved = { snapshot ->
+            val next = !saved
+            mediaStore.setSaved(route.sourceUrl, snapshot.item, next)
+            saved = next
+        },
         onPlayMovie = onPlayMovie,
         onPlayEpisode = onPlayEpisode,
         modifier = modifier,
