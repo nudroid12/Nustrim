@@ -1,0 +1,386 @@
+name: Nustrim TV Cleanroom S12.3 Player Post-play Auto Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nustrim-tv-cleanroom-s12-3-player-postplay
+  cancel-in-progress: false
+
+env:
+  LOCKED_CERT_SHA256: "30C625B9112CD04D43B631D6020D0D52E61695111B8E2125F29AD19651EB165D"
+  TARGET_VERSION_NAME: "0.57.2-tv-cleanroom-s12.3-player-postplay"
+  MIN_TARGET_VERSION_CODE: "125"
+
+jobs:
+  build-test-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Guard accepted S12.2 baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          current_build="$(sed -n -E 's/.*versionName[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' app/build.gradle.kts | head -1)"
+          current_marker="$(cat .nustrim-version 2>/dev/null || true)"
+          case "$current_build" in
+            "0.57.1-tv-cleanroom-s12.2-details-episode-focus"|"$TARGET_VERSION_NAME") ;;
+            *)
+              echo "::error::Unexpected baseline: $current_build"
+              exit 20
+              ;;
+          esac
+          test "$current_marker" = "$current_build" || {
+            echo "::error::Build version and .nustrim-version differ."
+            exit 21
+          }
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Gradle 9.5.0
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "9.5.0"
+
+      - name: Prepare permanent signing
+        shell: bash
+        env:
+          KEYSTORE_B64: ${{ secrets.NUSTRIM_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.NUSTRIM_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.NUSTRIM_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.NUSTRIM_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for name in KEYSTORE_B64 KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::Signing secret $name is missing."
+              exit 30
+            fi
+          done
+          KS="$RUNNER_TEMP/nustrim-release.jks"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$KS"
+          chmod 600 "$KS"
+          keytool -list -keystore "$KS" -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" >/dev/null
+          CERT="$(
+            keytool -exportcert -rfc -keystore "$KS" -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" |
+            openssl x509 -noout -fingerprint -sha256 |
+            cut -d= -f2 | tr -d ':' | tr '[:lower:]' '[:upper:]'
+          )"
+          test "$CERT" = "$LOCKED_CERT_SHA256" || {
+            echo "::error::Keystore certificate is not the locked Nustrim certificate."
+            exit 31
+          }
+          echo "NUSTRIM_KEYSTORE_PATH=$KS" >> "$GITHUB_ENV"
+          echo "NUSTRIM_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "NUSTRIM_KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
+          echo "NUSTRIM_KEY_PASSWORD=$KEY_PASSWORD" >> "$GITHUB_ENV"
+
+      - name: Apply exact S12.3 Player source
+        shell: bash
+        env:
+          SOURCE_PATCH_B64: "ZGlmZiAtLWdpdCBhL2FwcC9zcmMvbWFpbi9qYXZhL2FwcC9udWRyb2lkbGFicy9udXN0cmltL3R2L3BsYXllci9UdlBsYXllckNvbnRyb2xzLmt0IGIvYXBwL3NyYy9tYWluL2phdmEvYXBwL251ZHJvaWRsYWJzL251c3RyaW0vdHYvcGxheWVyL1R2UGxheWVyQ29udHJvbHMua3QKaW5kZXggZWU0Njc0ZC4uMTM1ZjAxZiAxMDA2NDQKLS0tIGEvYXBwL3NyYy9tYWluL2phdmEvYXBwL251ZHJvaWRsYWJzL251c3RyaW0vdHYvcGxheWVyL1R2UGxheWVyQ29udHJvbHMua3QKKysrIGIvYXBwL3NyYy9tYWluL2phdmEvYXBwL251ZHJvaWRsYWJzL251c3RyaW0vdHYvcGxheWVyL1R2UGxheWVyQ29udHJvbHMua3QKQEAgLTY2LDYgKzY2LDcgQEAgZnVuIFR2UGxheWVyQ29udHJvbHMoCiAgICAgcnVudGltZTogVHZQbGF5ZXJSdW50aW1lLAogICAgIHBsYXlQYXVzZUZvY3VzUmVxdWVzdGVyOiBGb2N1c1JlcXVlc3RlciwKICAgICBwcm9ncmVzc0ZvY3VzUmVxdWVzdGVyOiBGb2N1c1JlcXVlc3RlciwKKyAgICBzZWVrU3RlcE1zOiBMb25nLAogICAgIGhhc0VwaXNvZGVzOiBCb29sZWFuLAogICAgIGhhc05leHRFcGlzb2RlOiBCb29sZWFuLAogICAgIGFzcGVjdE1vZGU6IFR2UGxheWVyQXNwZWN0TW9kZSwKQEAgLTE2OSw2ICsxNzAsNyBAQCBmdW4gVHZQbGF5ZXJDb250cm9scygKICAgICAgICAgICAgICAgICBTcGFjZXIoTW9kaWZpZXIuaGVpZ2h0KDEyLmRwKSkKICAgICAgICAgICAgICAgICBUdlBsYXllclByb2dyZXNzQmFyKAogICAgICAgICAgICAgICAgICAgICBydW50aW1lID0gcnVudGltZSwKKyAgICAgICAgICAgICAgICAgICAgc2Vla1N0ZXBNcyA9IHNlZWtTdGVwTXMsCiAgICAgICAgICAgICAgICAgICAgIGZvY3VzUmVxdWVzdGVyID0gcHJvZ3Jlc3NGb2N1c1JlcXVlc3RlciwKICAgICAgICAgICAgICAgICAgICAgZG93bkZvY3VzUmVxdWVzdGVyID0gcGxheVBhdXNlRm9jdXNSZXF1ZXN0ZXIsCiAgICAgICAgICAgICAgICAgICAgIG9uSW50ZXJhY3Rpb24gPSBvbkludGVyYWN0aW9uLApAQCAtMzUyLDYgKzM1NCw3IEBAIHByaXZhdGUgZnVuIFR2UGxheWVyQ29udHJvbEJ1dHRvbigKIEBDb21wb3NhYmxlCiBwcml2YXRlIGZ1biBUdlBsYXllclByb2dyZXNzQmFyKAogICAgIHJ1bnRpbWU6IFR2UGxheWVyUnVudGltZSwKKyAgICBzZWVrU3RlcE1zOiBMb25nLAogICAgIGZvY3VzUmVxdWVzdGVyOiBGb2N1c1JlcXVlc3RlciwKICAgICBkb3duRm9jdXNSZXF1ZXN0ZXI6IEZvY3VzUmVxdWVzdGVyLAogICAgIG9uSW50ZXJhY3Rpb246ICgpIC0+IFVuaXQsCkBAIC0zNzUsMTIgKzM3OCwxMiBAQCBwcml2YXRlIGZ1biBUdlBsYXllclByb2dyZXNzQmFyKAogICAgICAgICAgICAgICAgIGlmIChldmVudC50eXBlICE9IEtleUV2ZW50VHlwZS5LZXlEb3duKSByZXR1cm5Ab25LZXlFdmVudCBmYWxzZQogICAgICAgICAgICAgICAgIHdoZW4gKGV2ZW50LmtleSkgewogICAgICAgICAgICAgICAgICAgICBLZXkuRGlyZWN0aW9uTGVmdCAtPiB7Ci0gICAgICAgICAgICAgICAgICAgICAgICBydW50aW1lLnNlZWtCeSgtMTBfMDAwTCkKKyAgICAgICAgICAgICAgICAgICAgICAgIHJ1bnRpbWUuc2Vla0J5KC1zZWVrU3RlcE1zKQogICAgICAgICAgICAgICAgICAgICAgICAgb25JbnRlcmFjdGlvbigpCiAgICAgICAgICAgICAgICAgICAgICAgICB0cnVlCiAgICAgICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgICAgICAgICAgS2V5LkRpcmVjdGlvblJpZ2h0IC0+IHsKLSAgICAgICAgICAgICAgICAgICAgICAgIHJ1bnRpbWUuc2Vla0J5KDEwXzAwMEwpCisgICAgICAgICAgICAgICAgICAgICAgICBydW50aW1lLnNlZWtCeShzZWVrU3RlcE1zKQogICAgICAgICAgICAgICAgICAgICAgICAgb25JbnRlcmFjdGlvbigpCiAgICAgICAgICAgICAgICAgICAgICAgICB0cnVlCiAgICAgICAgICAgICAgICAgICAgIH0KZGlmZiAtLWdpdCBhL2FwcC9zcmMvbWFpbi9qYXZhL2FwcC9udWRyb2lkbGFicy9udXN0cmltL3R2L3BsYXllci9UdlBsYXllckVudHJ5Lmt0IGIvYXBwL3NyYy9tYWluL2phdmEvYXBwL251ZHJvaWRsYWJzL251c3RyaW0vdHYvcGxheWVyL1R2UGxheWVyRW50cnkua3QKaW5kZXggZTM1ZDQxMS4uODNkMDQyMyAxMDA2NDQKLS0tIGEvYXBwL3NyYy9tYWluL2phdmEvYXBwL251ZHJvaWRsYWJzL251c3RyaW0vdHYvcGxheWVyL1R2UGxheWVyRW50cnkua3QKKysrIGIvYXBwL3NyYy9tYWluL2phdmEvYXBwL251ZHJvaWRsYWJzL251c3RyaW0vdHYvcGxheWVyL1R2UGxheWVyRW50cnkua3QKQEAgLTE2MSw2ICsxNjEsOSBAQCBmdW4gVHZQbGF5ZXJFbnRyeSgKICAgICAgICAgICAgICAgICBUdlBsYXllclNjcmVlbigKICAgICAgICAgICAgICAgICAgICAgcmVxdWVzdCA9IHBsYXliYWNrUmVxdWVzdCwKICAgICAgICAgICAgICAgICAgICAgcnVudGltZSA9IHJ1bnRpbWUsCisgICAgICAgICAgICAgICAgICAgIGF1dG9wbGF5TmV4dEVwaXNvZGUgPSBwcmVmZXJlbmNlcy5hdXRvcGxheU5leHRFcGlzb2RlLAorICAgICAgICAgICAgICAgICAgICBzZWVrU3RlcE1zID0gcHJlZmVyZW5jZXMudHZTZWVrU3RlcFNlY29uZHMgKiAxXzAwMEwsCisgICAgICAgICAgICAgICAgICAgIGNvbnRyb2xzQXV0b0hpZGVNcyA9IHByZWZlcmVuY2VzLnR2Q29udHJvbHNBdXRvSGlkZVNlY29uZHMgKiAxXzAwMEwsCiAgICAgICAgICAgICAgICAgICAgIGVwaXNvZGVDYXRhbG9ndWUgPSBlcGlzb2RlQ2F0YWxvZ3VlLAogICAgICAgICAgICAgICAgICAgICBzb3VyY2VTbmFwc2hvdCA9IHNvdXJjZVNuYXBzaG90LAogICAgICAgICAgICAgICAgICAgICBzb3VyY2VzTG9hZGluZyA9IHNvdXJjZXNMb2FkaW5nLApkaWZmIC0tZ2l0IGEvYXBwL3NyYy9tYWluL2phdmEvYXBwL251ZHJvaWRsYWJzL251c3RyaW0vdHYvcGxheWVyL1R2UGxheWVyU2NyZWVuLmt0IGIvYXBwL3NyYy9tYWluL2phdmEvYXBwL251ZHJvaWRsYWJzL251c3RyaW0vdHYvcGxheWVyL1R2UGxheWVyU2NyZWVuLmt0CmluZGV4IDYyZWZiNDkuLjExNmViYjUgMTAwNjQ0Ci0tLSBhL2FwcC9zcmMvbWFpbi9qYXZhL2FwcC9udWRyb2lkbGFicy9udXN0cmltL3R2L3BsYXllci9UdlBsYXllclNjcmVlbi5rdAorKysgYi9hcHAvc3JjL21haW4vamF2YS9hcHAvbnVkcm9pZGxhYnMvbnVzdHJpbS90di9wbGF5ZXIvVHZQbGF5ZXJTY3JlZW4ua3QKQEAgLTc1LDYgKzc1LDkgQEAgaW1wb3J0IGphdmEudXRpbC5EYXRlCiBmdW4gVHZQbGF5ZXJTY3JlZW4oCiAgICAgcmVxdWVzdDogVHZQbGF5YmFja1JlcXVlc3QsCiAgICAgcnVudGltZTogVHZQbGF5ZXJSdW50aW1lLAorICAgIGF1dG9wbGF5TmV4dEVwaXNvZGU6IEJvb2xlYW4sCisgICAgc2Vla1N0ZXBNczogTG9uZywKKyAgICBjb250cm9sc0F1dG9IaWRlTXM6IExvbmcsCiAgICAgZXBpc29kZUNhdGFsb2d1ZTogVHZFcGlzb2RlQ2F0YWxvZ3VlLAogICAgIHNvdXJjZVNuYXBzaG90OiBUdlNvdXJjZXNTbmFwc2hvdD8sCiAgICAgc291cmNlc0xvYWRpbmc6IEJvb2xlYW4sCkBAIC0yMTQsNyArMjE3LDcgQEAgZnVuIFR2UGxheWVyU2NyZWVuKAogICAgICAgICBpZiAoIXNob3dDb250cm9scyB8fCBhY3RpdmVQYW5lbCAhPSBudWxsIHx8IHJ1bnRpbWUuZXJyb3JNZXNzYWdlICE9IG51bGwgfHwgcnVudGltZS5lbmRlZCB8fCAhcnVudGltZS5yZWFkeU9yRW5kZWQpIHsKICAgICAgICAgICAgIHJldHVybkBMYXVuY2hlZEVmZmVjdAogICAgICAgICB9Ci0gICAgICAgIGRlbGF5KENPTlRST0xfSElERV9NUykKKyAgICAgICAgZGVsYXkoY29udHJvbHNBdXRvSGlkZU1zLmNvZXJjZUF0TGVhc3QoTUlOX0NPTlRST0xfSElERV9NUykpCiAgICAgICAgIHNob3dNb3JlQWN0aW9ucyA9IGZhbHNlCiAgICAgICAgIHNob3dDb250cm9scyA9IGZhbHNlCiAgICAgICAgIGlmICghcnVudGltZS5pc1BsYXlpbmcgJiYgcnVudGltZS5yZWFkeU9yRW5kZWQgJiYgIXJ1bnRpbWUuZW5kZWQpIHsKQEAgLTI3NywxMSArMjgwLDExIEBAIGZ1biBUdlBsYXllclNjcmVlbigKICAgICAgICAgICAgICAgICAgICAgICAgICAgICB0cnVlCiAgICAgICAgICAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgICAgICAgICAgICAgICBBbmRyb2lkS2V5RXZlbnQuS0VZQ09ERV9EUEFEX0xFRlQgLT4gewotICAgICAgICAgICAgICAgICAgICAgICAgICAgIHNlZWtIaWRkZW4oLXNlZWtTdGVwRm9yUmVwZWF0KGV2ZW50Lm5hdGl2ZUtleUV2ZW50LnJlcGVhdENvdW50KSkKKyAgICAgICAgICAgICAgICAgICAgICAgICAgICBzZWVrSGlkZGVuKC1zZWVrU3RlcEZvclJlcGVhdChldmVudC5uYXRpdmVLZXlFdmVudC5yZXBlYXRDb3VudCwgc2Vla1N0ZXBNcykpCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgdHJ1ZQogICAgICAgICAgICAgICAgICAgICAgICAgfQogICAgICAgICAgICAgICAgICAgICAgICAgQW5kcm9pZEtleUV2ZW50LktFWUNPREVfRFBBRF9SSUdIVCAtPiB7Ci0gICAgICAgICAgICAgICAgICAgICAgICAgICAgc2Vla0hpZGRlbihzZWVrU3RlcEZvclJlcGVhdChldmVudC5uYXRpdmVLZXlFdmVudC5yZXBlYXRDb3VudCkpCisgICAgICAgICAgICAgICAgICAgICAgICAgICAgc2Vla0hpZGRlbihzZWVrU3RlcEZvclJlcGVhdChldmVudC5uYXRpdmVLZXlFdmVudC5yZXBlYXRDb3VudCwgc2Vla1N0ZXBNcykpCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgdHJ1ZQogICAgICAgICAgICAgICAgICAgICAgICAgfQogICAgICAgICAgICAgICAgICAgICAgICAgQW5kcm9pZEtleUV2ZW50LktFWUNPREVfRFBBRF9VUCwKQEAgLTMwMywxMSArMzA2LDExIEBAIGZ1biBUdlBsYXllclNjcmVlbigKICAgICAgICAgICAgICAgICAgICAgICAgICAgICB0cnVlCiAgICAgICAgICAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgICAgICAgICAgICAgICBBbmRyb2lkS2V5RXZlbnQuS0VZQ09ERV9NRURJQV9GQVNUX0ZPUldBUkQgLT4gewotICAgICAgICAgICAgICAgICAgICAgICAgICAgIHNlZWtIaWRkZW4oc2Vla1N0ZXBGb3JSZXBlYXQoZXZlbnQubmF0aXZlS2V5RXZlbnQucmVwZWF0Q291bnQpKQorICAgICAgICAgICAgICAgICAgICAgICAgICAgIHNlZWtIaWRkZW4oc2Vla1N0ZXBGb3JSZXBlYXQoZXZlbnQubmF0aXZlS2V5RXZlbnQucmVwZWF0Q291bnQsIHNlZWtTdGVwTXMpKQogICAgICAgICAgICAgICAgICAgICAgICAgICAgIHRydWUKICAgICAgICAgICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgICAgICAgICAgICAgIEFuZHJvaWRLZXlFdmVudC5LRVlDT0RFX01FRElBX1JFV0lORCAtPiB7Ci0gICAgICAgICAgICAgICAgICAgICAgICAgICAgc2Vla0hpZGRlbigtc2Vla1N0ZXBGb3JSZXBlYXQoZXZlbnQubmF0aXZlS2V5RXZlbnQucmVwZWF0Q291bnQpKQorICAgICAgICAgICAgICAgICAgICAgICAgICAgIHNlZWtIaWRkZW4oLXNlZWtTdGVwRm9yUmVwZWF0KGV2ZW50Lm5hdGl2ZUtleUV2ZW50LnJlcGVhdENvdW50LCBzZWVrU3RlcE1zKSkKICAgICAgICAgICAgICAgICAgICAgICAgICAgICB0cnVlCiAgICAgICAgICAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgICAgICAgICAgICAgICBBbmRyb2lkS2V5RXZlbnQuS0VZQ09ERV9DQVBUSU9OUyAtPiB7CkBAIC0zNzMsNiArMzc2LDcgQEAgZnVuIFR2UGxheWVyU2NyZWVuKAogICAgICAgICAgICAgcnVudGltZSA9IHJ1bnRpbWUsCiAgICAgICAgICAgICBwbGF5UGF1c2VGb2N1c1JlcXVlc3RlciA9IHBsYXlQYXVzZUZvY3VzUmVxdWVzdGVyLAogICAgICAgICAgICAgcHJvZ3Jlc3NGb2N1c1JlcXVlc3RlciA9IHByb2dyZXNzRm9jdXNSZXF1ZXN0ZXIsCisgICAgICAgICAgICBzZWVrU3RlcE1zID0gc2Vla1N0ZXBNcywKICAgICAgICAgICAgIGhhc0VwaXNvZGVzID0gZXBpc29kZUNhdGFsb2d1ZS5lcGlzb2Rlcy5pc05vdEVtcHR5KCkgJiYgcmVxdWVzdC5lcGlzb2RlICE9IG51bGwsCiAgICAgICAgICAgICBoYXNOZXh0RXBpc29kZSA9IG5leHRFcGlzb2RlICE9IG51bGwsCiAgICAgICAgICAgICBhc3BlY3RNb2RlID0gYXNwZWN0TW9kZSwKQEAgLTQ4Niw2ICs0OTAsNyBAQCBmdW4gVHZQbGF5ZXJTY3JlZW4oCiAgICAgICAgICAgICBUdlBvc3RQbGF5T3ZlcmxheSgKICAgICAgICAgICAgICAgICByZXF1ZXN0ID0gcmVxdWVzdCwKICAgICAgICAgICAgICAgICBuZXh0RXBpc29kZSA9IG5leHRFcGlzb2RlLAorICAgICAgICAgICAgICAgIGF1dG9wbGF5RW5hYmxlZCA9IGF1dG9wbGF5TmV4dEVwaXNvZGUsCiAgICAgICAgICAgICAgICAgb25OZXh0ID0geyBuZXh0RXBpc29kZT8ubGV0KG9uRXBpc29kZVNlbGVjdGVkKSB9LAogICAgICAgICAgICAgICAgIG9uQmFja1RvRGV0YWlscyA9IG9uUmV0dXJuVG9EZXRhaWxzLAogICAgICAgICAgICAgKQpAQCAtNzM1LDExICs3NDAsMjcgQEAgcHJpdmF0ZSBmdW4gVHZQbGF5ZXJFcnJvck92ZXJsYXkoCiBwcml2YXRlIGZ1biBUdlBvc3RQbGF5T3ZlcmxheSgKICAgICByZXF1ZXN0OiBUdlBsYXliYWNrUmVxdWVzdCwKICAgICBuZXh0RXBpc29kZTogVHZDYW5vbmljYWxFcGlzb2RlPywKKyAgICBhdXRvcGxheUVuYWJsZWQ6IEJvb2xlYW4sCiAgICAgb25OZXh0OiAoKSAtPiBVbml0LAogICAgIG9uQmFja1RvRGV0YWlsczogKCkgLT4gVW5pdCwKICkgewogICAgIHZhbCBuZXh0UmVxdWVzdGVyID0gcmVtZW1iZXIgeyBGb2N1c1JlcXVlc3RlcigpIH0KICAgICB2YWwgYmFja1JlcXVlc3RlciA9IHJlbWVtYmVyIHsgRm9jdXNSZXF1ZXN0ZXIoKSB9CisgICAgdmFyIGF1dG9wbGF5Q2FuY2VsbGVkIGJ5IHJlbWVtYmVyKG5leHRFcGlzb2RlPy5pZGVudGl0eT8uc3RhYmxlS2V5LCBhdXRvcGxheUVuYWJsZWQpIHsKKyAgICAgICAgbXV0YWJsZVN0YXRlT2YoZmFsc2UpCisgICAgfQorICAgIHZhciBjb3VudGRvd25TZWNvbmRzIGJ5IHJlbWVtYmVyKG5leHRFcGlzb2RlPy5pZGVudGl0eT8uc3RhYmxlS2V5LCBhdXRvcGxheUVuYWJsZWQpIHsKKyAgICAgICAgbXV0YWJsZUludFN0YXRlT2YoaWYgKGF1dG9wbGF5RW5hYmxlZCAmJiBuZXh0RXBpc29kZSAhPSBudWxsKSBQT1NUX1BMQVlfQ09VTlRET1dOX1NFQ09ORFMgZWxzZSAwKQorICAgIH0KKworICAgIExhdW5jaGVkRWZmZWN0KG5leHRFcGlzb2RlPy5pZGVudGl0eT8uc3RhYmxlS2V5LCBhdXRvcGxheUVuYWJsZWQsIGF1dG9wbGF5Q2FuY2VsbGVkKSB7CisgICAgICAgIGlmICghYXV0b3BsYXlFbmFibGVkIHx8IG5leHRFcGlzb2RlID09IG51bGwgfHwgYXV0b3BsYXlDYW5jZWxsZWQpIHJldHVybkBMYXVuY2hlZEVmZmVjdAorICAgICAgICBmb3IgKHJlbWFpbmluZyBpbiBQT1NUX1BMQVlfQ09VTlRET1dOX1NFQ09ORFMgZG93blRvIDEpIHsKKyAgICAgICAgICAgIGNvdW50ZG93blNlY29uZHMgPSByZW1haW5pbmcKKyAgICAgICAgICAgIGRlbGF5KDFfMDAwTCkKKyAgICAgICAgfQorICAgICAgICBpZiAoIWF1dG9wbGF5Q2FuY2VsbGVkKSBvbk5leHQoKQorICAgIH0KICAgICBMYXVuY2hlZEVmZmVjdChuZXh0RXBpc29kZT8uaWRlbnRpdHk/LnN0YWJsZUtleSkgewogICAgICAgICBkZWxheSgxODApCiAgICAgICAgIGlmIChuZXh0RXBpc29kZSAhPSBudWxsKSBuZXh0UmVxdWVzdGVyLnJlcXVlc3RGb2N1cygpIGVsc2UgYmFja1JlcXVlc3Rlci5yZXF1ZXN0Rm9jdXMoKQpAQCAtNzk1LDcgKzgxNiwxMSBAQCBwcml2YXRlIGZ1biBUdlBvc3RQbGF5T3ZlcmxheSgKICAgICAgICAgICAgICAgICAgICAgKQogICAgICAgICAgICAgICAgICAgICBTcGFjZXIoTW9kaWZpZXIuaGVpZ2h0KDQuZHApKQogICAgICAgICAgICAgICAgICAgICBUZXh0KAotICAgICAgICAgICAgICAgICAgICAgICAgdGV4dCA9ICJQcmVzcyBPSyB0byBwbGF5IiwKKyAgICAgICAgICAgICAgICAgICAgICAgIHRleHQgPSBpZiAoYXV0b3BsYXlFbmFibGVkICYmICFhdXRvcGxheUNhbmNlbGxlZCkgeworICAgICAgICAgICAgICAgICAgICAgICAgICAgICJQbGF5aW5nIGluICR7Y291bnRkb3duU2Vjb25kcy5jb2VyY2VBdExlYXN0KDEpfXMiCisgICAgICAgICAgICAgICAgICAgICAgICB9IGVsc2UgeworICAgICAgICAgICAgICAgICAgICAgICAgICAgICJQcmVzcyBPSyB0byBwbGF5IgorICAgICAgICAgICAgICAgICAgICAgICAgfSwKICAgICAgICAgICAgICAgICAgICAgICAgIGNvbG9yID0gQ29sb3IuV2hpdGUuY29weShhbHBoYSA9IDAuNThmKSwKICAgICAgICAgICAgICAgICAgICAgICAgIGZvbnRTaXplID0gMTEuc3AsCiAgICAgICAgICAgICAgICAgICAgICkKQEAgLTgwNyw2ICs4MzIsNDIgQEAgcHJpdmF0ZSBmdW4gVHZQb3N0UGxheU92ZXJsYXkoCiAgICAgICAgICAgICAgICAgICAgIG1vZGlmaWVyID0gTW9kaWZpZXIuc2l6ZSgyMi5kcCksCiAgICAgICAgICAgICAgICAgKQogICAgICAgICAgICAgfQorICAgICAgICAgICAgdmFyIGJhY2tGb2N1c2VkIGJ5IHJlbWVtYmVyIHsgbXV0YWJsZVN0YXRlT2YoZmFsc2UpIH0KKyAgICAgICAgICAgIFJvdygKKyAgICAgICAgICAgICAgICBtb2RpZmllciA9IE1vZGlmaWVyCisgICAgICAgICAgICAgICAgICAgIC5hbGlnbihBbGlnbm1lbnQuQm90dG9tRW5kKQorICAgICAgICAgICAgICAgICAgICAucGFkZGluZyhlbmQgPSAyNi5kcCwgYm90dG9tID0gMTMyLmRwKQorICAgICAgICAgICAgICAgICAgICAuZm9jdXNSZXF1ZXN0ZXIoYmFja1JlcXVlc3RlcikKKyAgICAgICAgICAgICAgICAgICAgLm9uRm9jdXNDaGFuZ2VkIHsKKyAgICAgICAgICAgICAgICAgICAgICAgIGJhY2tGb2N1c2VkID0gaXQuaXNGb2N1c2VkCisgICAgICAgICAgICAgICAgICAgICAgICBpZiAoaXQuaXNGb2N1c2VkKSBhdXRvcGxheUNhbmNlbGxlZCA9IHRydWUKKyAgICAgICAgICAgICAgICAgICAgfQorICAgICAgICAgICAgICAgICAgICAuY2xpcChSb3VuZGVkQ29ybmVyU2hhcGUoMjIuZHApKQorICAgICAgICAgICAgICAgICAgICAuYmFja2dyb3VuZChpZiAoYmFja0ZvY3VzZWQpIENvbG9yLldoaXRlIGVsc2UgQ29sb3IoMHhFMzE5MTkxOSkpCisgICAgICAgICAgICAgICAgICAgIC5ib3JkZXIoCisgICAgICAgICAgICAgICAgICAgICAgICBpZiAoYmFja0ZvY3VzZWQpIDIuZHAgZWxzZSAxLmRwLAorICAgICAgICAgICAgICAgICAgICAgICAgaWYgKGJhY2tGb2N1c2VkKSBDb2xvci5XaGl0ZSBlbHNlIENvbG9yLldoaXRlLmNvcHkoYWxwaGEgPSAwLjE2ZiksCisgICAgICAgICAgICAgICAgICAgICAgICBSb3VuZGVkQ29ybmVyU2hhcGUoMjIuZHApLAorICAgICAgICAgICAgICAgICAgICApCisgICAgICAgICAgICAgICAgICAgIC5jbGlja2FibGUob25DbGljayA9IG9uQmFja1RvRGV0YWlscykKKyAgICAgICAgICAgICAgICAgICAgLmZvY3VzYWJsZSgpCisgICAgICAgICAgICAgICAgICAgIC5wYWRkaW5nKGhvcml6b250YWwgPSAxNi5kcCwgdmVydGljYWwgPSAxMC5kcCksCisgICAgICAgICAgICAgICAgdmVydGljYWxBbGlnbm1lbnQgPSBBbGlnbm1lbnQuQ2VudGVyVmVydGljYWxseSwKKyAgICAgICAgICAgICAgICBob3Jpem9udGFsQXJyYW5nZW1lbnQgPSBBcnJhbmdlbWVudC5zcGFjZWRCeSg4LmRwKSwKKyAgICAgICAgICAgICkgeworICAgICAgICAgICAgICAgIEljb24oCisgICAgICAgICAgICAgICAgICAgIGltYWdlVmVjdG9yID0gSWNvbnMuRGVmYXVsdC5BcnJvd0JhY2ssCisgICAgICAgICAgICAgICAgICAgIGNvbnRlbnREZXNjcmlwdGlvbiA9IG51bGwsCisgICAgICAgICAgICAgICAgICAgIHRpbnQgPSBpZiAoYmFja0ZvY3VzZWQpIENvbG9yLkJsYWNrIGVsc2UgQ29sb3IuV2hpdGUsCisgICAgICAgICAgICAgICAgICAgIG1vZGlmaWVyID0gTW9kaWZpZXIuc2l6ZSgxOC5kcCksCisgICAgICAgICAgICAgICAgKQorICAgICAgICAgICAgICAgIFRleHQoCisgICAgICAgICAgICAgICAgICAgIHRleHQgPSAiQmFjayB0byBkZXRhaWxzIiwKKyAgICAgICAgICAgICAgICAgICAgY29sb3IgPSBpZiAoYmFja0ZvY3VzZWQpIENvbG9yLkJsYWNrIGVsc2UgQ29sb3IuV2hpdGUsCisgICAgICAgICAgICAgICAgICAgIGZvbnRTaXplID0gMTMuc3AsCisgICAgICAgICAgICAgICAgICAgIGZvbnRXZWlnaHQgPSBGb250V2VpZ2h0Lk1lZGl1bSwKKyAgICAgICAgICAgICAgICApCisgICAgICAgICAgICB9CiAgICAgICAgIH0gZWxzZSB7CiAgICAgICAgICAgICB2YXIgZm9jdXNlZCBieSByZW1lbWJlciB7IG11dGFibGVTdGF0ZU9mKGZhbHNlKSB9CiAgICAgICAgICAgICBDb2x1bW4oCkBAIC04NDQsMTEgKzkwNSwxMiBAQCBwcml2YXRlIGZ1biBUdlBvc3RQbGF5T3ZlcmxheSgKICAgICB9CiB9CiAKLXByaXZhdGUgZnVuIHNlZWtTdGVwRm9yUmVwZWF0KHJlcGVhdENvdW50OiBJbnQpOiBMb25nID0gd2hlbiB7Ci0gICAgcmVwZWF0Q291bnQgPj0gMTQgLT4gNjBfMDAwTAotICAgIHJlcGVhdENvdW50ID49IDggLT4gMzBfMDAwTAotICAgIHJlcGVhdENvdW50ID49IDQgLT4gMjBfMDAwTAotICAgIGVsc2UgLT4gMTBfMDAwTAorcHJpdmF0ZSBmdW4gc2Vla1N0ZXBGb3JSZXBlYXQocmVwZWF0Q291bnQ6IEludCwgYmFzZVN0ZXBNczogTG9uZyk6IExvbmcgPSB3aGVuIHsKKyAgICByZXBlYXRDb3VudCA+PSAxNCAtPiBiYXNlU3RlcE1zICogNgorICAgIHJlcGVhdENvdW50ID49IDggLT4gYmFzZVN0ZXBNcyAqIDMKKyAgICByZXBlYXRDb3VudCA+PSA0IC0+IGJhc2VTdGVwTXMgKiAyCisgICAgZWxzZSAtPiBiYXNlU3RlcE1zCiB9CiAKLXByaXZhdGUgY29uc3QgdmFsIENPTlRST0xfSElERV9NUyA9IDVfMDAwTAorcHJpdmF0ZSBjb25zdCB2YWwgTUlOX0NPTlRST0xfSElERV9NUyA9IDFfMDAwTAorcHJpdmF0ZSBjb25zdCB2YWwgUE9TVF9QTEFZX0NPVU5URE9XTl9TRUNPTkRTID0gNQpkaWZmIC0tZ2l0IGEvYXBwL3NyYy9tYWluL2phdmEvYXBwL251ZHJvaWRsYWJzL251c3RyaW0vdHYvc291cmNlcy9UdlNvdXJjZXNFbnRyeS5rdCBiL2FwcC9zcmMvbWFpbi9qYXZhL2FwcC9udWRyb2lkbGFicy9udXN0cmltL3R2L3NvdXJjZXMvVHZTb3VyY2VzRW50cnkua3QKaW5kZXggMWM4NTUyOC4uZTU1MjQyOSAxMDA2NDQKLS0tIGEvYXBwL3NyYy9tYWluL2phdmEvYXBwL251ZHJvaWRsYWJzL251c3RyaW0vdHYvc291cmNlcy9UdlNvdXJjZXNFbnRyeS5rdAorKysgYi9hcHAvc3JjL21haW4vamF2YS9hcHAvbnVkcm9pZGxhYnMvbnVzdHJpbS90di9zb3VyY2VzL1R2U291cmNlc0VudHJ5Lmt0CkBAIC0xMSw2ICsxMSw3IEBAIGltcG9ydCBhbmRyb2lkeC5jb21wb3NlLnVpLk1vZGlmaWVyCiBpbXBvcnQgYW5kcm9pZHguY29tcG9zZS51aS5wbGF0Zm9ybS5Mb2NhbENvbnRleHQKIGltcG9ydCBhcHAubnVkcm9pZGxhYnMubnVzdHJpbS50di5mb2N1cy5UdkZvY3VzUmVnaXN0cnkKIGltcG9ydCBhcHAubnVkcm9pZGxhYnMubnVzdHJpbS50di5uYXZpZ2F0aW9uLlR2Um91dGUKK2ltcG9ydCBhcHAubnVkcm9pZGxhYnMubnVzdHJpbS51aS5VaVByZWZlcmVuY2VzCiBpbXBvcnQga290bGlueC5jb3JvdXRpbmVzLmZsb3cuY29sbGVjdAogCiBAQ29tcG9zYWJsZQpAQCAtMjMsNiArMjQsMTAgQEAgZnVuIFR2U291cmNlc0VudHJ5KAogKSB7CiAgICAgdmFsIGNvbnRleHQgPSBMb2NhbENvbnRleHQuY3VycmVudAogICAgIHZhbCByZXBvc2l0b3J5ID0gcmVtZW1iZXIoY29udGV4dC5hcHBsaWNhdGlvbkNvbnRleHQpIHsgVHZTb3VyY2VzUmVwb3NpdG9yeShjb250ZXh0LmFwcGxpY2F0aW9uQ29udGV4dCkgfQorICAgIHZhbCBhdXRvcGxheUZpcnN0U291cmNlID0gcmVtZW1iZXIocm91dGUuc3RhYmxlS2V5KSB7CisgICAgICAgIFVpUHJlZmVyZW5jZXMoY29udGV4dC5hcHBsaWNhdGlvbkNvbnRleHQpLmF1dG9wbGF5Rmlyc3RTb3VyY2UKKyAgICB9CisgICAgdmFyIGF1dG9wbGF5Q29uc3VtZWQgYnkgcmVtZW1iZXIocm91dGUuc3RhYmxlS2V5KSB7IG11dGFibGVTdGF0ZU9mKGZhbHNlKSB9CiAgICAgdmFyIHJlbG9hZFRva2VuIGJ5IHJlbWVtYmVyKHJvdXRlLnN0YWJsZUtleSkgeyBtdXRhYmxlSW50U3RhdGVPZigwKSB9CiAgICAgdmFyIHN0YXRlIGJ5IHJlbWVtYmVyKHJvdXRlLnN0YWJsZUtleSkgeyBtdXRhYmxlU3RhdGVPZjxUdlNvdXJjZXNVaVN0YXRlPihUdlNvdXJjZXNVaVN0YXRlLkxvYWRpbmcoKSkgfQogCkBAIC02MCw2ICs2NSwxNCBAQCBmdW4gVHZTb3VyY2VzRW50cnkoCiAgICAgICAgIH0KICAgICB9CiAKKyAgICBMYXVuY2hlZEVmZmVjdChzdGF0ZSwgYXV0b3BsYXlGaXJzdFNvdXJjZSwgYXV0b3BsYXlDb25zdW1lZCkgeworICAgICAgICBpZiAoIWF1dG9wbGF5Rmlyc3RTb3VyY2UgfHwgYXV0b3BsYXlDb25zdW1lZCkgcmV0dXJuQExhdW5jaGVkRWZmZWN0CisgICAgICAgIHZhbCByZWFkeSA9IHN0YXRlIGFzPyBUdlNvdXJjZXNVaVN0YXRlLlJlYWR5ID86IHJldHVybkBMYXVuY2hlZEVmZmVjdAorICAgICAgICB2YWwgZmlyc3RQbGF5YWJsZSA9IHJlYWR5LnNuYXBzaG90LnN0cmVhbXMuZmlyc3RPck51bGwgeyBpdC5wbGF5YWJsZSB9ID86IHJldHVybkBMYXVuY2hlZEVmZmVjdAorICAgICAgICBhdXRvcGxheUNvbnN1bWVkID0gdHJ1ZQorICAgICAgICBvblN0cmVhbVNlbGVjdGVkKGZpcnN0UGxheWFibGUpCisgICAgfQorCiAgICAgVHZTb3VyY2VzU2NyZWVuKAogICAgICAgICBtZWRpYSA9IHJvdXRlLm1lZGlhLAogICAgICAgICBlcGlzb2RlID0gcm91dGUuZXBpc29kZSwK"
+          MARKER_B64: "Z2VuZXJhdGlvbj1jbGVhbnJvb20tdjEKcmVmZXJlbmNlPW51dmlvLXR2LTAuOC42LWJldGEKc3Vic3lzdGVtPTEyLjMtcGxheWVyLW92ZXJsYXktcG9zdHBsYXkKc3RhdHVzPXJlbGVhc2UtY2FuZGlkYXRlCmJhc2VsaW5lPTAuNTEuNC10di1jbGVhbnJvb20tczYuMi1yb2xsYmFjawpwcmVzZXJ2ZT1zb3VyY2UtcHJvdmlkZXItZW5naW5lLHN0cmVhbS1yZXNvbHZlcixwbGF5YmFjay1lbmdpbmUsbW9iaWxlLXVpCmhvbWU9Y2xlYW5yb29tLXMyLWFjY2VwdGVkCmVwaXNvZGUtZG9tYWluPWNsZWFucm9vbS1zMy1hY2NlcHRlZApkZXRhaWxzPWNsZWFucm9vbS1zMTIuMi1lcGlzb2RlLWZvY3VzCmRldGFpbHMtZm9jdXMtcmVzdG9yZT1leGFjdC1zZWFzb24tYW5kLWVwaXNvZGUKZGV0YWlscy1oZXJvLXBsYXk9cmVtZW1iZXJlZC1lcGlzb2RlCmRldGFpbHMtYmFjaz1zaW5nbGUtcm91dGUtcG9wCmRldGFpbHMtbWV0YWRhdGE9cHJvdmlkZXItcmF0aW5nLWdlbnJlcy1jcmVkaXRzLWNhc3QKc291cmNlcz1jbGVhbnJvb20tczEyLjEtcHJvZ3Jlc3NpdmUKc291cmNlcy1wcm92aWRlci1zY2hlZHVsaW5nPXBhcmFsbGVsLWVxdWFsLXByaW9yaXR5CnNvdXJjZXMtcmVzdWx0LXB1YmxpY2F0aW9uPXBlci1wcm92aWRlci1jb21wbGV0aW9uCnNvdXJjZXMtZW1wdHktdGFicz1yZW1vdmVkLWFmdGVyLWNvbXBsZXRpb24Kc291cmNlcy1lcnJvci10YWJzPXJldGFpbmVkLWZvci1kaWFnbm9zdGljcwpzb3VyY2VzLWF1dG9wbGF5LWZpcnN0PXByZWZlcmVuY2UtY29ubmVjdGVkCnBsYXllcj1jbGVhbnJvb20tczEyLjMtb3ZlcmxheS1wb3N0cGxheQpwbGF5ZXItcGFyaXR5PWNsZWFucm9vbS1zNi4yLXJlc3RvcmVkLWFuZC1zMTIuMy1jbG9zZWQKcGxheWVyLWNvbnRyb2wtaGlkZT1wcmVmZXJlbmNlLWNvbm5lY3RlZApwbGF5ZXItc2Vlay1zdGVwPXByZWZlcmVuY2UtY29ubmVjdGVkCnBsYXllci1wb3N0cGxheT1uZXh0LWVwaXNvZGUtY291bnRkb3duLWFuZC1iYWNrLXRvLWRldGFpbHMKcGxheWVyLWF1dG9wbGF5LW5leHQ9cHJlZmVyZW5jZS1jb25uZWN0ZWQKc2VhcmNoPWNsZWFucm9vbS1zNwpzZWFyY2gtbWluLXF1ZXJ5LWxlbmd0aD0yCnNlYXJjaC1saXZlLWRlYm91bmNlLW1zPTM1MApzZWFyY2gtcmVjZW50LWxpbWl0PTgKc2VhcmNoLWRpc2NvdmVyPWNhdGFsb2ctc2VjdGlvbnMKc2VhcmNoLWRldGFpbHMtcm91dGU9ZW5hYmxlZApzZWFyY2gtZm9jdXM9ZXhhY3QtY2FyZC1yZXN0b3JhdGlvbgpsaWJyYXJ5PWNsZWFucm9vbS1zOApsaWJyYXJ5LXNlY3Rpb25zPXNhdmVkLGNvbnRpbnVlLXdhdGNoaW5nCmxpYnJhcnktZmlsdGVycz1tZWRpYS10eXBlLHdhdGNoZWQtc3RhdHVzCmxpYnJhcnktc29ydD1yZWNlbnQsb2xkZXN0LHRpdGxlLWFzYyx0aXRsZS1kZXNjCmxpYnJhcnktZGV0YWlscy1yb3V0ZT1lbmFibGVkCmxpYnJhcnktc2F2ZS10b2dnbGU9ZGV0YWlscy1pbnRlZ3JhdGVkCmxpYnJhcnktZm9jdXM9ZXhhY3QtY2FyZC1yZXN0b3JhdGlvbgpzZXR0aW5ncz1jbGVhbnJvb20tczkKc2V0dGluZ3MtbGF5b3V0PWNhdGVnb3J5LXJhaWwsZGV0YWlsLXBhbmUKc2V0dGluZ3Mtc2VjdGlvbnM9cGxheWJhY2ssc3VidGl0bGVzLGNvbnRlbnQsaW50ZWdyYXRpb25zLGFkdmFuY2VkLGFib3V0CnNldHRpbmdzLWNvbnRlbnQtc291cmNlcz1lbmFibGUtZGlzYWJsZQpzZXR0aW5ncy11cGRhdGUtY2hlY2s9ZW5hYmxlZApzZXR0aW5ncy1mb2N1cz1jYXRlZ29yeS1hbmQtZGV0YWlsLXJlc3RvcmF0aW9uCmdsb2JhbC1wb2xpc2g9Y2xlYW5yb29tLXMxMAp0di10aGVtZT1zaGFyZWQtY29sb3VyLHR5cG9ncmFwaHksc3BhY2luZyxtb3Rpb24KZm9jdXMtbW90aW9uPXNoYXJlZC1zY2FsZS1hbmQtZHVyYXRpb24KZm9jdXMtcmVzdG9yZT1ib3VuZGVkLXNpeC1mcmFtZS1yZXRyeQpwYXJpdHktcWE9Y2xlYW5yb29tLXMxMQpwYXJpdHktcmVmZXJlbmNlPW51dmlvLXR2LTAuOC42LWJldGFAMDgyYWY0ZTI5ZjQ2Mjk4NzNjMTg1MzYwNjM4OTQwZWE0MmJhOTg4ZQpwYXJpdHktc2NvcGU9c2hlbGwsaG9tZSxzZWFyY2gsbGlicmFyeSxzZXR0aW5ncyxkZXRhaWxzLHNvdXJjZXMscGxheWVyCnBhcml0eS1zdGF0aWMtY29udHJhY3Q9NDAvNDAKcGFyaXR5LWRldmljZS12aXN1YWw9cGVuZGluZwpzdWJ0aXRsZS1kaXNjb3Zlcnk9ZW1iZWRkZWQtYW5kLWVuYWJsZWQtYWRkb25zCnN1YnRpdGxlLXRpbWVvdXQtbXM9MzUwMApzdWJ0aXRsZS1wcmVmZXJlbmNlPW1hbGF5LWZpcnN0LWVuZ2xpc2gtc2Vjb25kCnN1YnRpdGxlLWlzc3VlPXMxMS1zdWItMDEtcmVzb2x2ZWQKYmFja2xvZz1zNi1wbGF5ZXItZmluYWwtcG9saXNoLHN1YnRpdGxlLW92ZXJsYXksdXBkYXRlcgphdXRvLXJlbGVhc2U9cGVybWFuZW50LXNpZ25lZApsZWdhY3ktZXBpc29kZS1lbmdpbmU9dW51c2VkLWJ5LWNsZWFucm9vbS10dgo="
+          VERIFY_B64: "IyEvdXNyL2Jpbi9lbnYgcHl0aG9uMwoiIiJTdGF0aWMgY29udHJhY3QgY2hlY2tzIGZvciBTMTIuMyBUViBQbGF5ZXIgb3ZlcmxheSBhbmQgcG9zdC1wbGF5IGNsb3N1cmUuIiIiCgpmcm9tIHBhdGhsaWIgaW1wb3J0IFBhdGgKCgpST09UID0gUGF0aChfX2ZpbGVfXykucmVzb2x2ZSgpLnBhcmVudHNbMV0KUExBWUVSID0gUk9PVCAvICJhcHAvc3JjL21haW4vamF2YS9hcHAvbnVkcm9pZGxhYnMvbnVzdHJpbS90di9wbGF5ZXIiClNPVVJDRVMgPSBST09UIC8gImFwcC9zcmMvbWFpbi9qYXZhL2FwcC9udWRyb2lkbGFicy9udXN0cmltL3R2L3NvdXJjZXMiCgoKZGVmIHJlYWQocGF0aDogUGF0aCkgLT4gc3RyOgogICAgcmV0dXJuIHBhdGgucmVhZF90ZXh0KGVuY29kaW5nPSJ1dGYtOCIpCgoKZW50cnkgPSByZWFkKFBMQVlFUiAvICJUdlBsYXllckVudHJ5Lmt0IikKc2NyZWVuID0gcmVhZChQTEFZRVIgLyAiVHZQbGF5ZXJTY3JlZW4ua3QiKQpjb250cm9scyA9IHJlYWQoUExBWUVSIC8gIlR2UGxheWVyQ29udHJvbHMua3QiKQpzb3VyY2VzID0gcmVhZChTT1VSQ0VTIC8gIlR2U291cmNlc0VudHJ5Lmt0IikKYnVpbGQgPSByZWFkKFJPT1QgLyAiYXBwL2J1aWxkLmdyYWRsZS5rdHMiKQptYXJrZXIgPSByZWFkKFJPT1QgLyAiLm51c3RyaW0tdHYiKQoKY2hlY2tzID0gewogICAgImF1dG9wbGF5IG5leHQgcHJlZmVyZW5jZSByZWFjaGVzIHBsYXllciI6CiAgICAgICAgImF1dG9wbGF5TmV4dEVwaXNvZGUgPSBwcmVmZXJlbmNlcy5hdXRvcGxheU5leHRFcGlzb2RlIiBpbiBlbnRyeSwKICAgICJzZWVrIHN0ZXAgcHJlZmVyZW5jZSByZWFjaGVzIHBsYXllciI6CiAgICAgICAgInNlZWtTdGVwTXMgPSBwcmVmZXJlbmNlcy50dlNlZWtTdGVwU2Vjb25kcyAqIDFfMDAwTCIgaW4gZW50cnksCiAgICAiY29udHJvbCBoaWRlIHByZWZlcmVuY2UgcmVhY2hlcyBwbGF5ZXIiOgogICAgICAgICJjb250cm9sc0F1dG9IaWRlTXMgPSBwcmVmZXJlbmNlcy50dkNvbnRyb2xzQXV0b0hpZGVTZWNvbmRzICogMV8wMDBMIiBpbiBlbnRyeSwKICAgICJjb250cm9sIGhpZGUgdXNlcyBwcmVmZXJlbmNlIjoKICAgICAgICAiZGVsYXkoY29udHJvbHNBdXRvSGlkZU1zLmNvZXJjZUF0TGVhc3QoTUlOX0NPTlRST0xfSElERV9NUykpIiBpbiBzY3JlZW4sCiAgICAiaGlkZGVuIHNlZWsgdXNlcyBwcmVmZXJlbmNlIjoKICAgICAgICAic2Vla1N0ZXBGb3JSZXBlYXQoZXZlbnQubmF0aXZlS2V5RXZlbnQucmVwZWF0Q291bnQsIHNlZWtTdGVwTXMpIiBpbiBzY3JlZW4sCiAgICAiZm9jdXNlZCBwcm9ncmVzcyBzZWVrIHVzZXMgcHJlZmVyZW5jZSI6CiAgICAgICAgInJ1bnRpbWUuc2Vla0J5KC1zZWVrU3RlcE1zKSIgaW4gY29udHJvbHMgYW5kICJydW50aW1lLnNlZWtCeShzZWVrU3RlcE1zKSIgaW4gY29udHJvbHMsCiAgICAicG9zdC1wbGF5IHJlY2VpdmVzIGF1dG9wbGF5IHByZWZlcmVuY2UiOgogICAgICAgICJhdXRvcGxheUVuYWJsZWQgPSBhdXRvcGxheU5leHRFcGlzb2RlIiBpbiBzY3JlZW4sCiAgICAicG9zdC1wbGF5IGNvdW50ZG93biBpcyBib3VuZGVkIjoKICAgICAgICAiZm9yIChyZW1haW5pbmcgaW4gUE9TVF9QTEFZX0NPVU5URE9XTl9TRUNPTkRTIGRvd25UbyAxKSIgaW4gc2NyZWVuLAogICAgInBvc3QtcGxheSBjb3VudGRvd24gY2FuIGJlIGNhbmNlbGxlZCI6CiAgICAgICAgImlmIChpdC5pc0ZvY3VzZWQpIGF1dG9wbGF5Q2FuY2VsbGVkID0gdHJ1ZSIgaW4gc2NyZWVuLAogICAgInBvc3QtcGxheSBrZWVwcyBleHBsaWNpdCBuZXh0IGFjdGlvbiI6CiAgICAgICAgJyJQcmVzcyBPSyB0byBwbGF5IicgaW4gc2NyZWVuIGFuZCAib25OZXh0ID0geyBuZXh0RXBpc29kZT8ubGV0KG9uRXBpc29kZVNlbGVjdGVkKSB9IiBpbiBzY3JlZW4sCiAgICAicG9zdC1wbGF5IGtlZXBzIGJhY2sgdG8gZGV0YWlscyI6CiAgICAgICAgJ3RleHQgPSAiQmFjayB0byBkZXRhaWxzIicgaW4gc2NyZWVuIGFuZCAiLmNsaWNrYWJsZShvbkNsaWNrID0gb25CYWNrVG9EZXRhaWxzKSIgaW4gc2NyZWVuLAogICAgImZpcnN0IHNvdXJjZSBhdXRvcGxheSBob25vdXJzIHByZWZlcmVuY2UiOgogICAgICAgICJVaVByZWZlcmVuY2VzKGNvbnRleHQuYXBwbGljYXRpb25Db250ZXh0KS5hdXRvcGxheUZpcnN0U291cmNlIiBpbiBzb3VyY2VzLAogICAgImZpcnN0IHNvdXJjZSBhdXRvcGxheSBpcyBvbmUtc2hvdCI6CiAgICAgICAgImlmICghYXV0b3BsYXlGaXJzdFNvdXJjZSB8fCBhdXRvcGxheUNvbnN1bWVkKSIgaW4gc291cmNlcwogICAgICAgIGFuZCAiYXV0b3BsYXlDb25zdW1lZCA9IHRydWUiIGluIHNvdXJjZXMsCiAgICAiZmlyc3Qgc291cmNlIGF1dG9wbGF5IHJlcXVpcmVzIHBsYXlhYmxlIHJlc3VsdCI6CiAgICAgICAgInJlYWR5LnNuYXBzaG90LnN0cmVhbXMuZmlyc3RPck51bGwgeyBpdC5wbGF5YWJsZSB9IiBpbiBzb3VyY2VzLAogICAgInRhcmdldCB2ZXJzaW9uIjoKICAgICAgICAndmVyc2lvbk5hbWUgPSAiMC41Ny4yLXR2LWNsZWFucm9vbS1zMTIuMy1wbGF5ZXItcG9zdHBsYXkiJyBpbiBidWlsZCwKICAgICJ0YXJnZXQgdmVyc2lvbiBjb2RlIjogInZlcnNpb25Db2RlID0gMTI1IiBpbiBidWlsZCwKICAgICJzdGFnZSBtYXJrZXIiOiAic3Vic3lzdGVtPTEyLjMtcGxheWVyLW92ZXJsYXktcG9zdHBsYXkiIGluIG1hcmtlciwKfQoKZmFpbGVkID0gW25hbWUgZm9yIG5hbWUsIHBhc3NlZCBpbiBjaGVja3MuaXRlbXMoKSBpZiBub3QgcGFzc2VkXQppZiBmYWlsZWQ6CiAgICByYWlzZSBTeXN0ZW1FeGl0KCJTMTIuMyBQbGF5ZXIgaW52YXJpYW50IGZhaWxlZDogIiArICIsICIuam9pbihmYWlsZWQpKQoKcHJpbnQoZiJTMTIuMyBQbGF5ZXIgb3ZlcmxheSBhbmQgcG9zdC1wbGF5IGludmFyaWFudHMgcGFzc2VkOiB7bGVuKGNoZWNrcyl9L3tsZW4oY2hlY2tzKX0iKQo="
+        run: |
+          set -euo pipefail
+          SCREEN="app/src/main/java/app/nudroidlabs/nustrim/tv/player/TvPlayerScreen.kt"
+          TARGET_SCREEN_SHA="c69dc1c8f74a4944f2c68c45760179d61e2ade0abdc3b499fd925260f011a452"
+          if [ "$(sha256sum "$SCREEN" | cut -d' ' -f1)" != "$TARGET_SCREEN_SHA" ]; then
+            PATCH_FILE="$RUNNER_TEMP/s12-3-player.patch"
+            printf '%s' "$SOURCE_PATCH_B64" | base64 --decode > "$PATCH_FILE"
+            git apply --check "$PATCH_FILE"
+            git apply "$PATCH_FILE"
+          fi
+          printf '%s' "$MARKER_B64" | base64 --decode > .nustrim-tv
+          mkdir -p scripts
+          printf '%s' "$VERIFY_B64" | base64 --decode > scripts/verify_tv_player_postplay_s12_3.py
+
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          target_name = "0.57.2-tv-cleanroom-s12.3-player-postplay"
+          minimum_code = 125
+          build_path = Path("app/build.gradle.kts")
+          build = build_path.read_text(encoding="utf-8")
+          code_match = re.search(r"versionCode\s*=\s*(\d+)", build)
+          name_match = re.search(r'versionName\s*=\s*"([^"]+)"', build)
+          if not code_match or not name_match:
+              raise SystemExit("Could not parse app version metadata")
+          current_code = int(code_match.group(1))
+          current_name = name_match.group(1)
+          target_code = current_code if current_name == target_name else max(current_code + 1, minimum_code)
+          build = re.sub(r"versionCode\s*=\s*\d+", f"versionCode = {target_code}", build, count=1)
+          build = re.sub(r'versionName\s*=\s*"[^"]+"', f'versionName = "{target_name}"', build, count=1)
+          build_path.write_text(build, encoding="utf-8")
+          Path(".nustrim-version").write_text(target_name + "\n", encoding="utf-8")
+          print(f"Prepared {target_name} ({target_code})")
+          PY
+
+      - name: Verify S12.3 boundary and invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          changed="$({ git diff --name-only; git ls-files --others --exclude-standard; } | sort -u)"
+          printf '%s\n' "$changed"
+          export CHANGED="$changed"
+          python3 <<'PY'
+          from pathlib import Path
+          import hashlib
+          import os
+
+          changed = [line for line in os.environ.get("CHANGED", "").splitlines() if line]
+          allowed = {
+              ".nustrim-tv",
+              ".nustrim-version",
+              "app/build.gradle.kts",
+              "app/src/main/java/app/nudroidlabs/nustrim/tv/player/TvPlayerControls.kt",
+              "app/src/main/java/app/nudroidlabs/nustrim/tv/player/TvPlayerEntry.kt",
+              "app/src/main/java/app/nudroidlabs/nustrim/tv/player/TvPlayerScreen.kt",
+              "app/src/main/java/app/nudroidlabs/nustrim/tv/sources/TvSourcesEntry.kt",
+              "scripts/verify_tv_player_postplay_s12_3.py",
+          }
+          unexpected = [path for path in changed if path not in allowed]
+          if unexpected:
+              raise SystemExit("S12.3 changed files outside Player boundary: " + ", ".join(unexpected))
+          expected_hashes = {
+              ".nustrim-tv": "8fcd7f2b534259e11c4f34fe67dfc2717815dcf91085b00085e92ca6463fdd2b",
+              "app/src/main/java/app/nudroidlabs/nustrim/tv/player/TvPlayerControls.kt": "cca71d04b9d8fbba74a300627fcf87cb6054834cd0a554f5f62a1c18c4979d8a",
+              "app/src/main/java/app/nudroidlabs/nustrim/tv/player/TvPlayerEntry.kt": "36caca9e0374a0f4f29d5ee702bd827bf8704db51e6e75837c8250cce9bf4e83",
+              "app/src/main/java/app/nudroidlabs/nustrim/tv/player/TvPlayerScreen.kt": "c69dc1c8f74a4944f2c68c45760179d61e2ade0abdc3b499fd925260f011a452",
+              "app/src/main/java/app/nudroidlabs/nustrim/tv/sources/TvSourcesEntry.kt": "042b27b07f3d6b5dddffac0b7ec852911ecbd42a33e1f0145bfce6e880fb3a3e",
+              "scripts/verify_tv_player_postplay_s12_3.py": "142ebff66caca213b0d70f13828a4f87517a008c1ebb8aae3c17d5ddfc2aa015",
+          }
+          mismatch = []
+          for relative, expected in expected_hashes.items():
+              actual = hashlib.sha256(Path(relative).read_bytes()).hexdigest()
+              if actual != expected:
+                  mismatch.append(relative)
+          if mismatch:
+              raise SystemExit("Exact S12.3 payload mismatch: " + ", ".join(mismatch))
+          version = Path(".nustrim-version").read_text().strip()
+          build = Path("app/build.gradle.kts").read_text()
+          if version != "0.57.2-tv-cleanroom-s12.3-player-postplay":
+              raise SystemExit("Unexpected S12.3 version marker")
+          if "versionCode = 125" not in build or f'versionName = "{version}"' not in build:
+              raise SystemExit("Unexpected S12.3 build metadata")
+          PY
+          python3 scripts/verify_tv_player_postplay_s12_3.py
+
+      - name: Build permanent signed release APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle --no-daemon --build-cache \
+            :app:lintRelease \
+            :app:testDebugUnitTest \
+            :app:assembleRelease \
+            --stacktrace --console=plain \
+            2>&1 | tee "$RUNNER_TEMP/nustrim-s12-3-player-build.log"
+          test -s app/build/outputs/apk/release/app-release.apk
+
+      - name: Verify APK identity and certificate
+        id: verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/release/app-release.apk"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)"
+          AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -1)"
+          test -x "$APKSIGNER"
+          test -x "$AAPT"
+          "$APKSIGNER" verify --verbose --print-certs "$APK" | tee "$RUNNER_TEMP/nustrim-s12-3-player-signature.txt"
+          CERT="$(sed -n -E 's/^.*certificate SHA-256 digest:[[:space:]]*//p' "$RUNNER_TEMP/nustrim-s12-3-player-signature.txt" | head -1 | tr -d ':' | tr '[:lower:]' '[:upper:]')"
+          test "$CERT" = "$LOCKED_CERT_SHA256"
+          BADGING="$("$AAPT" dump badging "$APK" | head -1)"
+          PACKAGE="$(printf '%s\n' "$BADGING" | sed -n -E "s/^package: name='([^']+)'.*/\1/p")"
+          APK_CODE="$(printf '%s\n' "$BADGING" | sed -n -E "s/^.*versionCode='([^']+)'.*/\1/p")"
+          APK_NAME="$(printf '%s\n' "$BADGING" | sed -n -E "s/^.*versionName='([^']+)'.*/\1/p")"
+          SRC_CODE="$(sed -n -E 's/.*versionCode[[:space:]]*=[[:space:]]*([0-9]+).*/\1/p' app/build.gradle.kts | head -1)"
+          SRC_NAME="$(sed -n -E 's/.*versionName[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' app/build.gradle.kts | head -1)"
+          test "$PACKAGE" = "app.nudroidlabs.nustrim"
+          test "$APK_CODE" = "$SRC_CODE"
+          test "$APK_NAME" = "$SRC_NAME"
+          test "$APK_NAME" = "$TARGET_VERSION_NAME"
+          test "$SRC_CODE" -ge "$MIN_TARGET_VERSION_CODE"
+          echo "cert_sha=$CERT" >> "$GITHUB_OUTPUT"
+          echo "version_code=$SRC_CODE" >> "$GITHUB_OUTPUT"
+          echo "version_name=$SRC_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare updater and S12.3 report
+        id: assets
+        shell: bash
+        env:
+          CERT_SHA: ${{ steps.verify.outputs.cert_sha }}
+          VERSION_CODE: ${{ steps.verify.outputs.version_code }}
+          VERSION_NAME: ${{ steps.verify.outputs.version_name }}
+        run: |
+          set -euo pipefail
+          export CERT_SHA VERSION_CODE VERSION_NAME
+          python3 <<'PY'
+          from pathlib import Path
+          import hashlib
+          import json
+          import os
+
+          code = int(os.environ["VERSION_CODE"])
+          name = os.environ["VERSION_NAME"]
+          cert = os.environ["CERT_SHA"]
+          repo = os.environ["GITHUB_REPOSITORY"]
+          src = Path("app/build/outputs/apk/release/app-release.apk")
+          apk = Path(f"Nustrim-{name}.apk")
+          apk.write_bytes(src.read_bytes())
+          sha = hashlib.sha256(apk.read_bytes()).hexdigest()
+          size = apk.stat().st_size
+          tag = f"v{name}"
+          manifest = {
+              "versionCode": code,
+              "versionName": name,
+              "apkUrl": f"https://github.com/{repo}/releases/download/{tag}/{apk.name}",
+              "sha256": sha,
+              "changelog": "S12.3 connects Player seek and control-hide settings, adds a cancellable next-episode countdown, keeps an explicit return-to-details action, and honours first-source autoplay when enabled.",
+              "sizeBytes": size,
+              "signingMode": "permanent",
+              "signingCertSha256": cert,
+          }
+          report = {
+              "stage": "S12.3 Player Overlay and Post-play",
+              "issue": "S12-PLY-01",
+              "status": "build-verified",
+              "scope": ["TV Player overlay", "post-play", "preference wiring", "one-shot source autoplay"],
+              "preserved": ["S12.2 Details", "provider scheduling", "subtitle discovery", "Mobile UI"],
+              "deviceAcceptance": "pending",
+              "requiredDeviceChecks": [
+                  "verify seek intervals at 10, 15, and 30 seconds",
+                  "verify controls hide at 3, 5, and 8 seconds",
+                  "verify autoplay-next countdown and cancellation",
+                  "verify Back to details from post-play",
+                  "verify autoplay-first-source only when enabled",
+              ],
+              "nextBacklog": "S12.4 Subtitle Overlay and Updater closure",
+          }
+          Path("update.json").write_text(json.dumps(manifest, indent=2) + "\n")
+          Path("tv-player-postplay-s12-3-report.json").write_text(json.dumps(report, indent=2) + "\n")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"tag={tag}\n")
+              fh.write(f"apk={apk.name}\n")
+              fh.write(f"sha256={sha}\n")
+          PY
+
+      - name: Commit S12.3 only after verified build
+        id: commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            .nustrim-version .nustrim-tv app/build.gradle.kts \
+            app/src/main/java/app/nudroidlabs/nustrim/tv/player/TvPlayerControls.kt \
+            app/src/main/java/app/nudroidlabs/nustrim/tv/player/TvPlayerEntry.kt \
+            app/src/main/java/app/nudroidlabs/nustrim/tv/player/TvPlayerScreen.kt \
+            app/src/main/java/app/nudroidlabs/nustrim/tv/sources/TvSourcesEntry.kt \
+            scripts/verify_tv_player_postplay_s12_3.py
+          if git diff --cached --quiet; then
+            echo "S12.3 Player source is already committed."
+          else
+            git commit -m "Close TV Player overlay and post-play S12.3 [skip ci]"
+            git push origin HEAD:main
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Create or update GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.assets.outputs.tag }}
+          VERSION: ${{ steps.verify.outputs.version_name }}
+          TARGET_SHA: ${{ steps.commit.outputs.sha }}
+        run: |
+          set -euo pipefail
+          NOTES="$RUNNER_TEMP/s12-3-player-release-notes.md"
+          printf '%s\n' \
+            "Nustrim $VERSION" "" \
+            "S12.3 connects Player seek and control-hide preferences, adds a cancellable next-episode countdown, keeps Back to details visible, and honours first-source autoplay only when enabled." "" \
+            "S12.2 Details, progressive provider scheduling, subtitle discovery, and Mobile UI remain preserved." "" \
+            "Permanent signing certificate SHA-256: $LOCKED_CERT_SHA256" > "$NOTES"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "Nustrim $VERSION" --notes-file "$NOTES" --target "$TARGET_SHA" --latest
+          else
+            gh release create "$TAG" --title "Nustrim $VERSION" --notes-file "$NOTES" --target "$TARGET_SHA" --latest
+          fi
+
+      - name: Upload and verify release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.assets.outputs.tag }}
+          APK: ${{ steps.assets.outputs.apk }}
+          EXPECTED_SHA: ${{ steps.assets.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" "$APK" update.json tv-player-postplay-s12-3-report.json --clobber
+          LIVE="$RUNNER_TEMP/s12-3-player-live"
+          mkdir -p "$LIVE"
+          gh release download "$TAG" --pattern "$APK" --pattern update.json --pattern tv-player-postplay-s12-3-report.json --dir "$LIVE" --clobber
+          test "$(sha256sum "$LIVE/$APK" | cut -d' ' -f1)" = "$EXPECTED_SHA"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)" = "$TAG"
+          python3 - "$LIVE" <<'PY'
+          from pathlib import Path
+          import json
+          import sys
+          root = Path(sys.argv[1])
+          report = json.loads((root / "tv-player-postplay-s12-3-report.json").read_text())
+          if report.get("issue") != "S12-PLY-01" or report.get("deviceAcceptance") != "pending":
+              raise SystemExit("Published S12.3 report is invalid")
+          PY
+
+      - name: Upload verified artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nustrim-tv-cleanroom-s12-3-player-release
+          path: |
+            Nustrim-${{ steps.verify.outputs.version_name }}.apk
+            update.json
+            tv-player-postplay-s12-3-report.json
+            ${{ runner.temp }}/nustrim-s12-3-player-signature.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Collect diagnose on failure
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          D="$RUNNER_TEMP/nustrim-s12-3-player-diagnose"
+          mkdir -p "$D"
+          cp "$RUNNER_TEMP/nustrim-s12-3-player-build.log" "$D/" 2>/dev/null
+          cp "$RUNNER_TEMP/nustrim-s12-3-player-signature.txt" "$D/" 2>/dev/null
+          cp app/build.gradle.kts .nustrim-version .nustrim-tv "$D/" 2>/dev/null
+          cp update.json tv-player-postplay-s12-3-report.json "$D/" 2>/dev/null
+          git status --short > "$D/git-status.txt" 2>&1
+          git diff > "$D/git-diff.txt" 2>&1
+
+      - name: Upload diagnose on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nustrim-tv-cleanroom-s12-3-player-diagnose
+          path: ${{ runner.temp }}/nustrim-s12-3-player-diagnose
+          if-no-files-found: warn
+          retention-days: 7
