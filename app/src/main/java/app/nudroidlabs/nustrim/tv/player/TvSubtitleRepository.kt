@@ -49,7 +49,7 @@ internal class TvSubtitleRepository(context: Context) {
             media = request.media,
             episode = request.episode,
         ).also { cache(cacheKey, it) }
-        val merged = applyPreference(
+        val merged = orderByPreference(
             subtitles = mergeSubtitles(
                 streamSubtitles = request.stream.subtitles,
                 externalSubtitles = external,
@@ -128,16 +128,13 @@ internal class TvSubtitleRepository(context: Context) {
         }
     }
 
-    private fun applyPreference(
+    private fun orderByPreference(
         subtitles: List<SubtitleSource>,
         preference: SubtitlePreference,
     ): List<SubtitleSource> {
-        val filtered = if (preference.displayMode == SubtitleDisplayMode.PREFERRED_ONLY) {
-            subtitles.filter { subtitle -> languageRank(subtitle, preference) < OTHER_LANGUAGE_RANK }
-        } else {
-            subtitles
-        }
-        return filtered.sortedWith(
+        // Keep every discovered track attached to Media3. Visibility belongs to the
+        // picker so a user can recover with Show All without rebuilding playback.
+        return subtitles.sortedWith(
             compareBy<SubtitleSource> { subtitle -> languageRank(subtitle, preference) }
                 .thenBy { subtitle -> subtitle.language.lowercase(Locale.ROOT) }
                 .thenBy { subtitle -> subtitle.label.lowercase(Locale.ROOT) },

@@ -59,6 +59,7 @@ import app.nudroidlabs.nustrim.tv.episode.TvCanonicalEpisode
 import app.nudroidlabs.nustrim.tv.episode.TvEpisodeCatalogue
 import app.nudroidlabs.nustrim.tv.sources.TvSourceStream
 import app.nudroidlabs.nustrim.tv.sources.TvSourcesSnapshot
+import app.nudroidlabs.nustrim.ui.SubtitleDisplayMode
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.delay
 
@@ -299,29 +300,62 @@ fun TvPlayerAudioPanel(
 @Composable
 fun TvPlayerSubtitlePanel(
     tracks: List<TvPlayerTrack>,
+    preferredLanguage: String,
+    secondPreferredLanguage: String,
+    displayMode: SubtitleDisplayMode,
+    fontSizeSp: Int,
+    bold: Boolean,
+    onFontSizeChange: (Int) -> Unit,
+    onBoldChange: (Boolean) -> Unit,
     onDisable: () -> Unit,
     onSelect: (TvPlayerTrack) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val offRequester = remember { FocusRequester() }
-    val requesters = remember(tracks.map { it.key }) { tracks.map { FocusRequester() } }
-    val selectedIndex = tracks.indexOfFirst { it.selected }
-    val languages = tracks
-        .map { it.language.trim() }
-        .filter { it.isNotBlank() }
-        .distinct()
-    val showLanguageRail = languages.size > 1
+    val preferredTracks = remember(tracks, preferredLanguage, secondPreferredLanguage, displayMode) {
+        if (displayMode == SubtitleDisplayMode.PREFERRED_ONLY) {
+            tracks.filter { track ->
+                track.languageCode.equals(preferredLanguage, ignoreCase = true) ||
+                    track.languageCode.equals(secondPreferredLanguage, ignoreCase = true)
+            }
+        } else {
+            tracks
+        }
+    }
+    val languages = remember(preferredTracks) {
+        preferredTracks
+            .groupBy { track -> track.language.ifBlank { "Unknown" } }
+            .toList()
+    }
+    val activeLanguage = tracks.firstOrNull { it.selected }?.language?.ifBlank { "Unknown" }
+    var selectedLanguage by remember(tracks.map { it.key }, activeLanguage, languages) {
+        mutableStateOf(
+            activeLanguage?.takeIf { active -> languages.any { it.first == active } }
+                ?: languages.firstOrNull()?.first,
+        )
+    }
+    val visibleTracks = remember(preferredTracks, selectedLanguage) {
+        preferredTracks.filter { track ->
+            track.language.ifBlank { "Unknown" } == selectedLanguage
+        }
+    }
+    val requesters = remember(visibleTracks.map { it.key }) {
+        visibleTracks.map { FocusRequester() }
+    }
+    val selectedIndex = visibleTracks.indexOfFirst { it.selected }
 
-    LaunchedEffect(tracks.map { it.key }) {
+    LaunchedEffect(visibleTracks.map { it.key }, selectedLanguage) {
         delay(180)
         if (selectedIndex >= 0) {
             requesters.getOrNull(selectedIndex)?.requestFocus()
+        } else if (requesters.isNotEmpty()) {
+            requesters.first().requestFocus()
         } else {
             offRequester.requestFocus()
         }
     }
 
-    TvPlayerBottomOverlayScaffold(title = "Subtitles", width = 760.dp, modifier = modifier) {
+    TvPlayerBottomOverlayScaffold(title = "Subtitles", width = 1_040.dp, modifier = modifier) {
         if (tracks.isEmpty()) {
             TvPanelTextRow(
                 title = "Off",
@@ -336,7 +370,7 @@ fun TvPlayerSubtitlePanel(
                 verticalAlignment = Alignment.Top,
             ) {
                 Column(
-                    modifier = Modifier.width(if (showLanguageRail) 220.dp else 180.dp),
+                    modifier = Modifier.width(220.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     Text("Options", color = Color.White.copy(alpha = 0.54f), fontSize = 12.sp)
@@ -347,30 +381,86 @@ fun TvPlayerSubtitlePanel(
                         focusRequester = offRequester,
                         onClick = onDisable,
                     )
-                    if (showLanguageRail) {
-                        Spacer(Modifier.height(4.dp))
-                        Text("Languages", color = Color.White.copy(alpha = 0.54f), fontSize = 12.sp)
-                        languages.take(7).forEach { language ->
-                            val isSelected = tracks.any { it.selected && it.language == language }
+                    Spacer(Modifier.height(4.dp))
+                    Text("Languages", color = Color.White.copy(alpha = 0.54f), fontSize = 12.sp)
+                    if (languages.isEmpty()) {
+                        Text(
+                            text = if (displayMode == SubtitleDisplayMode.PREFERRED_ONLY) {
+                                "No preferred tracks. Choose Show all in Settings."
+                            } else {
+                                "No subtitle languages"
+                            },
+                            color = Color.White.copy(alpha = 0.64f),
+                            fontSize = 12.sp,
+                        )
+                    } else {
+                        languages.take(7).forEach { (language, languageTracks) ->
                             TvPanelTextRow(
                                 title = language,
-                                subtitle = "",
-                                selected = isSelected,
-                                onClick = {
-                                    tracks.firstOrNull { it.language == language }?.let(onSelect)
-                                },
+                                subtitle = "${languageTracks.size} track(s)",
+                                selected = selectedLanguage == language,
+                                onClick = { selectedLanguage = language },
                             )
                         }
                     }
                 }
-                Column(modifier = Modifier.width(if (showLanguageRail) 500.dp else 540.dp)) {
+                Column(modifier = Modifier.width(500.dp)) {
                     Text("Tracks", color = Color.White.copy(alpha = 0.54f), fontSize = 12.sp)
                     Spacer(Modifier.height(8.dp))
-                    TvTrackList(
-                        tracks = tracks,
-                        requesters = requesters,
-                        onSelect = onSelect,
-                        modifier = Modifier.height(330.dp),
+                    if (visibleTracks.isEmpty()) {
+                        Text(
+                            text = "No tracks for this language",
+                            color = Color.White.copy(alpha = 0.66f),
+                            modifier = Modifier.padding(vertical = 12.dp),
+                        )
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier.height(330.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            contentPadding = PaddingValues(bottom = 8.dp),
+                        ) {
+                            itemsIndexed(visibleTracks, key = { _, track -> track.key }) { index, track ->
+                                TvPanelTextRow(
+                                    title = track.label,
+                                    subtitle = track.provider,
+                                    selected = track.selected,
+                                    focusRequester = requesters[index],
+                                    onClick = { onSelect(track) },
+                                )
+                            }
+                        }
+                    }
+                }
+                Column(
+                    modifier = Modifier.width(250.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text("Style", color = Color.White.copy(alpha = 0.54f), fontSize = 12.sp)
+                    TvPanelTextRow(
+                        title = "Text size +",
+                        subtitle = "$fontSizeSp sp",
+                        selected = false,
+                        onClick = {
+                            val next = (fontSizeSp + TvSubtitleStyleStore.FONT_SIZE_STEP)
+                                .coerceAtMost(TvSubtitleStyleStore.MAX_FONT_SIZE)
+                            onFontSizeChange(next)
+                        },
+                    )
+                    TvPanelTextRow(
+                        title = "Text size -",
+                        subtitle = "$fontSizeSp sp",
+                        selected = false,
+                        onClick = {
+                            val next = (fontSizeSp - TvSubtitleStyleStore.FONT_SIZE_STEP)
+                                .coerceAtLeast(TvSubtitleStyleStore.MIN_FONT_SIZE)
+                            onFontSizeChange(next)
+                        },
+                    )
+                    TvPanelTextRow(
+                        title = "Bold",
+                        subtitle = if (bold) "On" else "Off",
+                        selected = bold,
+                        onClick = { onBoldChange(!bold) },
                     )
                 }
             }

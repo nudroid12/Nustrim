@@ -83,7 +83,7 @@ internal fun TvSettingsScreen(
     onToggleMdbList: () -> Unit,
     onToggleDeveloperMode: () -> Unit,
     onToggleDeveloperDiagnostics: () -> Unit,
-    onCheckUpdates: () -> Unit,
+    onUpdateAction: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var category by remember(scopeKey) { mutableStateOf(memory.selectedCategory) }
@@ -146,7 +146,7 @@ internal fun TvSettingsScreen(
                 onToggleMdbList = onToggleMdbList,
                 onToggleDeveloperMode = onToggleDeveloperMode,
                 onToggleDeveloperDiagnostics = onToggleDeveloperDiagnostics,
-                onCheckUpdates = onCheckUpdates,
+                onUpdateAction = onUpdateAction,
                 modifier = Modifier.weight(1f).fillMaxHeight(),
             )
         }
@@ -265,7 +265,7 @@ private fun SettingsDetailPane(
     onToggleMdbList: () -> Unit,
     onToggleDeveloperMode: () -> Unit,
     onToggleDeveloperDiagnostics: () -> Unit,
-    onCheckUpdates: () -> Unit,
+    onUpdateAction: () -> Unit,
     modifier: Modifier,
 ) {
     Column(modifier.padding(horizontal = 28.dp, vertical = 24.dp)) {
@@ -495,17 +495,19 @@ private fun SettingsDetailPane(
                     }
                     item("about-update") {
                         SettingsActionRow(
-                            title = "Check for updates",
+                            title = updateTitle(updateState),
                             subtitle = updateSubtitle(updateState),
                             value = updateValue(updateState),
-                            enabled = updateState !is TvSettingsUpdateState.Checking,
-                            loading = updateState is TvSettingsUpdateState.Checking,
+                            enabled = updateState !is TvSettingsUpdateState.Checking &&
+                                updateState !is TvSettingsUpdateState.Downloading,
+                            loading = updateState is TvSettingsUpdateState.Checking ||
+                                updateState is TvSettingsUpdateState.Downloading,
                             anchorKey = settingsFirstDetailAnchorKey(category),
                             category = category,
                             memory = memory,
                             scopeKey = scopeKey,
                             focusRegistry = focusRegistry,
-                            onClick = onCheckUpdates,
+                            onClick = onUpdateAction,
                         )
                     }
                 }
@@ -681,7 +683,18 @@ private fun updateValue(state: TvSettingsUpdateState): String = when (state) {
     TvSettingsUpdateState.Checking -> ""
     TvSettingsUpdateState.UpToDate -> "Up to date"
     is TvSettingsUpdateState.Available -> state.info.versionName
+    is TvSettingsUpdateState.Downloading -> "${state.progress}%"
+    is TvSettingsUpdateState.PermissionRequired -> "Allow install"
+    is TvSettingsUpdateState.ReadyToInstall -> "Install"
     is TvSettingsUpdateState.Error -> "Try again"
+}
+
+private fun updateTitle(state: TvSettingsUpdateState): String = when (state) {
+    is TvSettingsUpdateState.Available -> "Download update"
+    is TvSettingsUpdateState.Downloading -> "Downloading update"
+    is TvSettingsUpdateState.PermissionRequired -> "Allow app installs"
+    is TvSettingsUpdateState.ReadyToInstall -> "Install update"
+    else -> "Check for updates"
 }
 
 private fun updateSubtitle(state: TvSettingsUpdateState): String = when (state) {
@@ -689,6 +702,9 @@ private fun updateSubtitle(state: TvSettingsUpdateState): String = when (state) 
     TvSettingsUpdateState.Checking -> "Checking the Nustrim release manifest..."
     TvSettingsUpdateState.UpToDate -> "This is the latest available build."
     is TvSettingsUpdateState.Available -> state.info.changelog.ifBlank { "A newer signed build is available." }
+    is TvSettingsUpdateState.Downloading -> "Downloading and verifying the APK SHA-256 digest."
+    is TvSettingsUpdateState.PermissionRequired -> "Allow Nustrim to install updates, then return here."
+    is TvSettingsUpdateState.ReadyToInstall -> "The verified APK is ready. Open the Android installer."
     is TvSettingsUpdateState.Error -> state.message
 }
 

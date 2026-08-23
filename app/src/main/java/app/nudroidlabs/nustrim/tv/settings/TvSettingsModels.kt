@@ -36,6 +36,9 @@ sealed interface TvSettingsUpdateState {
     data object Checking : TvSettingsUpdateState
     data object UpToDate : TvSettingsUpdateState
     data class Available(val info: UpdateInfo) : TvSettingsUpdateState
+    data class Downloading(val info: UpdateInfo, val progress: Int) : TvSettingsUpdateState
+    data class PermissionRequired(val info: UpdateInfo, val apkPath: String) : TvSettingsUpdateState
+    data class ReadyToInstall(val info: UpdateInfo, val apkPath: String) : TvSettingsUpdateState
     data class Error(val message: String) : TvSettingsUpdateState
 }
 

@@ -176,9 +176,10 @@ class TvPlayerRuntime(
                         val format = group.getTrackFormat(index)
                         val languageCode = canonicalLanguageCode(format.language.orEmpty())
                         val language = displayLanguageName(languageCode)
-                        val rawLabel = format.label.orEmpty()
-                            .replace(PROVIDER_SEPARATOR, " · ")
-                            .trim()
+                        val (provider, rawLabel) = splitProviderLabel(
+                            raw = format.label.orEmpty(),
+                            fallbackProvider = if (type == C.TRACK_TYPE_TEXT) "Embedded" else "Audio",
+                        )
                         val label = cleanTrackLabel(
                             rawLabel = rawLabel,
                             languageCode = languageCode,
@@ -197,6 +198,8 @@ class TvPlayerRuntime(
                                 },
                                 label = label,
                                 language = language,
+                                languageCode = languageCode,
+                                provider = provider,
                                 selected = group.isTrackSelected(index),
                                 group = group.mediaTrackGroup,
                                 trackIndex = index,
@@ -260,6 +263,19 @@ class TvPlayerRuntime(
             return languageLabel.ifBlank { "$fallback $ordinal" }
         }
         return normalizedRaw
+    }
+
+    private fun splitProviderLabel(
+        raw: String,
+        fallbackProvider: String,
+    ): Pair<String, String> {
+        val parts = raw.split(PROVIDER_SEPARATOR, limit = 2)
+        return if (parts.size == 2) {
+            parts[0].trim().ifBlank { fallbackProvider } to
+                parts[1].trim().ifBlank { "Subtitle" }
+        } else {
+            fallbackProvider to raw.trim()
+        }
     }
 
     private companion object {

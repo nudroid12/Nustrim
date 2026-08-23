@@ -26,6 +26,8 @@ data class TvPlayerTrack(
     val key: String,
     val label: String,
     val language: String,
+    val languageCode: String,
+    val provider: String,
     val selected: Boolean,
     val group: TrackGroup,
     val trackIndex: Int,

@@ -1,6 +1,8 @@
 package app.nudroidlabs.nustrim.tv.player
 
+import android.graphics.Typeface
 import android.text.format.DateFormat
+import android.util.TypedValue
 import android.view.KeyEvent as AndroidKeyEvent
 import androidx.activity.compose.BackHandler
 import androidx.annotation.OptIn
@@ -61,11 +63,13 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
 import app.nudroidlabs.nustrim.tv.episode.TvCanonicalEpisode
 import app.nudroidlabs.nustrim.tv.episode.TvEpisodeCatalogue
 import app.nudroidlabs.nustrim.tv.sources.TvSourceStream
 import app.nudroidlabs.nustrim.tv.sources.TvSourcesSnapshot
+import app.nudroidlabs.nustrim.ui.SubtitleDisplayMode
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.delay
 import java.util.Date
@@ -78,6 +82,9 @@ fun TvPlayerScreen(
     autoplayNextEpisode: Boolean,
     seekStepMs: Long,
     controlsAutoHideMs: Long,
+    preferredSubtitleLanguage: String,
+    secondPreferredSubtitleLanguage: String,
+    subtitleDisplayMode: SubtitleDisplayMode,
     episodeCatalogue: TvEpisodeCatalogue,
     sourceSnapshot: TvSourcesSnapshot?,
     sourcesLoading: Boolean,
@@ -89,7 +96,11 @@ fun TvPlayerScreen(
     onReturnToDetails: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    val subtitleStyleStore = remember(context.applicationContext) {
+        TvSubtitleStyleStore(context.applicationContext)
+    }
     val containerFocusRequester = remember { FocusRequester() }
     val playPauseFocusRequester = remember { FocusRequester() }
     val progressFocusRequester = remember { FocusRequester() }
@@ -102,6 +113,12 @@ fun TvPlayerScreen(
     var interactionToken by remember { mutableIntStateOf(0) }
     var seekOverlayToken by remember { mutableIntStateOf(0) }
     var showSeekOverlay by remember { mutableStateOf(false) }
+    var subtitleFontSizeSp by remember(request.mediaKey) {
+        mutableIntStateOf(subtitleStyleStore.fontSizeSp)
+    }
+    var subtitleBold by remember(request.mediaKey) {
+        mutableStateOf(subtitleStyleStore.bold)
+    }
 
     val currentCanonical = remember(episodeCatalogue, request.episode?.id) {
         request.episode?.id?.let { id ->
@@ -355,6 +372,21 @@ fun TvPlayerScreen(
                 if (view.player !== runtime.player) view.player = runtime.player
                 if (view.resizeMode != aspectMode.resizeMode) view.resizeMode = aspectMode.resizeMode
                 view.keepScreenOn = runtime.isPlaying || runtime.isBuffering
+                view.subtitleView?.apply {
+                    setApplyEmbeddedFontSizes(false)
+                    setApplyEmbeddedStyles(false)
+                    setFixedTextSize(TypedValue.COMPLEX_UNIT_SP, subtitleFontSizeSp.toFloat())
+                    setStyle(
+                        CaptionStyleCompat(
+                            android.graphics.Color.WHITE,
+                            android.graphics.Color.TRANSPARENT,
+                            android.graphics.Color.TRANSPARENT,
+                            CaptionStyleCompat.EDGE_TYPE_OUTLINE,
+                            android.graphics.Color.BLACK,
+                            if (subtitleBold) Typeface.DEFAULT_BOLD else Typeface.DEFAULT,
+                        ),
+                    )
+                }
             },
             modifier = Modifier.fillMaxSize(),
         )
@@ -452,18 +484,25 @@ fun TvPlayerScreen(
             )
             TvPlayerPanel.SUBTITLES -> TvPlayerSubtitlePanel(
                 tracks = runtime.subtitleTracks,
+                preferredLanguage = preferredSubtitleLanguage,
+                secondPreferredLanguage = secondPreferredSubtitleLanguage,
+                displayMode = subtitleDisplayMode,
+                fontSizeSp = subtitleFontSizeSp,
+                bold = subtitleBold,
+                onFontSizeChange = { next ->
+                    subtitleFontSizeSp = next
+                    subtitleStyleStore.fontSizeSp = next
+                },
+                onBoldChange = { next ->
+                    subtitleBold = next
+                    subtitleStyleStore.bold = next
+                },
                 onDisable = {
                     runtime.selectSubtitle(null)
-                    activePanel = null
-                    showMoreActions = false
-                    showControls = true
                     interact()
                 },
                 onSelect = { track ->
                     runtime.selectSubtitle(track)
-                    activePanel = null
-                    showMoreActions = false
-                    showControls = true
                     interact()
                 },
                 modifier = Modifier.fillMaxSize(),
