@@ -11,6 +11,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import app.nudroidlabs.nustrim.tv.focus.TvFocusRegistry
 import app.nudroidlabs.nustrim.tv.navigation.TvRoute
+import kotlinx.coroutines.flow.collect
 
 @Composable
 fun TvSourcesEntry(
@@ -23,16 +24,15 @@ fun TvSourcesEntry(
     val context = LocalContext.current
     val repository = remember(context.applicationContext) { TvSourcesRepository(context.applicationContext) }
     var reloadToken by remember(route.stableKey) { mutableIntStateOf(0) }
-    var state by remember(route.stableKey) { mutableStateOf<TvSourcesUiState>(TvSourcesUiState.Loading) }
+    var state by remember(route.stableKey) { mutableStateOf<TvSourcesUiState>(TvSourcesUiState.Loading()) }
 
     LaunchedEffect(route.stableKey, reloadToken) {
-        state = TvSourcesUiState.Loading
-        state = runCatching {
-            repository.load(route, forceRefresh = reloadToken > 0)
-        }.fold(
-            onSuccess = { snapshot ->
+        state = TvSourcesUiState.Loading()
+        runCatching {
+            repository.loadProgressively(route, forceRefresh = reloadToken > 0).collect { snapshot ->
                 when {
-                    snapshot.streams.isNotEmpty() -> TvSourcesUiState.Ready(snapshot)
+                    snapshot.streams.isNotEmpty() -> state = TvSourcesUiState.Ready(snapshot)
+                    snapshot.loadingProviderCount > 0 -> state = TvSourcesUiState.Loading(snapshot)
                     snapshot.attempts.isNotEmpty() &&
                         snapshot.attempts.all { it.status == TvSourceAttemptStatus.ERROR } -> {
                         val message = snapshot.attempts
@@ -48,17 +48,16 @@ fun TvSourcesEntry(
                             }
                             .orEmpty()
                             .ifBlank { "No source completed successfully." }
-                        TvSourcesUiState.Error(message)
+                        state = TvSourcesUiState.Error(message)
                     }
-                    else -> TvSourcesUiState.Empty(snapshot)
+                    else -> state = TvSourcesUiState.Empty(snapshot)
                 }
-            },
-            onFailure = { error ->
-                TvSourcesUiState.Error(
-                    error.message.orEmpty().ifBlank { "Unable to load sources." },
-                )
-            },
-        )
+            }
+        }.onFailure { error ->
+            state = TvSourcesUiState.Error(
+                error.message.orEmpty().ifBlank { "Unable to load sources." },
+            )
+        }
     }
 
     TvSourcesScreen(

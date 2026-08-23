@@ -5,6 +5,7 @@ import app.nudroidlabs.nustrim.core.model.MediaItem
 import app.nudroidlabs.nustrim.core.model.StreamSource
 
 enum class TvSourceAttemptStatus {
+    LOADING,
     SUCCESS,
     EMPTY,
     ERROR,
@@ -54,6 +55,8 @@ data class TvSourcesSnapshot(
     val attempts: List<TvSourceAttempt>,
     val streams: List<TvSourceStream>,
 ) {
+    val loadingProviderCount: Int = attempts.count { it.status == TvSourceAttemptStatus.LOADING }
+
     val sourceLabels: List<String> = streams
         .map { it.sourceLabel }
         .filter { it.isNotBlank() }
@@ -64,7 +67,7 @@ data class TvSourcesSnapshot(
 }
 
 sealed interface TvSourcesUiState {
-    data object Loading : TvSourcesUiState
+    data class Loading(val snapshot: TvSourcesSnapshot? = null) : TvSourcesUiState
     data class Ready(val snapshot: TvSourcesSnapshot) : TvSourcesUiState
     data class Empty(val snapshot: TvSourcesSnapshot) : TvSourcesUiState
     data class Error(val message: String) : TvSourcesUiState

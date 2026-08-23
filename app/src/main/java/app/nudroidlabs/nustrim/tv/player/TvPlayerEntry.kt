@@ -25,6 +25,7 @@ import app.nudroidlabs.nustrim.tv.sources.TvSourcesRepository
 import app.nudroidlabs.nustrim.tv.sources.TvSourcesSnapshot
 import app.nudroidlabs.nustrim.ui.UiPreferences
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collect
 
 @Composable
 fun TvPlayerEntry(
@@ -91,8 +92,14 @@ fun TvPlayerEntry(
     LaunchedEffect(sourceRoute.stableKey, refreshToken) {
         sourcesLoading = true
         sourcesError = null
-        runCatching { sourcesRepository.load(sourceRoute, forceRefresh = refreshToken > 0) }
-            .onSuccess { sourceSnapshot = it }
+        runCatching {
+            sourcesRepository
+                .loadProgressively(sourceRoute, forceRefresh = refreshToken > 0)
+                .collect { snapshot ->
+                    sourceSnapshot = snapshot
+                    sourcesLoading = snapshot.loadingProviderCount > 0
+                }
+        }
             .onFailure { error ->
                 sourcesError = error.message.orEmpty().ifBlank { error::class.java.simpleName }
             }

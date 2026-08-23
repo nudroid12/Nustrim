@@ -16,6 +16,13 @@ import app.nudroidlabs.nustrim.tv.navigation.TvRoute
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.flow.last
+import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
 import java.util.LinkedHashMap
@@ -30,27 +37,78 @@ class TvSourcesRepository(context: Context) {
     suspend fun load(
         route: TvRoute.Sources,
         forceRefresh: Boolean = false,
-    ): TvSourcesSnapshot {
+    ): TvSourcesSnapshot = loadProgressively(route, forceRefresh).last()
+
+    fun loadProgressively(
+        route: TvRoute.Sources,
+        forceRefresh: Boolean = false,
+    ): Flow<TvSourcesSnapshot> = channelFlow {
         if (!forceRefresh) {
-            cached(route.stableKey)?.let { return it }
+            cached(route.stableKey)?.let { cachedSnapshot ->
+                send(cachedSnapshot)
+                return@channelFlow
+            }
         }
 
         val sourceEntries = orderedEnabledSources(route.sourceUrl)
         if (sourceEntries.isEmpty()) {
-            return TvSourcesSnapshot(
+            val emptySnapshot = TvSourcesSnapshot(
                 media = route.media,
                 episode = route.episode,
                 attempts = emptyList(),
                 streams = emptyList(),
             ).also { cache(route.stableKey, it) }
+            send(emptySnapshot)
+            return@channelFlow
         }
 
-        val results = coroutineScope {
+        val attempts = LinkedHashMap<String, TvSourceAttempt>()
+        val streams = LinkedHashMap<String, TvSourceStream>()
+        val stateLock = Mutex()
+
+        sourceEntries.forEach { installed ->
+            attempts[attemptKey(installed.displayLabel)] = TvSourceAttempt(
+                sourceLabel = installed.displayLabel,
+                status = TvSourceAttemptStatus.LOADING,
+            )
+        }
+
+        suspend fun currentSnapshot(): TvSourcesSnapshot = stateLock.withLock {
+            TvSourcesSnapshot(
+                media = route.media,
+                episode = route.episode,
+                attempts = attempts.values.toList(),
+                streams = streams.values.toList(),
+            )
+        }
+
+        suspend fun publish(result: SourceResolveResult) {
+            stateLock.withLock {
+                result.attempts.forEach { attempt ->
+                    attempts[attemptKey(attempt.sourceLabel)] = attempt
+                }
+                result.streams.forEach { stream ->
+                    streams[stream.stableKey] = stream
+                }
+                send(
+                    TvSourcesSnapshot(
+                        media = route.media,
+                        episode = route.episode,
+                        attempts = attempts.values.toList(),
+                        streams = streams.values.toList(),
+                    ),
+                )
+            }
+        }
+
+        send(currentSnapshot())
+
+        coroutineScope {
             sourceEntries.map { installed ->
-                async {
-                    runCatching {
+                launch {
+                    val result = runCatching {
                         withTimeout(SOURCE_TIMEOUT_MS) {
-                            resolveInstalledSource(route, installed)
+                            resolveInstalledSource(route, installed, ::publish)
                         }
                     }.getOrElse { error ->
                         SourceResolveResult(
@@ -63,33 +121,69 @@ class TvSourcesRepository(context: Context) {
                             ),
                         )
                     }
+
+                    if (!result.publishedIncrementally) {
+                        val terminalResult = if (result.attempts.none {
+                                attemptKey(it.sourceLabel) == attemptKey(installed.displayLabel)
+                            }
+                        ) {
+                            result.copy(
+                                attempts = listOf(
+                                    TvSourceAttempt(
+                                        sourceLabel = installed.displayLabel,
+                                        status = TvSourceAttemptStatus.EMPTY,
+                                    ),
+                                ) + result.attempts,
+                            )
+                        } else {
+                            result
+                        }
+                        publish(terminalResult)
+                    } else if (result.attempts.none {
+                            attemptKey(it.sourceLabel) == attemptKey(installed.displayLabel)
+                        }
+                    ) {
+                        publish(
+                            SourceResolveResult(
+                                attempts = listOf(
+                                    TvSourceAttempt(
+                                        sourceLabel = installed.displayLabel,
+                                        status = TvSourceAttemptStatus.EMPTY,
+                                    ),
+                                ),
+                            ),
+                        )
+                    }
                 }
-            }.awaitAll()
+            }.joinAll()
         }
 
-        val attempts = results.flatMap { it.attempts }
-        val streams = results
-            .flatMap { it.streams }
-            .distinctBy { stream ->
-                listOf(
-                    stream.sourceLabel,
-                    stream.stream.providerId,
-                    stream.stream.name,
-                    stream.stream.url,
-                ).joinToString("|")
+        val finalSnapshot = stateLock.withLock {
+            attempts.entries.toList().forEach { (key, attempt) ->
+                if (attempt.status == TvSourceAttemptStatus.LOADING) {
+                    attempts[key] = attempt.copy(
+                        status = TvSourceAttemptStatus.ERROR,
+                        message = attempt.message.ifBlank { "Provider did not complete before timeout" },
+                    )
+                }
             }
-
-        return TvSourcesSnapshot(
-            media = route.media,
-            episode = route.episode,
-            attempts = attempts,
-            streams = streams,
-        ).also { cache(route.stableKey, it) }
+            TvSourcesSnapshot(
+                media = route.media,
+                episode = route.episode,
+                attempts = attempts.values.toList(),
+                streams = streams.values.toList(),
+            )
+        }
+        cache(route.stableKey, finalSnapshot)
+        send(finalSnapshot)
     }
+
+    private fun attemptKey(label: String): String = label.trim().lowercase()
 
     private suspend fun resolveInstalledSource(
         route: TvRoute.Sources,
         installed: SourceEntry,
+        onProgress: suspend (SourceResolveResult) -> Unit,
     ): SourceResolveResult {
         val session = sourceEngine.awaitOpen(installed.url)
         return resolveSession(
@@ -98,6 +192,7 @@ class TvSourcesRepository(context: Context) {
             fallbackLabel = installed.displayLabel,
             session = session,
             depth = 0,
+            onProgress = onProgress,
         )
     }
 
@@ -107,6 +202,7 @@ class TvSourcesRepository(context: Context) {
         fallbackLabel: String,
         session: SourceSession,
         depth: Int,
+        onProgress: suspend (SourceResolveResult) -> Unit,
     ): SourceResolveResult {
         if (depth > MAX_CHILD_DEPTH) {
             return SourceResolveResult(
@@ -128,6 +224,7 @@ class TvSourcesRepository(context: Context) {
                 session = session,
                 opener = session,
                 depth = depth,
+                onProgress = onProgress,
             )
         }
 
@@ -321,6 +418,7 @@ class TvSourcesRepository(context: Context) {
         session: SourceSession,
         opener: ChildSourceOpener,
         depth: Int,
+        onProgress: suspend (SourceResolveResult) -> Unit,
     ): SourceResolveResult {
         val containerLabel = session.displayName.ifBlank { fallbackLabel }
         val catalog = runCatching { session.awaitCatalog() }.getOrElse { error ->
@@ -353,6 +451,7 @@ class TvSourcesRepository(context: Context) {
                         fallbackLabel = containerLabel,
                         session = directProvider,
                         depth = depth + 1,
+                        onProgress = onProgress,
                     )
                 }
             }.getOrElse { error ->
@@ -380,6 +479,28 @@ class TvSourcesRepository(context: Context) {
             )
         }
 
+        onProgress(
+            SourceResolveResult(
+                attempts = buildList {
+                    add(
+                        TvSourceAttempt(
+                            sourceLabel = containerLabel,
+                            status = TvSourceAttemptStatus.EMPTY,
+                        ),
+                    )
+                    children.forEach { child ->
+                        add(
+                            TvSourceAttempt(
+                                sourceLabel = child.title.ifBlank { containerLabel },
+                                status = TvSourceAttemptStatus.LOADING,
+                            ),
+                        )
+                    }
+                },
+                publishedIncrementally = true,
+            ),
+        )
+
         val childResults = coroutineScope {
             children.map { child ->
                 async {
@@ -392,6 +513,7 @@ class TvSourcesRepository(context: Context) {
                                 fallbackLabel = child.title.ifBlank { containerLabel },
                                 session = childSession,
                                 depth = depth + 1,
+                                onProgress = onProgress,
                             )
                         }
                     }.getOrElse { error ->
@@ -404,6 +526,10 @@ class TvSourcesRepository(context: Context) {
                                 ),
                             ),
                         )
+                    }.also { childResult ->
+                        if (!childResult.publishedIncrementally) {
+                            onProgress(childResult)
+                        }
                     }
                 }
             }.awaitAll()
@@ -412,6 +538,7 @@ class TvSourcesRepository(context: Context) {
         return SourceResolveResult(
             attempts = childResults.flatMap { it.attempts },
             streams = childResults.flatMap { it.streams },
+            publishedIncrementally = true,
         )
     }
 
@@ -554,6 +681,7 @@ class TvSourcesRepository(context: Context) {
     private data class SourceResolveResult(
         val attempts: List<TvSourceAttempt> = emptyList(),
         val streams: List<TvSourceStream> = emptyList(),
+        val publishedIncrementally: Boolean = false,
     )
 
     private fun cached(key: String): TvSourcesSnapshot? = synchronized(snapshotCache) {

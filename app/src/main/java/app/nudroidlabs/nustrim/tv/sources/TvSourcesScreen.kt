@@ -241,6 +241,7 @@ private fun SourcesRightPane(
     modifier: Modifier,
 ) {
     val snapshot = when (state) {
+        is TvSourcesUiState.Loading -> state.snapshot
         is TvSourcesUiState.Ready -> state.snapshot
         is TvSourcesUiState.Empty -> state.snapshot
         else -> null
@@ -310,6 +311,20 @@ private fun SourcesRightPane(
             onRefresh = onRefresh,
             onSelectFilter = ::selectFilter,
         )
+        snapshot?.loadingProviderCount
+            ?.takeIf { it > 0 }
+            ?.let { loadingCount ->
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = if (loadingCount == 1) {
+                        "1 provider still loading"
+                    } else {
+                        "$loadingCount providers still loading"
+                    },
+                    color = Color(0xFFB7B9BF),
+                    fontSize = 12.sp,
+                )
+            }
         Spacer(Modifier.height(18.dp))
         Box(
             modifier = Modifier
@@ -319,7 +334,7 @@ private fun SourcesRightPane(
                 .border(1.dp, Color(0x443D414A), RoundedCornerShape(22.dp)),
         ) {
             when (state) {
-                TvSourcesUiState.Loading -> SourcesLoading()
+                is TvSourcesUiState.Loading -> SourcesLoading(state.snapshot?.loadingProviderCount ?: 0)
                 is TvSourcesUiState.Error -> SourcesError(
                     message = state.message,
                     scopeKey = scopeKey,
@@ -364,7 +379,11 @@ private fun SourceFilterRow(
     val labels = remember(snapshot) {
         buildList {
             snapshot?.sourceLabels.orEmpty().forEach { if (it !in this) add(it) }
-            attempts.map { it.sourceLabel }.filter { it.isNotBlank() }.forEach { if (it !in this) add(it) }
+            attempts
+                .filter { it.status != TvSourceAttemptStatus.EMPTY }
+                .map { it.sourceLabel }
+                .filter { it.isNotBlank() }
+                .forEach { if (it !in this) add(it) }
         }.take(MAX_FILTER_CHIPS)
     }
     val attemptByLabel = remember(attempts) {
@@ -406,8 +425,8 @@ private fun SourceFilterRow(
             val hasStreams = snapshot?.streams?.any { it.sourceLabel == label } == true
             val attempt = attemptByLabel[label]
             val suffix = when (attempt?.status) {
+                TvSourceAttemptStatus.LOADING -> "  …"
                 TvSourceAttemptStatus.ERROR -> "  ×"
-                TvSourceAttemptStatus.EMPTY -> "  ·"
                 else -> ""
             }
             SourceChip(
@@ -684,7 +703,7 @@ private fun SourceStreamCard(
 }
 
 @Composable
-private fun SourcesLoading() {
+private fun SourcesLoading(loadingProviderCount: Int) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -702,7 +721,21 @@ private fun SourcesLoading() {
         }
     }
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        CircularProgressIndicator(color = Color(0xFFE6E7E9), strokeWidth = 2.dp)
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            CircularProgressIndicator(color = Color(0xFFE6E7E9), strokeWidth = 2.dp)
+            if (loadingProviderCount > 0) {
+                Spacer(Modifier.height(14.dp))
+                Text(
+                    text = if (loadingProviderCount == 1) {
+                        "Loading 1 provider"
+                    } else {
+                        "Loading $loadingProviderCount providers"
+                    },
+                    color = Color(0xFFB7B9BF),
+                    fontSize = 13.sp,
+                )
+            }
+        }
     }
 }
 
@@ -794,6 +827,8 @@ private fun SourcesEmpty(attempts: List<TvSourceAttempt>) {
                             append(": ")
                             append(
                                 when (attempt.status) {
+                                    TvSourceAttemptStatus.LOADING ->
+                                        "loading"
                                     TvSourceAttemptStatus.SUCCESS ->
                                         "${attempt.streamCount} stream(s)"
                                     TvSourceAttemptStatus.EMPTY ->
