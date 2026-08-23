@@ -66,6 +66,7 @@ fun TvPlayerControls(
     runtime: TvPlayerRuntime,
     playPauseFocusRequester: FocusRequester,
     progressFocusRequester: FocusRequester,
+    seekStepMs: Long,
     hasEpisodes: Boolean,
     hasNextEpisode: Boolean,
     aspectMode: TvPlayerAspectMode,
@@ -169,6 +170,7 @@ fun TvPlayerControls(
                 Spacer(Modifier.height(12.dp))
                 TvPlayerProgressBar(
                     runtime = runtime,
+                    seekStepMs = seekStepMs,
                     focusRequester = progressFocusRequester,
                     downFocusRequester = playPauseFocusRequester,
                     onInteraction = onInteraction,
@@ -352,6 +354,7 @@ private fun TvPlayerControlButton(
 @Composable
 private fun TvPlayerProgressBar(
     runtime: TvPlayerRuntime,
+    seekStepMs: Long,
     focusRequester: FocusRequester,
     downFocusRequester: FocusRequester,
     onInteraction: () -> Unit,
@@ -375,12 +378,12 @@ private fun TvPlayerProgressBar(
                 if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
                 when (event.key) {
                     Key.DirectionLeft -> {
-                        runtime.seekBy(-10_000L)
+                        runtime.seekBy(-seekStepMs)
                         onInteraction()
                         true
                     }
                     Key.DirectionRight -> {
-                        runtime.seekBy(10_000L)
+                        runtime.seekBy(seekStepMs)
                         onInteraction()
                         true
                     }

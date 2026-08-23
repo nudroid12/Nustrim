@@ -161,6 +161,9 @@ fun TvPlayerEntry(
                 TvPlayerScreen(
                     request = playbackRequest,
                     runtime = runtime,
+                    autoplayNextEpisode = preferences.autoplayNextEpisode,
+                    seekStepMs = preferences.tvSeekStepSeconds * 1_000L,
+                    controlsAutoHideMs = preferences.tvControlsAutoHideSeconds * 1_000L,
                     episodeCatalogue = episodeCatalogue,
                     sourceSnapshot = sourceSnapshot,
                     sourcesLoading = sourcesLoading,

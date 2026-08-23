@@ -11,6 +11,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import app.nudroidlabs.nustrim.tv.focus.TvFocusRegistry
 import app.nudroidlabs.nustrim.tv.navigation.TvRoute
+import app.nudroidlabs.nustrim.ui.UiPreferences
 import kotlinx.coroutines.flow.collect
 
 @Composable
@@ -23,6 +24,10 @@ fun TvSourcesEntry(
 ) {
     val context = LocalContext.current
     val repository = remember(context.applicationContext) { TvSourcesRepository(context.applicationContext) }
+    val autoplayFirstSource = remember(route.stableKey) {
+        UiPreferences(context.applicationContext).autoplayFirstSource
+    }
+    var autoplayConsumed by remember(route.stableKey) { mutableStateOf(false) }
     var reloadToken by remember(route.stableKey) { mutableIntStateOf(0) }
     var state by remember(route.stableKey) { mutableStateOf<TvSourcesUiState>(TvSourcesUiState.Loading()) }
 
@@ -58,6 +63,14 @@ fun TvSourcesEntry(
                 error.message.orEmpty().ifBlank { "Unable to load sources." },
             )
         }
+    }
+
+    LaunchedEffect(state, autoplayFirstSource, autoplayConsumed) {
+        if (!autoplayFirstSource || autoplayConsumed) return@LaunchedEffect
+        val ready = state as? TvSourcesUiState.Ready ?: return@LaunchedEffect
+        val firstPlayable = ready.snapshot.streams.firstOrNull { it.playable } ?: return@LaunchedEffect
+        autoplayConsumed = true
+        onStreamSelected(firstPlayable)
     }
 
     TvSourcesScreen(

@@ -75,6 +75,9 @@ import java.util.Date
 fun TvPlayerScreen(
     request: TvPlaybackRequest,
     runtime: TvPlayerRuntime,
+    autoplayNextEpisode: Boolean,
+    seekStepMs: Long,
+    controlsAutoHideMs: Long,
     episodeCatalogue: TvEpisodeCatalogue,
     sourceSnapshot: TvSourcesSnapshot?,
     sourcesLoading: Boolean,
@@ -214,7 +217,7 @@ fun TvPlayerScreen(
         if (!showControls || activePanel != null || runtime.errorMessage != null || runtime.ended || !runtime.readyOrEnded) {
             return@LaunchedEffect
         }
-        delay(CONTROL_HIDE_MS)
+        delay(controlsAutoHideMs.coerceAtLeast(MIN_CONTROL_HIDE_MS))
         showMoreActions = false
         showControls = false
         if (!runtime.isPlaying && runtime.readyOrEnded && !runtime.ended) {
@@ -277,11 +280,11 @@ fun TvPlayerScreen(
                             true
                         }
                         AndroidKeyEvent.KEYCODE_DPAD_LEFT -> {
-                            seekHidden(-seekStepForRepeat(event.nativeKeyEvent.repeatCount))
+                            seekHidden(-seekStepForRepeat(event.nativeKeyEvent.repeatCount, seekStepMs))
                             true
                         }
                         AndroidKeyEvent.KEYCODE_DPAD_RIGHT -> {
-                            seekHidden(seekStepForRepeat(event.nativeKeyEvent.repeatCount))
+                            seekHidden(seekStepForRepeat(event.nativeKeyEvent.repeatCount, seekStepMs))
                             true
                         }
                         AndroidKeyEvent.KEYCODE_DPAD_UP,
@@ -303,11 +306,11 @@ fun TvPlayerScreen(
                             true
                         }
                         AndroidKeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> {
-                            seekHidden(seekStepForRepeat(event.nativeKeyEvent.repeatCount))
+                            seekHidden(seekStepForRepeat(event.nativeKeyEvent.repeatCount, seekStepMs))
                             true
                         }
                         AndroidKeyEvent.KEYCODE_MEDIA_REWIND -> {
-                            seekHidden(-seekStepForRepeat(event.nativeKeyEvent.repeatCount))
+                            seekHidden(-seekStepForRepeat(event.nativeKeyEvent.repeatCount, seekStepMs))
                             true
                         }
                         AndroidKeyEvent.KEYCODE_CAPTIONS -> {
@@ -373,6 +376,7 @@ fun TvPlayerScreen(
             runtime = runtime,
             playPauseFocusRequester = playPauseFocusRequester,
             progressFocusRequester = progressFocusRequester,
+            seekStepMs = seekStepMs,
             hasEpisodes = episodeCatalogue.episodes.isNotEmpty() && request.episode != null,
             hasNextEpisode = nextEpisode != null,
             aspectMode = aspectMode,
@@ -486,6 +490,7 @@ fun TvPlayerScreen(
             TvPostPlayOverlay(
                 request = request,
                 nextEpisode = nextEpisode,
+                autoplayEnabled = autoplayNextEpisode,
                 onNext = { nextEpisode?.let(onEpisodeSelected) },
                 onBackToDetails = onReturnToDetails,
             )
@@ -735,11 +740,27 @@ private fun TvPlayerErrorOverlay(
 private fun TvPostPlayOverlay(
     request: TvPlaybackRequest,
     nextEpisode: TvCanonicalEpisode?,
+    autoplayEnabled: Boolean,
     onNext: () -> Unit,
     onBackToDetails: () -> Unit,
 ) {
     val nextRequester = remember { FocusRequester() }
     val backRequester = remember { FocusRequester() }
+    var autoplayCancelled by remember(nextEpisode?.identity?.stableKey, autoplayEnabled) {
+        mutableStateOf(false)
+    }
+    var countdownSeconds by remember(nextEpisode?.identity?.stableKey, autoplayEnabled) {
+        mutableIntStateOf(if (autoplayEnabled && nextEpisode != null) POST_PLAY_COUNTDOWN_SECONDS else 0)
+    }
+
+    LaunchedEffect(nextEpisode?.identity?.stableKey, autoplayEnabled, autoplayCancelled) {
+        if (!autoplayEnabled || nextEpisode == null || autoplayCancelled) return@LaunchedEffect
+        for (remaining in POST_PLAY_COUNTDOWN_SECONDS downTo 1) {
+            countdownSeconds = remaining
+            delay(1_000L)
+        }
+        if (!autoplayCancelled) onNext()
+    }
     LaunchedEffect(nextEpisode?.identity?.stableKey) {
         delay(180)
         if (nextEpisode != null) nextRequester.requestFocus() else backRequester.requestFocus()
@@ -795,7 +816,11 @@ private fun TvPostPlayOverlay(
                     )
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        text = "Press OK to play",
+                        text = if (autoplayEnabled && !autoplayCancelled) {
+                            "Playing in ${countdownSeconds.coerceAtLeast(1)}s"
+                        } else {
+                            "Press OK to play"
+                        },
                         color = Color.White.copy(alpha = 0.58f),
                         fontSize = 11.sp,
                     )
@@ -805,6 +830,42 @@ private fun TvPostPlayOverlay(
                     contentDescription = null,
                     tint = Color.White,
                     modifier = Modifier.size(22.dp),
+                )
+            }
+            var backFocused by remember { mutableStateOf(false) }
+            Row(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 26.dp, bottom = 132.dp)
+                    .focusRequester(backRequester)
+                    .onFocusChanged {
+                        backFocused = it.isFocused
+                        if (it.isFocused) autoplayCancelled = true
+                    }
+                    .clip(RoundedCornerShape(22.dp))
+                    .background(if (backFocused) Color.White else Color(0xE3191919))
+                    .border(
+                        if (backFocused) 2.dp else 1.dp,
+                        if (backFocused) Color.White else Color.White.copy(alpha = 0.16f),
+                        RoundedCornerShape(22.dp),
+                    )
+                    .clickable(onClick = onBackToDetails)
+                    .focusable()
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Default.ArrowBack,
+                    contentDescription = null,
+                    tint = if (backFocused) Color.Black else Color.White,
+                    modifier = Modifier.size(18.dp),
+                )
+                Text(
+                    text = "Back to details",
+                    color = if (backFocused) Color.Black else Color.White,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
                 )
             }
         } else {
@@ -844,11 +905,12 @@ private fun TvPostPlayOverlay(
     }
 }
 
-private fun seekStepForRepeat(repeatCount: Int): Long = when {
-    repeatCount >= 14 -> 60_000L
-    repeatCount >= 8 -> 30_000L
-    repeatCount >= 4 -> 20_000L
-    else -> 10_000L
+private fun seekStepForRepeat(repeatCount: Int, baseStepMs: Long): Long = when {
+    repeatCount >= 14 -> baseStepMs * 6
+    repeatCount >= 8 -> baseStepMs * 3
+    repeatCount >= 4 -> baseStepMs * 2
+    else -> baseStepMs
 }
 
-private const val CONTROL_HIDE_MS = 5_000L
+private const val MIN_CONTROL_HIDE_MS = 1_000L
+private const val POST_PLAY_COUNTDOWN_SECONDS = 5
