@@ -36,6 +36,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -130,6 +131,35 @@ private fun DetailsReady(
     var selectedSeasonIndex by remember(contentKey, seasons) { mutableIntStateOf(initialSeasonIndex) }
     val selectedSeason = seasons.getOrNull(selectedSeasonIndex)
     var pendingSeasonIndex by remember(contentKey) { mutableStateOf<Int?>(null) }
+    val rememberedEpisodeKey = selectedSeason?.let { memory.lastEpisodeBySeason[it.stableKey] }
+    val rememberedEpisode = selectedSeason?.episodes
+        ?.firstOrNull { it.identity.stableKey == rememberedEpisodeKey }
+        ?: selectedSeason?.episodes?.firstOrNull()
+    val requestedRestoreAnchor = remember(scopeKey, focusRequestToken) {
+        focusRegistry.lastFocused(scopeKey)
+    }
+    val validRestoreAnchors = remember(seasons) {
+        buildSet {
+            add(HERO_PLAY_ANCHOR)
+            add(HERO_SAVE_ANCHOR)
+            seasons.forEach { season ->
+                add(seasonAnchorKey(season.stableKey))
+                season.episodes.forEach { episode -> add(episodeAnchorKey(episode.identity.stableKey)) }
+            }
+        }
+    }
+    val restoreAnchor = requestedRestoreAnchor
+        ?.takeIf { it in validRestoreAnchors }
+        ?: rememberedEpisodeKey
+            ?.takeIf { key -> selectedSeason?.episodes?.any { it.identity.stableKey == key } == true }
+            ?.let(::episodeAnchorKey)
+        ?: HERO_PLAY_ANCHOR
+    val initialVerticalIndex = when {
+        restoreAnchor.startsWith(EPISODE_ANCHOR_PREFIX) -> EPISODE_ROW_INDEX
+        restoreAnchor.startsWith(SEASON_ANCHOR_PREFIX) -> SEASON_TAB_ROW_INDEX
+        else -> HERO_ROW_INDEX
+    }
+    val listState = rememberLazyListState(initialFirstVisibleItemIndex = initialVerticalIndex)
 
     LaunchedEffect(pendingSeasonIndex) {
         val target = pendingSeasonIndex ?: return@LaunchedEffect
@@ -139,18 +169,20 @@ private fun DetailsReady(
         pendingSeasonIndex = null
     }
 
-    val fallbackAnchor = HERO_PLAY_ANCHOR
-
-    TvFocusRestoreEffect(
-        registry = focusRegistry,
-        scopeKey = scopeKey,
-        fallbackAnchorKey = fallbackAnchor,
-        requestToken = focusRequestToken,
-    )
+    LaunchedEffect(focusRegistry, scopeKey, restoreAnchor, focusRequestToken) {
+        when {
+            restoreAnchor.startsWith(EPISODE_ANCHOR_PREFIX) -> listState.scrollToItem(EPISODE_ROW_INDEX)
+            restoreAnchor.startsWith(SEASON_ANCHOR_PREFIX) -> listState.scrollToItem(SEASON_TAB_ROW_INDEX)
+        }
+        repeat(TvTokens.FocusRestoreAttempts) {
+            withFrameNanos { }
+            if (focusRegistry.requestFocus(scopeKey, restoreAnchor)) return@LaunchedEffect
+        }
+        focusRegistry.requestAnchor(scopeKey, HERO_PLAY_ANCHOR)
+    }
 
     Box(modifier = modifier.fillMaxSize().background(DETAIL_BACKGROUND)) {
         DetailsBackdrop(item.backgroundUrl.ifBlank { item.posterUrl })
-        val listState = rememberLazyListState()
         LazyColumn(
             state = listState,
             modifier = Modifier.fillMaxSize(),
@@ -161,14 +193,14 @@ private fun DetailsReady(
                     scopeKey = scopeKey,
                     focusRegistry = focusRegistry,
                     isSeries = isSeries,
-                    selectedSeason = selectedSeason,
+                    selectedEpisode = rememberedEpisode,
                     isSaved = isSaved,
                     onToggleSaved = { onToggleSaved(snapshot) },
                     onPlay = {
                         if (!isSeries) {
                             onPlayMovie(snapshot)
                         } else {
-                            val episode = selectedSeason?.episodes?.firstOrNull()
+                            val episode = rememberedEpisode
                                 ?: snapshot.episodeCatalogue.episodes.firstOrNull()
                             if (episode != null) onPlayEpisode(snapshot, episode)
                         }
@@ -265,7 +297,7 @@ private fun DetailsHero(
     scopeKey: String,
     focusRegistry: TvFocusRegistry,
     isSeries: Boolean,
-    selectedSeason: TvEpisodeSeason?,
+    selectedEpisode: TvCanonicalEpisode?,
     isSaved: Boolean,
     onToggleSaved: () -> Unit,
     onPlay: () -> Unit,
@@ -302,7 +334,7 @@ private fun DetailsHero(
         }
         Spacer(Modifier.height(18.dp))
 
-        val heroEpisode = if (isSeries) selectedSeason?.episodes?.firstOrNull() else null
+        val heroEpisode = if (isSeries) selectedEpisode else null
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             PlayButton(
                 label = if (heroEpisode != null && heroEpisode.seasonNumber != null && heroEpisode.episodeNumber != null) {
@@ -331,6 +363,18 @@ private fun DetailsHero(
         if (creditLine.isNotBlank()) {
             Text(
                 text = creditLine,
+                color = Color(0xFFB9BBC1),
+                fontSize = 15.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.fillMaxWidth(0.62f),
+            )
+            Spacer(Modifier.height(10.dp))
+        }
+
+        if (item.cast.isNotEmpty()) {
+            Text(
+                text = "Cast: " + item.cast.take(5).joinToString(", "),
                 color = Color(0xFFB9BBC1),
                 fontSize = 15.sp,
                 maxLines = 1,
@@ -665,6 +709,7 @@ private fun EpisodeCard(
                         focusRegistry.requestAnchor(scopeKey, upAnchorKey)
                     }
                     Key.DirectionCenter, Key.Enter -> {
+                        onFocused()
                         onOpen()
                         true
                     }
@@ -808,7 +853,12 @@ private fun DetailsError(
 
 private fun seasonAnchorKey(seasonKey: String) = "details:season:$seasonKey"
 private fun episodeAnchorKey(episodeKey: String) = "details:episode:$episodeKey"
+private const val SEASON_ANCHOR_PREFIX = "details:season:"
+private const val EPISODE_ANCHOR_PREFIX = "details:episode:"
 private const val HERO_PLAY_ANCHOR = "details:hero:play"
 private const val HERO_SAVE_ANCHOR = "details:hero:save"
+private const val HERO_ROW_INDEX = 0
+private const val SEASON_TAB_ROW_INDEX = 1
+private const val EPISODE_ROW_INDEX = 2
 private const val SEASON_FOCUS_SETTLE_MS = 150L
 private val DETAIL_BACKGROUND = Color(0xFF08090B)
