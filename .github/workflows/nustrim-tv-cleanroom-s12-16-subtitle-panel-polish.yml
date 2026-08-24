@@ -1,0 +1,339 @@
+name: Nustrim TV Cleanroom S12.16 Subtitle Panel Polish Auto Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nustrim-tv-cleanroom-s12-16-subtitle-panel-polish
+  cancel-in-progress: false
+
+env:
+  LOCKED_CERT_SHA256: "30C625B9112CD04D43B631D6020D0D52E61695111B8E2125F29AD19651EB165D"
+  TARGET_VERSION_NAME: "0.57.15-tv-cleanroom-s12.16-subtitle-panel-polish"
+  TARGET_VERSION_CODE: "138"
+
+jobs:
+  build-test-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Guard accepted S12.15 baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          current_build="$(sed -n -E 's/.*versionName[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' app/build.gradle.kts | head -1)"
+          current_marker="$(cat .nustrim-version 2>/dev/null || true)"
+          case "$current_build" in
+            "0.57.14-tv-cleanroom-s12.15-content-manager-nesting"|"$TARGET_VERSION_NAME") ;;
+            *)
+              echo "::error::Unexpected baseline: $current_build"
+              exit 20
+              ;;
+          esac
+          test "$current_marker" = "$current_build" || {
+            echo "::error::Build version and .nustrim-version differ."
+            exit 21
+          }
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Gradle 9.5.0
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "9.5.0"
+
+      - name: Prepare permanent signing
+        shell: bash
+        env:
+          KEYSTORE_B64: ${{ secrets.NUSTRIM_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.NUSTRIM_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.NUSTRIM_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.NUSTRIM_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for name in KEYSTORE_B64 KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::Signing secret $name is missing."
+              exit 30
+            fi
+          done
+          KS="$RUNNER_TEMP/nustrim-release.jks"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$KS"
+          chmod 600 "$KS"
+          keytool -list -keystore "$KS" -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" >/dev/null
+          CERT="$(
+            keytool -exportcert -rfc -keystore "$KS" -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" |
+            openssl x509 -noout -fingerprint -sha256 |
+            cut -d= -f2 | tr -d ':' | tr '[:lower:]' '[:upper:]'
+          )"
+          test "$CERT" = "$LOCKED_CERT_SHA256" || {
+            echo "::error::Keystore certificate is not the locked Nustrim certificate."
+            exit 31
+          }
+          echo "NUSTRIM_KEYSTORE_PATH=$KS" >> "$GITHUB_ENV"
+          echo "NUSTRIM_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "NUSTRIM_KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
+          echo "NUSTRIM_KEY_PASSWORD=$KEY_PASSWORD" >> "$GITHUB_ENV"
+
+      - name: Apply exact S12.16 source
+        shell: bash
+        env:
+          SOURCE_PATCH_B64: "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"
+        run: |
+          set -euo pipefail
+          if ! grep -qx 'subsystem=12.16-subtitle-panel-polish' .nustrim-tv; then
+            PATCH_FILE="$RUNNER_TEMP/s12-16-subtitle-panel.patch"
+            printf '%s' "$SOURCE_PATCH_B64" | base64 --decode | gzip -d > "$PATCH_FILE"
+            git apply --check "$PATCH_FILE"
+            git apply "$PATCH_FILE"
+          fi
+
+      - name: Verify boundary, payload and contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          changed="$({ git diff --name-only; git ls-files --others --exclude-standard; } | sort -u)"
+          printf '%s\n' "$changed"
+          export CHANGED="$changed"
+          python3 <<'PY'
+          from pathlib import Path
+          import hashlib
+          import os
+
+          changed = [line for line in os.environ.get("CHANGED", "").splitlines() if line]
+          allowed = {
+              ".nustrim-tv",
+              ".nustrim-version",
+              "app/build.gradle.kts",
+              "app/src/main/java/app/nudroidlabs/nustrim/tv/player/TvPlayerPanels.kt",
+              "app/src/main/java/app/nudroidlabs/nustrim/tv/player/TvPlayerScreen.kt",
+              "scripts/verify_tv_settings_parity_s12_11.py",
+              "scripts/verify_tv_subtitle_panel_s12_16.py",
+          }
+          unexpected = [path for path in changed if path not in allowed]
+          if unexpected:
+              raise SystemExit("S12.16 changed files outside subtitle panel boundary: " + ", ".join(unexpected))
+
+          expected_hashes = {
+              ".nustrim-tv": "63d346391b12202d592bd712e866524cff07cea02808f1894690e9a2637664bd",
+              ".nustrim-version": "7497d6db95aa4a43238a7e06b07ada8f58fb1aca36159fbe69af6d8cd44afb19",
+              "app/build.gradle.kts": "cf22dd3064cf3b895030ce4a75e43629c6a0c78a602e4ef4b774d3bd7f18c571",
+              "app/src/main/java/app/nudroidlabs/nustrim/tv/player/TvPlayerPanels.kt": "432fb2d40a839106e98f1b627aa9cdb67befc912e0a5ecd4da2c6b5da9be217a",
+              "app/src/main/java/app/nudroidlabs/nustrim/tv/player/TvPlayerScreen.kt": "180fb6d447fa5d77dab61fce0323670062c34edfff2fed121740d3861f0c96ca",
+              "scripts/verify_tv_settings_parity_s12_11.py": "4d3a655344f42553b6e613039c67e677aa735892d199df122b817752f370b820",
+              "scripts/verify_tv_subtitle_panel_s12_16.py": "fcfa857f5451ecb8302206f17b2123365628340e029454eb3e12fe0843188f54",
+          }
+          mismatch = []
+          for relative, expected in expected_hashes.items():
+              path = Path(relative)
+              actual = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else "missing"
+              if actual != expected:
+                  mismatch.append(relative)
+          if mismatch:
+              raise SystemExit("Exact S12.16 payload mismatch: " + ", ".join(mismatch))
+          PY
+          python3 scripts/verify_tv_subtitle_panel_s12_16.py
+          python3 scripts/verify_tv_settings_parity_s12_11.py
+          python3 scripts/verify_tv_parity_s11.py
+
+      - name: Build permanent signed release APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle --no-daemon --build-cache \
+            :app:lintRelease \
+            :app:testDebugUnitTest \
+            :app:assembleRelease \
+            --stacktrace --console=plain \
+            2>&1 | tee "$RUNNER_TEMP/nustrim-s12-16-build.log"
+          test -s app/build/outputs/apk/release/app-release.apk
+
+      - name: Verify APK identity and certificate
+        id: verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/release/app-release.apk"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)"
+          AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -1)"
+          test -x "$APKSIGNER"
+          test -x "$AAPT"
+          "$APKSIGNER" verify --verbose --print-certs "$APK" | tee "$RUNNER_TEMP/nustrim-s12-16-signature.txt"
+          CERT="$(sed -n -E 's/^.*certificate SHA-256 digest:[[:space:]]*//p' "$RUNNER_TEMP/nustrim-s12-16-signature.txt" | head -1 | tr -d ':' | tr '[:lower:]' '[:upper:]')"
+          test "$CERT" = "$LOCKED_CERT_SHA256"
+          BADGING="$("$AAPT" dump badging "$APK" | head -1)"
+          PACKAGE="$(printf '%s\n' "$BADGING" | sed -n -E "s/^package: name='([^']+)'.*/\1/p")"
+          APK_CODE="$(printf '%s\n' "$BADGING" | sed -n -E "s/^.*versionCode='([^']+)'.*/\1/p")"
+          APK_NAME="$(printf '%s\n' "$BADGING" | sed -n -E "s/^.*versionName='([^']+)'.*/\1/p")"
+          test "$PACKAGE" = "app.nudroidlabs.nustrim"
+          test "$APK_CODE" = "$TARGET_VERSION_CODE"
+          test "$APK_NAME" = "$TARGET_VERSION_NAME"
+          echo "cert_sha=$CERT" >> "$GITHUB_OUTPUT"
+          echo "version_code=$APK_CODE" >> "$GITHUB_OUTPUT"
+          echo "version_name=$APK_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare updater manifest and report
+        id: assets
+        shell: bash
+        env:
+          CERT_SHA: ${{ steps.verify.outputs.cert_sha }}
+          VERSION_CODE: ${{ steps.verify.outputs.version_code }}
+          VERSION_NAME: ${{ steps.verify.outputs.version_name }}
+        run: |
+          set -euo pipefail
+          export CERT_SHA VERSION_CODE VERSION_NAME
+          python3 <<'PY'
+          from pathlib import Path
+          import hashlib
+          import json
+          import os
+
+          code = int(os.environ["VERSION_CODE"])
+          name = os.environ["VERSION_NAME"]
+          cert = os.environ["CERT_SHA"]
+          repo = os.environ["GITHUB_REPOSITORY"]
+          src = Path("app/build/outputs/apk/release/app-release.apk")
+          apk = Path(f"Nustrim-{name}.apk")
+          apk.write_bytes(src.read_bytes())
+          sha = hashlib.sha256(apk.read_bytes()).hexdigest()
+          size = apk.stat().st_size
+          tag = f"v{name}"
+          manifest = {
+              "versionCode": code,
+              "versionName": name,
+              "apkUrl": f"https://github.com/{repo}/releases/download/{tag}/{apk.name}",
+              "sha256": sha,
+              "changelog": "S12.16 improves TV subtitle panel readability, safe-area sizing, language labels, scrolling and style controls.",
+              "sizeBytes": size,
+              "signingMode": "permanent",
+              "signingCertSha256": cert,
+          }
+          report = {
+              "stage": "S12.16 Subtitle Panel Polish",
+              "issue": "S12-PLAYER-SUBTITLE-02",
+              "status": "build-verified",
+              "changes": [
+                  "reduce panel width to the TV safe area",
+                  "show every language in a scrollable compact list",
+                  "replace duplicated text-size rows with one minus and plus control",
+                  "hide rendered subtitles while the subtitle panel is open"
+              ],
+              "preserved": ["S12.15 Content Manager", "S12.14 sidebar fix", "subtitle selection engine", "SmartSubs", "provider engine", "Mobile UI", "signed updater"],
+              "deviceAcceptance": "pending"
+          }
+          Path("update.json").write_text(json.dumps(manifest, indent=2) + "\n")
+          Path("tv-subtitle-panel-s12-16-report.json").write_text(json.dumps(report, indent=2) + "\n")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"tag={tag}\n")
+              fh.write(f"apk={apk.name}\n")
+              fh.write(f"sha256={sha}\n")
+          PY
+
+      - name: Commit S12.16 only after verified build
+        id: commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            .nustrim-version .nustrim-tv app/build.gradle.kts \
+            app/src/main/java/app/nudroidlabs/nustrim/tv/player/TvPlayerPanels.kt \
+            app/src/main/java/app/nudroidlabs/nustrim/tv/player/TvPlayerScreen.kt \
+            scripts/verify_tv_settings_parity_s12_11.py \
+            scripts/verify_tv_subtitle_panel_s12_16.py
+          if git diff --cached --quiet; then
+            echo "S12.16 source is already committed."
+          else
+            git commit -m "Polish TV subtitle panel S12.16 [skip ci]"
+            git push origin HEAD:main
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Create or update GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.assets.outputs.tag }}
+          VERSION: ${{ steps.verify.outputs.version_name }}
+          TARGET_SHA: ${{ steps.commit.outputs.sha }}
+        run: |
+          set -euo pipefail
+          NOTES="$RUNNER_TEMP/s12-16-release-notes.md"
+          printf '%s\n' \
+            "Nustrim $VERSION" "" \
+            "S12.16 makes the TV subtitle panel smaller, darker and easier to scan." "" \
+            "All languages can scroll, ISO labels are normalised, text size uses one minus and plus control, and rendered subtitles are hidden while the panel is open." "" \
+            "S12.15 Content Manager, S12.14 sidebar animation, subtitle selection and all backend systems are preserved." "" \
+            "Permanent signing certificate SHA-256: $LOCKED_CERT_SHA256" > "$NOTES"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "Nustrim $VERSION" --notes-file "$NOTES" --target "$TARGET_SHA" --latest
+          else
+            gh release create "$TAG" --title "Nustrim $VERSION" --notes-file "$NOTES" --target "$TARGET_SHA" --latest
+          fi
+
+      - name: Upload and verify release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.assets.outputs.tag }}
+          APK: ${{ steps.assets.outputs.apk }}
+          EXPECTED_SHA: ${{ steps.assets.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" "$APK" update.json tv-subtitle-panel-s12-16-report.json --clobber
+          LIVE="$RUNNER_TEMP/s12-16-live"
+          mkdir -p "$LIVE"
+          gh release download "$TAG" --pattern "$APK" --pattern update.json --pattern tv-subtitle-panel-s12-16-report.json --dir "$LIVE" --clobber
+          test "$(sha256sum "$LIVE/$APK" | cut -d' ' -f1)" = "$EXPECTED_SHA"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)" = "$TAG"
+
+      - name: Upload verified artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nustrim-tv-cleanroom-s12-16-subtitle-panel-release
+          path: |
+            Nustrim-${{ steps.verify.outputs.version_name }}.apk
+            update.json
+            tv-subtitle-panel-s12-16-report.json
+            ${{ runner.temp }}/nustrim-s12-16-signature.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Collect diagnose on failure
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          D="$RUNNER_TEMP/nustrim-s12-16-diagnose"
+          mkdir -p "$D"
+          cp "$RUNNER_TEMP/nustrim-s12-16-build.log" "$D/" 2>/dev/null
+          cp "$RUNNER_TEMP/nustrim-s12-16-signature.txt" "$D/" 2>/dev/null
+          cp app/build.gradle.kts .nustrim-version .nustrim-tv "$D/" 2>/dev/null
+          cp update.json tv-subtitle-panel-s12-16-report.json "$D/" 2>/dev/null
+          git status --short > "$D/git-status.txt" 2>&1
+          git diff > "$D/git-diff.txt" 2>&1
+
+      - name: Upload diagnose on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nustrim-tv-cleanroom-s12-16-subtitle-panel-diagnose
+          path: ${{ runner.temp }}/nustrim-s12-16-diagnose
+          if-no-files-found: warn
+          retention-days: 7
