@@ -92,7 +92,7 @@ def build_checks() -> list[Check]:
         check("Home", "Vertical catalogue with horizontal rails", has(home_rows, "LazyColumn", "LazyRow", "TvHomePosterCard"), "TvHomeRows.kt"),
         check("Home", "Loading, empty and error states", has(home_screen, "TvHomeLoading", "TvHomeUiState.Empty", "TvHomeUiState.Error", "Retry"), "TvHomeScreen.kt"),
         check("Home", "Exact row and card focus restoration", has(home_screen, "homeRowIndex", "TvFocusRestoreEffect") and has(home_rows, "rememberHomePosition", "rowItemIndex", "homeAnchorKey"), "TvHomeScreen.kt, TvHomeRows.kt"),
-        check("Home", "Provider catalogue opens Details", has(home_repo, "catalog") and has(shell, "TvHomeEntry", "TvRoute.Details"), "TvHomeRepository.kt, TvShell.kt"),
+        check("Home", "Catalogue cards open Details and expose hold actions", has(home_repo, "catalog") and has(shell, "TvHomeEntry", "TvRoute.Details") and has(home_rows, "rememberTvHomeLongPressTracker", "onLongPress") and has(home_screen, "TvHomePosterActionsDialog"), "TvHomeRepository.kt, TvHomeRows.kt, TvHomeScreen.kt, TvShell.kt"),
 
         check("Search", "TV search input with bounded query", has(search_entry, "MIN_SEARCH_QUERY_LENGTH = 2", "SEARCH_DEBOUNCE_MS = 350L") and has(search_screen, "TvSearchInput"), "TvSearchEntry.kt, TvSearchScreen.kt"),
         check("Search", "Recent searches and clear history", has(search_screen, "TvRecentSearches", "SEARCH_CLEAR_HISTORY_ANCHOR", "onClearHistory") and has(search_history, "clear"), "TvSearchScreen.kt, TvSearchHistoryStore.kt"),

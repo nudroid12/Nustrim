@@ -9,6 +9,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import app.nudroidlabs.nustrim.core.library.LocalMediaStore
 import app.nudroidlabs.nustrim.tv.focus.TvFocusRegistry
 
 @Composable
@@ -21,6 +22,7 @@ fun TvHomeEntry(
 ) {
     val context = LocalContext.current
     val repository = remember(context) { TvHomeRepository(context) }
+    val mediaStore = remember(context) { LocalMediaStore(context.applicationContext) }
     var reloadToken by remember { mutableIntStateOf(0) }
     var state by remember { mutableStateOf<TvHomeUiState>(TvHomeUiState.Loading) }
 
@@ -47,6 +49,16 @@ fun TvHomeEntry(
         focusRequestToken = focusRequestToken,
         onRetry = { reloadToken += 1 },
         onOpen = onOpen,
+        isSaved = { media -> mediaStore.isSaved(media.sourceUrl, media.item) },
+        isWatched = { media -> mediaStore.isWatched(media.sourceUrl, media.item) },
+        onSetSaved = { media, saved ->
+            mediaStore.setSaved(media.sourceUrl, media.item, saved)
+        },
+        onSetWatched = { media, watched ->
+            mediaStore.setWatched(media.sourceUrl, media.item, watched)
+            if (watched) mediaStore.clearContinueWatching(media.sourceUrl, media.item)
+            reloadToken += 1
+        },
         modifier = modifier,
     )
 }

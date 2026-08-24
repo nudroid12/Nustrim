@@ -36,11 +36,7 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.input.key.Key
-import androidx.compose.ui.input.key.KeyEventType
-import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.onKeyEvent
-import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -52,8 +48,8 @@ import app.nudroidlabs.nustrim.tv.focus.tvFocusAnchor
 import app.nudroidlabs.nustrim.tv.theme.animateTvFocusScale
 import coil3.compose.AsyncImage
 
-internal val HOME_POSTER_WIDTH = 126.dp
-internal val HOME_POSTER_HEIGHT = 189.dp
+internal val HOME_POSTER_WIDTH = 116.dp
+internal val HOME_POSTER_HEIGHT = 174.dp
 internal val HOME_CONTINUE_WIDTH = 210.dp
 internal val HOME_CONTINUE_HEIGHT = 118.dp
 
@@ -65,6 +61,7 @@ fun TvHomeRows(
     verticalListState: LazyListState,
     onFocused: (media: TvHomeMedia, rowIndex: Int, itemIndex: Int) -> Unit,
     onOpen: (media: TvHomeMedia, rowIndex: Int, itemIndex: Int) -> Unit,
+    onLongPress: (media: TvHomeMedia, rowIndex: Int, itemIndex: Int) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     LazyColumn(
@@ -84,6 +81,7 @@ fun TvHomeRows(
                 focusRegistry = focusRegistry,
                 onFocused = onFocused,
                 onOpen = onOpen,
+                onLongPress = onLongPress,
             )
         }
     }
@@ -97,6 +95,7 @@ private fun TvHomeRowContent(
     focusRegistry: TvFocusRegistry,
     onFocused: (TvHomeMedia, Int, Int) -> Unit,
     onOpen: (TvHomeMedia, Int, Int) -> Unit,
+    onLongPress: (TvHomeMedia, Int, Int) -> Unit,
 ) {
     val initialIndex = focusRegistry.rowItemIndex(scopeKey, row.key)
         .coerceIn(0, (row.items.size - 1).coerceAtLeast(0))
@@ -131,6 +130,7 @@ private fun TvHomeRowContent(
                     focusRegistry = focusRegistry,
                     onFocused = onFocused,
                     onOpen = onOpen,
+                    onLongPress = onLongPress,
                 )
             }
         }
@@ -147,6 +147,7 @@ private fun TvHomePosterCard(
     focusRegistry: TvFocusRegistry,
     onFocused: (TvHomeMedia, Int, Int) -> Unit,
     onOpen: (TvHomeMedia, Int, Int) -> Unit,
+    onLongPress: (TvHomeMedia, Int, Int) -> Unit,
 ) {
     val anchorKey = homeAnchorKey(rowKey, media.stableKey)
     val anchor = rememberTvFocusAnchor(focusRegistry, scopeKey, anchorKey)
@@ -156,6 +157,7 @@ private fun TvHomePosterCard(
         label = "home-card-scale",
     )
     val continueEntry = media.continueEntry
+    val longPressTracker = rememberTvHomeLongPressTracker()
     val cardWidth = if (continueEntry != null) HOME_CONTINUE_WIDTH else HOME_POSTER_WIDTH
     val cardHeight = if (continueEntry != null) HOME_CONTINUE_HEIGHT else HOME_POSTER_HEIGHT
 
@@ -176,16 +178,12 @@ private fun TvHomePosterCard(
                     onFocused(media, rowIndex, itemIndex)
                 }
             }
-            .onKeyEvent { event ->
-                if (
-                    event.type == KeyEventType.KeyDown &&
-                    (event.key == Key.DirectionCenter || event.key == Key.Enter)
-                ) {
-                    onOpen(media, rowIndex, itemIndex)
-                    true
-                } else {
-                    false
-                }
+            .onPreviewKeyEvent { event ->
+                longPressTracker.handle(
+                    event = event.nativeKeyEvent,
+                    onClick = { onOpen(media, rowIndex, itemIndex) },
+                    onLongPress = { onLongPress(media, rowIndex, itemIndex) },
+                )
             }
             .focusable(),
     ) {

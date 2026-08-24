@@ -50,6 +50,10 @@ fun TvHomeScreen(
     focusRequestToken: Int,
     onRetry: () -> Unit,
     onOpen: (TvHomeMedia, Int, Int) -> Unit,
+    isSaved: (TvHomeMedia) -> Boolean,
+    isWatched: (TvHomeMedia) -> Boolean,
+    onSetSaved: (TvHomeMedia, Boolean) -> Unit,
+    onSetWatched: (TvHomeMedia, Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     when (state) {
@@ -80,6 +84,10 @@ fun TvHomeScreen(
             focusRegistry = focusRegistry,
             focusRequestToken = focusRequestToken,
             onOpen = onOpen,
+            isSaved = isSaved,
+            isWatched = isWatched,
+            onSetSaved = onSetSaved,
+            onSetWatched = onSetWatched,
             modifier = modifier,
         )
     }
@@ -92,6 +100,10 @@ private fun TvHomeReady(
     focusRegistry: TvFocusRegistry,
     focusRequestToken: Int,
     onOpen: (TvHomeMedia, Int, Int) -> Unit,
+    isSaved: (TvHomeMedia) -> Boolean,
+    isWatched: (TvHomeMedia) -> Boolean,
+    onSetSaved: (TvHomeMedia, Boolean) -> Unit,
+    onSetWatched: (TvHomeMedia, Boolean) -> Unit,
     modifier: Modifier,
 ) {
     val rows = snapshot.rows
@@ -104,6 +116,27 @@ private fun TvHomeReady(
 
     var focusedMedia by remember(rows) { mutableStateOf(initialMedia) }
     var heroMedia by remember(rows) { mutableStateOf(initialMedia) }
+    var actionTarget by remember { mutableStateOf<TvHomePosterActionTarget?>(null) }
+    var focusAfterDialog by remember { mutableStateOf<String?>(null) }
+
+    fun dismissActions() {
+        focusAfterDialog = actionTarget?.anchorKey
+        actionTarget = null
+    }
+
+    LaunchedEffect(actionTarget, focusAfterDialog) {
+        val anchorKey = focusAfterDialog ?: return@LaunchedEffect
+        if (actionTarget == null) {
+            repeat(4) {
+                delay(50L)
+                if (focusRegistry.requestAnchor(scopeKey, anchorKey)) {
+                    focusAfterDialog = null
+                    return@LaunchedEffect
+                }
+            }
+            focusAfterDialog = null
+        }
+    }
 
     LaunchedEffect(focusedMedia?.stableKey) {
         val candidate = focusedMedia ?: return@LaunchedEffect
@@ -149,10 +182,45 @@ private fun TvHomeReady(
             verticalListState = verticalState,
             onFocused = { media, _, _ -> focusedMedia = media },
             onOpen = onOpen,
+            onLongPress = { media, rowIndex, itemIndex ->
+                rows.getOrNull(rowIndex)?.key?.let { rowKey ->
+                    actionTarget = TvHomePosterActionTarget(
+                        media = media,
+                        rowIndex = rowIndex,
+                        itemIndex = itemIndex,
+                        anchorKey = homeAnchorKey(rowKey, media.stableKey),
+                        isSaved = isSaved(media),
+                        isWatched = isWatched(media),
+                    )
+                }
+            },
             modifier = Modifier
                 .fillMaxSize()
                 .padding(top = rowsTop),
         )
+
+        actionTarget?.let { target ->
+            TvHomePosterActionsDialog(
+                target = target,
+                onDismiss = ::dismissActions,
+                onDetails = {
+                    actionTarget = null
+                    onOpen(
+                        target.media.copy(continueEntry = null),
+                        target.rowIndex,
+                        target.itemIndex,
+                    )
+                },
+                onToggleLibrary = {
+                    onSetSaved(target.media, !target.isSaved)
+                    dismissActions()
+                },
+                onToggleWatched = {
+                    onSetWatched(target.media, !target.isWatched)
+                    dismissActions()
+                },
+            )
+        }
     }
 }
 
