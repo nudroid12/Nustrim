@@ -23,9 +23,15 @@ marker = read(".nustrim-tv")
 version = read(".nustrim-version").strip()
 gradle = read("app/build.gradle.kts")
 
-check("S12.18 marker", "subsystem=12.18-sources-live-tabs" in marker)
-check("S12.18 version", version == "0.57.17-tv-cleanroom-s12.18-sources-live-tabs")
-check("S12.18 versionCode", "versionCode = 140" in gradle)
+check("S12.18 feature preserved", "sources-terminal-tabs=playable-links-only" in marker)
+check(
+    "post-S12.18 version",
+    version in {
+        "0.57.17-tv-cleanroom-s12.18-sources-live-tabs",
+        "0.57.18-tv-cleanroom-s12.19-cloudstream-speed",
+    },
+)
+check("post-S12.18 versionCode", "versionCode = 140" in gradle or "versionCode = 141" in gradle)
 check("Playable streams are explicit", "val playableStreams" in models and "streams.filter { it.playable }" in models)
 check("Source labels come from playable links", "val sourceLabels: List<String> = playableStreams" in models)
 check("All filter returns playable links only", "if (sourceLabel == null) playableStreams" in models)

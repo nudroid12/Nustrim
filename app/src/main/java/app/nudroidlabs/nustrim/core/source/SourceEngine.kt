@@ -3,6 +3,7 @@ package app.nudroidlabs.nustrim.core.source
 import android.content.Context
 import app.nudroidlabs.nustrim.core.diagnostics.NustrimDiagnostics
 import app.nudroidlabs.nustrim.core.source.cloudstream.CloudStreamRepositorySession
+import app.nudroidlabs.nustrim.core.source.cloudstream.CloudStreamRepositoryCache
 import app.nudroidlabs.nustrim.core.source.cloudstream.CloudStreamRuntime
 import app.nudroidlabs.nustrim.core.source.stremio.StremioManifest
 import app.nudroidlabs.nustrim.core.source.stremio.StremioSession
@@ -14,15 +15,17 @@ class SourceEngine(
 ) {
     private val appContext = context.applicationContext
     private val cloudStreamRuntime = CloudStreamRuntime(appContext)
+    private val cloudStreamRepositoryCache = CloudStreamRepositoryCache(appContext)
     private val healthStore = SourceHealthStore(appContext)
 
     fun open(
         input: String,
+        forceRefresh: Boolean = false,
         onSuccess: (SourceSession) -> Unit,
         onError: (Throwable) -> Unit
     ) {
         val normalized = normalizeInput(input)
-        cachedSession(normalized)?.let { session ->
+        if (!forceRefresh) cachedSession(normalized)?.let { session ->
             NustrimDiagnostics.log(
                 "SOURCE_CACHE_HIT",
                 "name=${session.displayName} id=${session.id} kind=${session.kind} input=$normalized"
@@ -32,22 +35,38 @@ class SourceEngine(
             return
         }
 
+        if (!forceRefresh) {
+            cloudStreamRepositoryCache.readFresh(normalized)?.let { text ->
+                val session = runCatching { detect(text, normalized, forceRefresh = false) }.getOrNull()
+                if (session?.kind == SourceKind.CLOUDSTREAM) {
+                    NustrimDiagnostics.log("CLOUDSTREAM_REPO_CACHE_HIT", normalized)
+                    cacheSession(normalized, session)
+                    healthStore.recordSuccess(normalized)
+                    onSuccess(session)
+                    refreshCloudStreamRepository(normalized)
+                    return
+                }
+            }
+        }
+
         val candidates = if (looksLikeManifestUrl(normalized)) {
             listOf(normalized)
         } else {
             listOf(normalized, normalized.trimEnd('/') + "/manifest.json")
         }
         NustrimDiagnostics.log("SOURCE_OPEN", "input=$normalized candidates=${candidates.size}")
-        tryCandidates(candidates, 0, normalized, onSuccess, onError)
+        tryCandidates(candidates, 0, normalized, forceRefresh, onSuccess, onError)
     }
     private fun tryCandidates(
         candidates: List<String>,
         index: Int,
         healthKey: String,
+        forceRefresh: Boolean,
         onSuccess: (SourceSession) -> Unit,
         onError: (Throwable) -> Unit
     ) {
         if (index >= candidates.size) {
+            if (!forceRefresh && openStaleCloudStream(healthKey, onSuccess)) return
             val error = IllegalArgumentException(
                 "Unsupported source. Expected a Stremio manifest, CloudStream repo.json, or Nustrim JSON repository."
             )
@@ -61,7 +80,11 @@ class SourceEngine(
             url = url,
             onSuccess = { text ->
                 try {
-                    val session = detect(text, url)
+                    val session = detect(text, url, forceRefresh)
+                    if (session.kind == SourceKind.CLOUDSTREAM) {
+                        cloudStreamRepositoryCache.write(healthKey, text)
+                        if (url != healthKey) cloudStreamRepositoryCache.write(url, text)
+                    }
                     NustrimDiagnostics.log(
                         "SOURCE_READY",
                         "name=${session.displayName} id=${session.id} kind=${session.kind} url=$url"
@@ -72,27 +95,37 @@ class SourceEngine(
                     onSuccess(session)
                 } catch (t: Throwable) {
                     if (index + 1 < candidates.size) {
-                        tryCandidates(candidates, index + 1, healthKey, onSuccess, onError)
+                        tryCandidates(candidates, index + 1, healthKey, forceRefresh, onSuccess, onError)
                     } else {
-                        NustrimDiagnostics.error("SOURCE_DETECT_ERROR", t, url)
-                        healthStore.recordFailure(healthKey, t)
-                        onError(t)
+                        val recovered = !forceRefresh && openStaleCloudStream(healthKey, onSuccess)
+                        if (!recovered) {
+                            NustrimDiagnostics.error("SOURCE_DETECT_ERROR", t, url)
+                            healthStore.recordFailure(healthKey, t)
+                            onError(t)
+                        }
                     }
                 }
             },
             onError = {
                 if (index + 1 < candidates.size) {
-                    tryCandidates(candidates, index + 1, healthKey, onSuccess, onError)
+                    tryCandidates(candidates, index + 1, healthKey, forceRefresh, onSuccess, onError)
                 } else {
-                    NustrimDiagnostics.error("SOURCE_HTTP_ERROR", it, url)
-                    healthStore.recordFailure(healthKey, it)
-                    onError(it)
+                    val recovered = !forceRefresh && openStaleCloudStream(healthKey, onSuccess)
+                    if (!recovered) {
+                        NustrimDiagnostics.error("SOURCE_HTTP_ERROR", it, url)
+                        healthStore.recordFailure(healthKey, it)
+                        onError(it)
+                    }
                 }
             }
         )
     }
 
-    private fun detect(text: String, sourceUrl: String): SourceSession {
+    private fun detect(
+        text: String,
+        sourceUrl: String,
+        forceRefresh: Boolean = false,
+    ): SourceSession {
         val root = JSONObject(text)
 
         if (root.has("manifestVersion") && root.has("pluginLists")) {
@@ -100,7 +133,9 @@ class SourceEngine(
                 root = root,
                 sourceUrl = sourceUrl,
                 http = http,
-                runtime = cloudStreamRuntime
+                runtime = cloudStreamRuntime,
+                cache = cloudStreamRepositoryCache,
+                forceRefresh = forceRefresh,
             )
         }
 
@@ -128,6 +163,39 @@ class SourceEngine(
                 "https://" + trimmed.substringAfter("stremio://")
             else -> trimmed
         }
+    }
+
+    private fun refreshCloudStreamRepository(url: String) {
+        http.getText(
+            url = url,
+            onSuccess = { text ->
+                runCatching { detect(text, url, forceRefresh = false) }
+                    .getOrNull()
+                    ?.takeIf { it.kind == SourceKind.CLOUDSTREAM }
+                    ?.let { session ->
+                        cloudStreamRepositoryCache.write(url, text)
+                        cacheSession(url, session)
+                        NustrimDiagnostics.log("CLOUDSTREAM_REPO_CACHE_REFRESH", url)
+                    }
+            },
+            onError = { error ->
+                NustrimDiagnostics.error("CLOUDSTREAM_REPO_CACHE_REFRESH_ERROR", error, url)
+            },
+        )
+    }
+
+    private fun openStaleCloudStream(
+        url: String,
+        onSuccess: (SourceSession) -> Unit,
+    ): Boolean {
+        val text = cloudStreamRepositoryCache.readStale(url) ?: return false
+        val session = runCatching { detect(text, url, forceRefresh = false) }.getOrNull()
+            ?.takeIf { it.kind == SourceKind.CLOUDSTREAM }
+            ?: return false
+        NustrimDiagnostics.log("CLOUDSTREAM_REPO_STALE_FALLBACK", url)
+        cacheSession(url, session)
+        onSuccess(session)
+        return true
     }
 
     private fun ensureManifestUrl(url: String): String =

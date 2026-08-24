@@ -22,6 +22,8 @@ import kotlinx.coroutines.flow.last
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
@@ -33,6 +35,8 @@ class TvSourcesRepository(context: Context) {
     private val appContext = context.applicationContext
     private val sourceEngine = SourceEngine(appContext)
     private val sourceStore = InstalledSourceStore(appContext)
+    private val providerPerformance = TvCloudStreamPerformanceStore(appContext)
+    private val cloudStreamProviderSlots = Semaphore(MAX_PARALLEL_CLOUDSTREAM_PROVIDERS)
 
     suspend fun load(
         route: TvRoute.Sources,
@@ -43,6 +47,12 @@ class TvSourcesRepository(context: Context) {
         route: TvRoute.Sources,
         forceRefresh: Boolean = false,
     ): Flow<TvSourcesSnapshot> = channelFlow {
+        if (forceRefresh) {
+            synchronized(snapshotCache) { snapshotCache.remove(route.stableKey) }
+            negativeProviderCache.keys
+                .filter { it.startsWith("${route.stableKey}|") }
+                .forEach(negativeProviderCache::remove)
+        }
         if (!forceRefresh) {
             cached(route.stableKey)?.let { cachedSnapshot ->
                 send(cachedSnapshot)
@@ -108,7 +118,7 @@ class TvSourcesRepository(context: Context) {
                 launch {
                     val result = runCatching {
                         withTimeout(SOURCE_TIMEOUT_MS) {
-                            resolveInstalledSource(route, installed, ::publish)
+                            resolveInstalledSource(route, installed, forceRefresh, ::publish)
                         }
                     }.getOrElse { error ->
                         SourceResolveResult(
@@ -183,9 +193,10 @@ class TvSourcesRepository(context: Context) {
     private suspend fun resolveInstalledSource(
         route: TvRoute.Sources,
         installed: SourceEntry,
+        forceRefresh: Boolean,
         onProgress: suspend (SourceResolveResult) -> Unit,
     ): SourceResolveResult {
-        val session = sourceEngine.awaitOpen(installed.url)
+        val session = sourceEngine.awaitOpen(installed.url, forceRefresh)
         return resolveSession(
             route = route,
             sourceUrl = installed.url,
@@ -467,7 +478,11 @@ class TvSourcesRepository(context: Context) {
             }
         }
 
-        val children = catalogItems.take(MAX_CHILDREN_PER_CONTAINER)
+        val children = catalogItems
+            .sortedByDescending { child ->
+                providerPerformance.score(sourceUrl, providerIdentity(child))
+            }
+            .take(MAX_CHILDREN_PER_CONTAINER)
         if (children.isEmpty()) {
             return SourceResolveResult(
                 attempts = listOf(
@@ -504,29 +519,59 @@ class TvSourcesRepository(context: Context) {
         val childResults = coroutineScope {
             children.map { child ->
                 async {
-                    runCatching {
-                        val childSession = withTimeout(CHILD_OPEN_TIMEOUT_MS) { opener.awaitChild(child) }
-                        withTimeout(PROVIDER_TIMEOUT_MS) {
-                            resolveSession(
-                                route = route,
-                                sourceUrl = sourceUrl,
-                                fallbackLabel = child.title.ifBlank { containerLabel },
-                                session = childSession,
-                                depth = depth + 1,
-                                onProgress = onProgress,
-                            )
-                        }
-                    }.getOrElse { error ->
+                    val providerId = providerIdentity(child)
+                    val negativeKey = "${route.stableKey}|$sourceUrl|$providerId"
+                    val cachedNegative = negativeProviderCache[negativeKey]
+                        ?.takeIf { System.currentTimeMillis() - it < NEGATIVE_PROVIDER_CACHE_TTL_MS }
+                    val childResult = if (cachedNegative != null) {
                         SourceResolveResult(
                             attempts = listOf(
                                 TvSourceAttempt(
                                     sourceLabel = child.title.ifBlank { containerLabel },
-                                    status = TvSourceAttemptStatus.ERROR,
-                                    message = error.message.orEmpty().ifBlank { error::class.java.simpleName },
+                                    status = TvSourceAttemptStatus.EMPTY,
+                                    message = "Recent no-match cache",
                                 ),
                             ),
                         )
-                    }.also { childResult ->
+                    } else {
+                        val resolveChild: suspend () -> SourceResolveResult = {
+                            runCatching {
+                                val childSession = withTimeout(CHILD_OPEN_TIMEOUT_MS) { opener.awaitChild(child) }
+                                withTimeout(PROVIDER_TIMEOUT_MS) {
+                                    resolveSession(
+                                        route = route,
+                                        sourceUrl = sourceUrl,
+                                        fallbackLabel = child.title.ifBlank { containerLabel },
+                                        session = childSession,
+                                        depth = depth + 1,
+                                        onProgress = onProgress,
+                                    )
+                                }
+                            }.getOrElse { error ->
+                                SourceResolveResult(
+                                    attempts = listOf(
+                                        TvSourceAttempt(
+                                            sourceLabel = child.title.ifBlank { containerLabel },
+                                            status = TvSourceAttemptStatus.ERROR,
+                                            message = error.message.orEmpty().ifBlank { error::class.java.simpleName },
+                                        ),
+                                    ),
+                                )
+                            }
+                        }
+                        if (depth == 0) {
+                            cloudStreamProviderSlots.withPermit { resolveChild() }
+                        } else {
+                            resolveChild()
+                        }
+                    }
+                    if (childResult.streams.any { it.stream.playable && it.stream.url.isNotBlank() }) {
+                        negativeProviderCache.remove(negativeKey)
+                        providerPerformance.recordSuccess(sourceUrl, providerId)
+                    } else if (childResult.attempts.any { it.status == TvSourceAttemptStatus.EMPTY }) {
+                        negativeProviderCache[negativeKey] = System.currentTimeMillis()
+                    }
+                    childResult.also {
                         if (!childResult.publishedIncrementally) {
                             onProgress(childResult)
                         }
@@ -658,6 +703,9 @@ class TvSourcesRepository(context: Context) {
         .trim()
         .replace(MULTI_SPACE_REGEX, " ")
 
+    private fun providerIdentity(item: MediaItem): String =
+        item.ref?.metaId?.takeIf { it.isNotBlank() } ?: item.id.ifBlank { item.title }
+
     private fun orderedEnabledSources(originUrl: String): List<SourceEntry> {
         val installed = sourceStore.sources()
             .filter { it.enabled }
@@ -686,7 +734,7 @@ class TvSourcesRepository(context: Context) {
 
     private fun cached(key: String): TvSourcesSnapshot? = synchronized(snapshotCache) {
         val cached = snapshotCache[key] ?: return@synchronized null
-        if (System.currentTimeMillis() - cached.createdAtMs >= CACHE_TTL_MS) {
+        if (System.currentTimeMillis() >= cached.expiresAtMs) {
             snapshotCache.remove(key)
             null
         } else {
@@ -695,27 +743,36 @@ class TvSourcesRepository(context: Context) {
     }
 
     private fun cache(key: String, snapshot: TvSourcesSnapshot) {
+        val ttlMs = if (snapshot.playableStreams.isNotEmpty()) {
+            POSITIVE_CACHE_TTL_MS
+        } else {
+            NEGATIVE_CACHE_TTL_MS
+        }
         synchronized(snapshotCache) {
-            snapshotCache[key] = CachedSnapshot(System.currentTimeMillis(), snapshot)
+            snapshotCache[key] = CachedSnapshot(System.currentTimeMillis() + ttlMs, snapshot)
         }
     }
 
     private data class CachedSnapshot(
-        val createdAtMs: Long,
+        val expiresAtMs: Long,
         val snapshot: TvSourcesSnapshot,
     )
 
     companion object {
-        private const val SOURCE_TIMEOUT_MS = 45_000L
+        private const val SOURCE_TIMEOUT_MS = 120_000L
         private const val PROVIDER_TIMEOUT_MS = 28_000L
         private const val CHILD_OPEN_TIMEOUT_MS = 18_000L
         private const val MAX_CHILD_DEPTH = 2
         private const val MAX_CHILDREN_PER_CONTAINER = 18
-        private const val CACHE_TTL_MS = 120_000L
+        private const val POSITIVE_CACHE_TTL_MS = 30L * 60L * 1_000L
+        private const val NEGATIVE_CACHE_TTL_MS = 10L * 60L * 1_000L
+        private const val NEGATIVE_PROVIDER_CACHE_TTL_MS = 10L * 60L * 1_000L
+        private const val MAX_PARALLEL_CLOUDSTREAM_PROVIDERS = 4
         private const val MAX_CACHE_ENTRIES = 18
         private val NON_ALPHANUMERIC_REGEX = Regex("[^a-z0-9]+")
         private val MULTI_SPACE_REGEX = Regex("\\s+")
         private val YEAR_REGEX = Regex("\\b(19|20)\\d{2}\\b")
+        private val negativeProviderCache = java.util.concurrent.ConcurrentHashMap<String, Long>()
         private val snapshotCache = object : LinkedHashMap<String, CachedSnapshot>(24, 0.75f, true) {
             override fun removeEldestEntry(
                 eldest: MutableMap.MutableEntry<String, CachedSnapshot>?,
@@ -724,9 +781,13 @@ class TvSourcesRepository(context: Context) {
     }
 }
 
-private suspend fun SourceEngine.awaitOpen(url: String): SourceSession = suspendCancellableCoroutine { continuation ->
+private suspend fun SourceEngine.awaitOpen(
+    url: String,
+    forceRefresh: Boolean,
+): SourceSession = suspendCancellableCoroutine { continuation ->
     open(
         input = url,
+        forceRefresh = forceRefresh,
         onSuccess = { if (continuation.isActive) continuation.resume(it) },
         onError = { if (continuation.isActive) continuation.resumeWithException(it) },
     )

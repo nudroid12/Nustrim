@@ -20,7 +20,9 @@ class CloudStreamRepositorySession private constructor(
     private val pluginLists: List<String>,
     private val sourceUrl: String,
     private val http: HttpJsonClient,
-    private val runtime: CloudStreamRuntime
+    private val runtime: CloudStreamRuntime,
+    private val cache: CloudStreamRepositoryCache,
+    private val forceRefresh: Boolean,
 ) : SourceSession, ChildSourceOpener {
     override val id: String = "cloudstream:$sourceUrl"
     override val kind: SourceKind = SourceKind.CLOUDSTREAM
@@ -33,7 +35,12 @@ class CloudStreamRepositorySession private constructor(
             block = {
                 val providers = mutableListOf<MediaItem>()
                 pluginLists.forEach { pluginListUrl ->
-                    val text = http.getTextBlocking(pluginListUrl)
+                    val cached = if (forceRefresh) null else cache.readFresh(pluginListUrl)
+                    val text = cached ?: runCatching { http.getTextBlocking(pluginListUrl) }
+                        .onSuccess { cache.write(pluginListUrl, it) }
+                        .getOrElse { error ->
+                            cache.readStale(pluginListUrl) ?: throw error
+                        }
                     val array = JSONArray(text)
                     for (i in 0 until array.length()) {
                         val plugin = array.optJSONObject(i) ?: continue
@@ -127,7 +134,9 @@ class CloudStreamRepositorySession private constructor(
             root: JSONObject,
             sourceUrl: String,
             http: HttpJsonClient,
-            runtime: CloudStreamRuntime
+            runtime: CloudStreamRuntime,
+            cache: CloudStreamRepositoryCache,
+            forceRefresh: Boolean,
         ): CloudStreamRepositorySession {
             val pluginLists = root.optJSONArray("pluginLists").toStringList()
             require(pluginLists.isNotEmpty()) { "CloudStream repository contains no pluginLists" }
@@ -137,7 +146,9 @@ class CloudStreamRepositorySession private constructor(
                 pluginLists = pluginLists,
                 sourceUrl = sourceUrl,
                 http = http,
-                runtime = runtime
+                runtime = runtime,
+                cache = cache,
+                forceRefresh = forceRefresh,
             )
         }
     }

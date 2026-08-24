@@ -28,8 +28,14 @@ version = read(".nustrim-version").strip()
 gradle = read("app/build.gradle.kts")
 
 check("S12.17 feature preserved", "episode-title-source=catalog-metadata-first,cinemeta-catalog-fallback" in marker)
-check("S12.18 version", version == "0.57.17-tv-cleanroom-s12.18-sources-live-tabs")
-check("S12.18 versionCode", "versionCode = 140" in gradle)
+check(
+    "post-S12.17 version",
+    version in {
+        "0.57.17-tv-cleanroom-s12.18-sources-live-tabs",
+        "0.57.18-tv-cleanroom-s12.19-cloudstream-speed",
+    },
+)
+check("post-S12.17 versionCode", "versionCode = 140" in gradle or "versionCode = 141" in gradle)
 check("Stremio catalog parses video title", 'title = video.optString("title"' in stremio_parser)
 check("Catalog metadata remains first authority", "item.episodes.none(::needsCatalogTitle)" in details)
 check("Cinemeta is catalog fallback", "InstalledSourceStore.CINEMETA_URL" in details)

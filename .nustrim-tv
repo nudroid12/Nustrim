@@ -1,6 +1,11 @@
 generation=cleanroom-v1
 reference=nuvio-tv-0.8.6-beta
-subsystem=12.18-sources-live-tabs
+subsystem=12.19-cloudstream-speed
+cloudstream-repository-cache=24h-stale-while-refresh
+cloudstream-positive-cache=30m
+cloudstream-negative-cache=10m
+cloudstream-provider-priority=success-history
+cloudstream-provider-concurrency=4
 status=release-candidate
 baseline=0.51.4-tv-cleanroom-s6.2-rollback
 preserve=source-provider-engine,stream-resolver,playback-engine,mobile-ui
