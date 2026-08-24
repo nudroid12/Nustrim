@@ -36,9 +36,12 @@ settings_entry = read("app/src/main/java/app/nudroidlabs/nustrim/tv/settings/TvS
 settings_screen = read("app/src/main/java/app/nudroidlabs/nustrim/tv/settings/TvSettingsScreen.kt")
 subtitle = read("app/src/main/java/app/nudroidlabs/nustrim/tv/player/TvSubtitleRepository.kt")
 
-check("S12.20 marker", "subsystem=12.20-cloudstream-tv" in marker)
-check("S12.20 version", version == "0.57.19-tv-cleanroom-s12.20-cloudstream-tv")
-check("S12.20 versionCode", "versionCode = 142" in gradle)
+check("S12.20 feature marker", "cloudstream-tv-search=enabled-provider-rows" in marker)
+check("post-S12.20 version", version in {
+    "0.57.19-tv-cleanroom-s12.20-cloudstream-tv",
+    "0.57.20-tv-cleanroom-s12.21-subtitle-language-split",
+})
+check("post-S12.20 versionCode", "versionCode = 142" in gradle or "versionCode = 143" in gradle)
 check("Media references carry provider locator", "val providerLocator: String = \"\"" in models)
 check("Provider locator is URL-safe", "Base64.URL_SAFE" in locator and "providerName" in locator)
 check("Provider locator persists in Library", "refProviderLocator" in local)

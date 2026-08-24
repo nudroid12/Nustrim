@@ -43,6 +43,10 @@ require(
     or (
         'versionName = "0.57.19-tv-cleanroom-s12.20-cloudstream-tv"' in gradle
         and "versionCode = 142" in gradle
+    )
+    or (
+        'versionName = "0.57.20-tv-cleanroom-s12.21-subtitle-language-split"' in gradle
+        and "versionCode = 143" in gradle
     ),
 )
 require("safe subtitle panel width", 'width = 860.dp' in panels and 'width = 1_040.dp' not in panels)
@@ -55,7 +59,14 @@ require(
     and 'title = "Text size +"' not in panels
     and 'title = "Text size -"' not in panels,
 )
-require("friendly ISO language labels", "subtitleTrackTitle" in panels and '"msa", "may" -> "ms"' in panels and '"ind" -> "id"' in panels)
+require(
+    "friendly ISO language labels",
+    "subtitleTrackTitle" in panels
+    and (
+        ('"msa", "may" -> "ms"' in panels and '"ind" -> "id"' in panels)
+        or "TvSubtitleLanguage.canonicalCode(raw)" in panels
+    ),
+)
 require("track provider and language shown", "subtitleTrackDescription" in panels and "track.provider" in panels)
 require(
     "rendered subtitles hidden only while panel is open",

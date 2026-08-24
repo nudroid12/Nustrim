@@ -35,8 +35,8 @@ internal class TvSubtitleRepository(context: Context) {
                 if (source.url == InstalledSourceStore.OPENSUBTITLES_URL) 0 else 1
             }
         val preference = SubtitlePreference(
-            preferred = canonicalLanguageCode(preferences.subtitlePreferredLanguage),
-            second = canonicalLanguageCode(preferences.subtitleSecondPreferredLanguage),
+            preferred = TvSubtitleLanguage.canonicalCode(preferences.subtitlePreferredLanguage),
+            second = TvSubtitleLanguage.canonicalCode(preferences.subtitleSecondPreferredLanguage),
             displayMode = preferences.subtitleDisplayMode,
         )
         val cacheKey = cacheKey(
@@ -152,30 +152,10 @@ internal class TvSubtitleRepository(context: Context) {
 
     private fun subtitleMatches(subtitle: SubtitleSource, target: String): Boolean {
         if (target.isBlank()) return false
-        if (canonicalLanguageCode(subtitle.language) == target) return true
+        if (TvSubtitleLanguage.canonicalCode(subtitle.language, subtitle.label) == target) return true
         val label = subtitle.label.lowercase(Locale.ROOT)
         return LANGUAGE_LABELS[target].orEmpty().any { alias ->
             Regex("(^|[^a-z])${Regex.escape(alias)}([^a-z]|$)").containsMatchIn(label)
-        }
-    }
-
-    private fun canonicalLanguageCode(raw: String): String {
-        val base = raw.trim().lowercase(Locale.ROOT).substringBefore('-').substringBefore('_')
-        return when (base) {
-            "eng", "english" -> "en"
-            "msa", "may", "malay", "melayu" -> "ms"
-            "ind", "indonesian" -> "id"
-            "spa", "spanish" -> "es"
-            "por", "portuguese" -> "pt"
-            "fra", "fre", "french" -> "fr"
-            "deu", "ger", "german" -> "de"
-            "ita", "italian" -> "it"
-            "jpn", "japanese" -> "ja"
-            "kor", "korean" -> "ko"
-            "zho", "chi", "chinese" -> "zh"
-            "ara", "arabic" -> "ar"
-            "", "und", "unknown", "mul", "zxx" -> ""
-            else -> base
         }
     }
 
@@ -186,8 +166,9 @@ internal class TvSubtitleRepository(context: Context) {
         val seen = LinkedHashMap<String, SubtitleSource>()
         (streamSubtitles + externalSubtitles).forEach { subtitle ->
             if (subtitle.url.isBlank()) return@forEach
-            val identity = subtitleIdentity(subtitle)
-            if (!seen.containsKey(identity)) seen[identity] = subtitle
+            val normalized = TvSubtitleLanguage.normalize(subtitle)
+            val identity = subtitleIdentity(normalized)
+            if (!seen.containsKey(identity)) seen[identity] = normalized
         }
         return seen.values.toList()
     }
@@ -228,7 +209,7 @@ internal class TvSubtitleRepository(context: Context) {
 
     private fun subtitleIdentity(subtitle: SubtitleSource): String = listOf(
         subtitle.url.trim(),
-        canonicalLanguageCode(subtitle.language),
+        TvSubtitleLanguage.canonicalCode(subtitle.language, subtitle.label),
         subtitle.label.trim().lowercase(Locale.ROOT),
     ).joinToString("|")
 

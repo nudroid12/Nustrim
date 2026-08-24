@@ -76,7 +76,7 @@ class TvPlayerRuntime(
     }
 
     init {
-        canonicalLanguageCode(preferredSubtitleLanguage)
+        TvSubtitleLanguage.canonicalCode(preferredSubtitleLanguage)
             .takeIf { it.isNotBlank() }
             ?.let { language ->
                 player.trackSelectionParameters = player.trackSelectionParameters
@@ -174,12 +174,15 @@ class TvPlayerRuntime(
                         if (!group.isTrackSupported(index, true)) continue
                         ordinal += 1
                         val format = group.getTrackFormat(index)
-                        val languageCode = canonicalLanguageCode(format.language.orEmpty())
-                        val language = displayLanguageName(languageCode)
                         val (provider, rawLabel) = splitProviderLabel(
                             raw = format.label.orEmpty(),
                             fallbackProvider = if (type == C.TRACK_TYPE_TEXT) "Embedded" else "Audio",
                         )
+                        val languageCode = TvSubtitleLanguage.canonicalCode(
+                            rawCode = format.language.orEmpty(),
+                            rawLabel = rawLabel,
+                        )
+                        val language = TvSubtitleLanguage.displayName(languageCode)
                         val label = cleanTrackLabel(
                             rawLabel = rawLabel,
                             languageCode = languageCode,
@@ -208,38 +211,6 @@ class TvPlayerRuntime(
                     }
                 }
         }
-    }
-
-    private fun canonicalLanguageCode(raw: String): String {
-        val base = raw.trim().lowercase(Locale.ROOT).substringBefore('-').substringBefore('_')
-        return when (base) {
-            "", "und", "unknown", "mul", "zxx" -> ""
-            "eng" -> "en"
-            "msa", "may" -> "ms"
-            "ind" -> "id"
-            "spa" -> "es"
-            "por" -> "pt"
-            "fra", "fre" -> "fr"
-            "deu", "ger" -> "de"
-            "ita" -> "it"
-            "jpn" -> "ja"
-            "kor" -> "ko"
-            "zho", "chi" -> "zh"
-            "ara" -> "ar"
-            "tha" -> "th"
-            "vie" -> "vi"
-            "rus" -> "ru"
-            "hin" -> "hi"
-            else -> base.takeIf { it.length in 2..3 }.orEmpty()
-        }
-    }
-
-    private fun displayLanguageName(code: String): String {
-        if (code.isBlank()) return ""
-        val display = Locale.forLanguageTag(code).getDisplayLanguage(Locale.ENGLISH).trim()
-        return display
-            .takeIf { it.isNotBlank() && !it.equals(code, ignoreCase = true) }
-            ?: code.uppercase(Locale.ROOT)
     }
 
     private fun cleanTrackLabel(

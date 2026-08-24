@@ -34,11 +34,12 @@ require(
     or 'versionName = "0.57.16-tv-cleanroom-s12.17-episode-titles"' in gradle
     or 'versionName = "0.57.17-tv-cleanroom-s12.18-sources-live-tabs"' in gradle
     or 'versionName = "0.57.18-tv-cleanroom-s12.19-cloudstream-speed"' in gradle
-    or 'versionName = "0.57.19-tv-cleanroom-s12.20-cloudstream-tv"' in gradle,
+    or 'versionName = "0.57.19-tv-cleanroom-s12.20-cloudstream-tv"' in gradle
+    or 'versionName = "0.57.20-tv-cleanroom-s12.21-subtitle-language-split"' in gradle,
 )
 require(
     "target version code",
-    any(f"versionCode = {code}" in gradle for code in (138, 139, 140, 141, 142)),
+    any(f"versionCode = {code}" in gradle for code in (138, 139, 140, 141, 142, 143)),
 )
 category_block = models.split("enum class TvSettingsCategory", 1)[1].split("}", 1)[0]
 require("seven TV categories", len(re.findall(r'^    [A-Z_]+\("', category_block, re.MULTILINE)) == 7)

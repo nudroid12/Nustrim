@@ -33,8 +33,9 @@ check("S12.19 feature marker", "cloudstream-repository-cache=24h-stale-while-ref
 check("post-S12.19 version", version in {
     "0.57.18-tv-cleanroom-s12.19-cloudstream-speed",
     "0.57.19-tv-cleanroom-s12.20-cloudstream-tv",
+    "0.57.20-tv-cleanroom-s12.21-subtitle-language-split",
 })
-check("post-S12.19 versionCode", "versionCode = 141" in gradle or "versionCode = 142" in gradle)
+check("post-S12.19 versionCode", any(f"versionCode = {code}" in gradle for code in (141, 142, 143)))
 check("Repository cache is app-private", "context.applicationContext.cacheDir" in cache)
 check("Repository cache is URL keyed", 'MessageDigest.getInstance("SHA-256")' in cache)
 check("Repository cache uses a temporary commit file", 'target.name + ".tmp"' in cache and "renameTo(target)" in cache)

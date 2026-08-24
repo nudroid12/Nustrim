@@ -1,6 +1,11 @@
 generation=cleanroom-v1
 reference=nuvio-tv-0.8.6-beta
-subsystem=12.20-cloudstream-tv
+subsystem=12.21-subtitle-language-split
+subtitle-language-malay=ms,msa,may,malay,melayu,bahasa-melayu
+subtitle-language-indonesian=id,in,ind,indonesian,indonesia,bahasa-indonesia,indo
+subtitle-language-label-override=explicit-label-corrects-provider-code
+subtitle-language-ambiguous-bahasa=unknown-unless-code-is-explicit
+subtitle-language-panel=separate-malay-and-indonesian-rails
 cloudstream-tv-search=enabled-provider-rows
 cloudstream-tv-details=provider-locator-route
 cloudstream-tv-sources=selected-provider-direct-resolution

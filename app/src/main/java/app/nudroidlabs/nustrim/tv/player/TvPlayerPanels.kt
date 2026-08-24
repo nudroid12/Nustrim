@@ -829,23 +829,7 @@ private fun TvPanelCompactButton(
 
 private fun subtitleTrackTitle(track: TvPlayerTrack): String {
     val raw = track.label.trim()
-    val alias = when (raw.lowercase()) {
-        "eng" -> "en"
-        "msa", "may" -> "ms"
-        "ind" -> "id"
-        "spa" -> "es"
-        "por" -> "pt"
-        "fra", "fre" -> "fr"
-        "deu", "ger" -> "de"
-        "ita" -> "it"
-        "jpn" -> "ja"
-        "kor" -> "ko"
-        "zho", "chi" -> "zh"
-        "ara" -> "ar"
-        "tha" -> "th"
-        "vie" -> "vi"
-        else -> raw.lowercase()
-    }
+    val alias = TvSubtitleLanguage.canonicalCode(raw)
     return if (raw.isBlank() || alias == track.languageCode.lowercase()) {
         track.language.ifBlank { "Unknown subtitle" }
     } else {
