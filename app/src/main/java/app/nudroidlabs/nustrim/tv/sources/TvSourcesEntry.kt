@@ -36,7 +36,7 @@ fun TvSourcesEntry(
         runCatching {
             repository.loadProgressively(route, forceRefresh = reloadToken > 0).collect { snapshot ->
                 when {
-                    snapshot.streams.isNotEmpty() -> state = TvSourcesUiState.Ready(snapshot)
+                    snapshot.playableStreams.isNotEmpty() -> state = TvSourcesUiState.Ready(snapshot)
                     snapshot.loadingProviderCount > 0 -> state = TvSourcesUiState.Loading(snapshot)
                     snapshot.attempts.isNotEmpty() &&
                         snapshot.attempts.all { it.status == TvSourceAttemptStatus.ERROR } -> {

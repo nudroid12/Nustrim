@@ -57,13 +57,15 @@ data class TvSourcesSnapshot(
 ) {
     val loadingProviderCount: Int = attempts.count { it.status == TvSourceAttemptStatus.LOADING }
 
-    val sourceLabels: List<String> = streams
+    val playableStreams: List<TvSourceStream> = streams.filter { it.playable }
+
+    val sourceLabels: List<String> = playableStreams
         .map { it.sourceLabel }
         .filter { it.isNotBlank() }
         .distinct()
 
     fun filtered(sourceLabel: String?): List<TvSourceStream> =
-        if (sourceLabel == null) streams else streams.filter { it.sourceLabel == sourceLabel }
+        if (sourceLabel == null) playableStreams else playableStreams.filter { it.sourceLabel == sourceLabel }
 }
 
 sealed interface TvSourcesUiState {

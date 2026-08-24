@@ -380,7 +380,7 @@ private fun SourceFilterRow(
         buildList {
             snapshot?.sourceLabels.orEmpty().forEach { if (it !in this) add(it) }
             attempts
-                .filter { it.status != TvSourceAttemptStatus.EMPTY }
+                .filter { it.status == TvSourceAttemptStatus.LOADING }
                 .map { it.sourceLabel }
                 .filter { it.isNotBlank() }
                 .forEach { if (it !in this) add(it) }
@@ -389,7 +389,6 @@ private fun SourceFilterRow(
     val attemptByLabel = remember(attempts) {
         attempts.groupBy { it.sourceLabel }.mapValues { (_, values) ->
             values.firstOrNull { it.status == TvSourceAttemptStatus.SUCCESS }
-                ?: values.firstOrNull { it.status == TvSourceAttemptStatus.ERROR }
                 ?: values.first()
         }
     }
@@ -426,7 +425,6 @@ private fun SourceFilterRow(
             val attempt = attemptByLabel[label]
             val suffix = when (attempt?.status) {
                 TvSourceAttemptStatus.LOADING -> "  …"
-                TvSourceAttemptStatus.ERROR -> "  ×"
                 else -> ""
             }
             SourceChip(
