@@ -1,0 +1,10 @@
+{
+  "versionCode": 130,
+  "versionName": "0.57.7-tv-cleanroom-s12.8-repo-cleanup",
+  "apkUrl": "https://github.com/nudroid12/Nustrim/releases/download/v0.57.7-tv-cleanroom-s12.8-repo-cleanup/Nustrim-0.57.7-tv-cleanroom-s12.8-repo-cleanup.apk",
+  "sha256": "1082efc38b6cd30d1d072ab5ee24cb770a994ba07cce00a46e1a2aa7b02d8b56",
+  "changelog": "S12.8 removes 49 obsolete stage files and 17,394 lines while retaining the primary build, current provider engines and all TV parity contracts.",
+  "sizeBytes": 22165756,
+  "signingMode": "permanent",
+  "signingCertSha256": "30C625B9112CD04D43B631D6020D0D52E61695111B8E2125F29AD19651EB165D"
+}

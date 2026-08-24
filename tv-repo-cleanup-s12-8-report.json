@@ -1,0 +1,32 @@
+{
+  "stage": "S12.8 Repository Cleanup",
+  "issue": "S12-REPO-CLEANUP-01",
+  "status": "build-verified",
+  "staticContracts": "16/16",
+  "parityContracts": "40/40",
+  "removedFiles": 49,
+  "removedLines": 17394,
+  "removedGroups": {
+    "obsoleteWorkflows": 36,
+    "stageVerifiers": 7,
+    "unreferencedKotlin": 6
+  },
+  "preserved": [
+    "build.yml",
+    "parity verifier",
+    "SourceEngine",
+    "active provider sessions",
+    "TV Sources",
+    "TV subtitles",
+    "Mobile UI"
+  ],
+  "deviceAcceptance": "pending",
+  "requiredDeviceChecks": [
+    "keep version code 129 installed",
+    "use the TV updater to download and install version code 130",
+    "open Home, Search, Library, Settings and Details",
+    "resolve Sources and start playback",
+    "open the subtitle panel and confirm active subtitle discovery still works"
+  ],
+  "nextBacklog": "Final device parity acceptance and measured visual audit"
+}

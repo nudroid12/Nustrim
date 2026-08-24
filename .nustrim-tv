@@ -1,6 +1,6 @@
 generation=cleanroom-v1
 reference=nuvio-tv-0.8.6-beta
-subsystem=12.7-home-poster-scale
+subsystem=12.8-repo-cleanup
 status=release-candidate
 baseline=0.51.4-tv-cleanroom-s6.2-rollback
 preserve=source-provider-engine,stream-resolver,playback-engine,mobile-ui
@@ -71,4 +71,6 @@ subtitle-provider-label=enabled
 subtitle-style=font-size-and-bold-persistent
 backlog=device-parity-acceptance
 auto-release=permanent-signed
-legacy-episode-engine=unused-by-cleanroom-tv
+repo-cleanup=obsolete-workflows,stage-verifiers,unreferenced-core
+repo-cleanup-removed-files=49
+legacy-episode-engine=removed
