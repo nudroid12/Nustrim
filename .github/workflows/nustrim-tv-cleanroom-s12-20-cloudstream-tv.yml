@@ -1,0 +1,397 @@
+name: Nustrim TV Cleanroom S12.20 CloudStream TV Auto Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nustrim-tv-cleanroom-s12-20-cloudstream-tv
+  cancel-in-progress: false
+
+env:
+  LOCKED_CERT_SHA256: "30C625B9112CD04D43B631D6020D0D52E61695111B8E2125F29AD19651EB165D"
+  TARGET_VERSION_NAME: "0.57.19-tv-cleanroom-s12.20-cloudstream-tv"
+  TARGET_VERSION_CODE: "142"
+
+jobs:
+  build-test-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Guard accepted S12.19 baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          current_build="$(sed -n -E 's/.*versionName[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' app/build.gradle.kts | head -1)"
+          current_marker="$(cat .nustrim-version 2>/dev/null || true)"
+          case "$current_build" in
+            "0.57.18-tv-cleanroom-s12.19-cloudstream-speed"|"$TARGET_VERSION_NAME") ;;
+            *)
+              echo "::error::Unexpected baseline: $current_build"
+              exit 20
+              ;;
+          esac
+          test "$current_marker" = "$current_build" || {
+            echo "::error::Build version and .nustrim-version differ."
+            exit 21
+          }
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Gradle 9.5.0
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "9.5.0"
+
+      - name: Prepare permanent signing
+        shell: bash
+        env:
+          KEYSTORE_B64: ${{ secrets.NUSTRIM_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.NUSTRIM_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.NUSTRIM_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.NUSTRIM_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for name in KEYSTORE_B64 KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::Signing secret $name is missing."
+              exit 30
+            fi
+          done
+          KS="$RUNNER_TEMP/nustrim-release.jks"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$KS"
+          chmod 600 "$KS"
+          keytool -list -keystore "$KS" -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" >/dev/null
+          CERT="$(
+            keytool -exportcert -rfc -keystore "$KS" -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" |
+            openssl x509 -noout -fingerprint -sha256 |
+            cut -d= -f2 | tr -d ':' | tr '[:lower:]' '[:upper:]'
+          )"
+          test "$CERT" = "$LOCKED_CERT_SHA256" || {
+            echo "::error::Keystore certificate is not the locked Nustrim certificate."
+            exit 31
+          }
+          echo "NUSTRIM_KEYSTORE_PATH=$KS" >> "$GITHUB_ENV"
+          echo "NUSTRIM_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "NUSTRIM_KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
+          echo "NUSTRIM_KEY_PASSWORD=$KEY_PASSWORD" >> "$GITHUB_ENV"
+
+      - name: Apply exact S12.20 source
+        shell: bash
+        env:
+          SOURCE_PATCH_B64: "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"
+        run: |
+          set -euo pipefail
+          if ! grep -qx 'subsystem=12.20-cloudstream-tv' .nustrim-tv; then
+            PATCH_FILE="$RUNNER_TEMP/s12-20-cloudstream-tv.patch"
+            printf '%s' "$SOURCE_PATCH_B64" | base64 --decode | gzip -d > "$PATCH_FILE"
+            git apply --check "$PATCH_FILE"
+            git apply "$PATCH_FILE"
+          fi
+
+      - name: Verify boundary, payload and contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          changed="$({ git diff --name-only; git ls-files --others --exclude-standard; } | sort -u)"
+          printf '%s\n' "$changed"
+          export CHANGED="$changed"
+          python3 <<'PY'
+          from pathlib import Path
+          import hashlib
+          import os
+
+          changed = [line for line in os.environ.get("CHANGED", "").splitlines() if line]
+          allowed = {
+              ".nustrim-tv",
+              ".nustrim-version",
+              "app/build.gradle.kts",
+              "app/src/main/java/app/nudroidlabs/nustrim/core/library/LocalMediaStore.kt",
+              "app/src/main/java/app/nudroidlabs/nustrim/core/model/MediaModels.kt",
+              "app/src/main/java/app/nudroidlabs/nustrim/core/source/cloudstream/CloudStreamProviderLocator.kt",
+              "app/src/main/java/app/nudroidlabs/nustrim/core/source/cloudstream/CloudStreamProviderSession.kt",
+              "app/src/main/java/app/nudroidlabs/nustrim/tv/cloudstream/TvCloudStreamBridge.kt",
+              "app/src/main/java/app/nudroidlabs/nustrim/tv/details/TvDetailsRepository.kt",
+              "app/src/main/java/app/nudroidlabs/nustrim/tv/home/TvHomeModels.kt",
+              "app/src/main/java/app/nudroidlabs/nustrim/tv/home/TvHomeRepository.kt",
+              "app/src/main/java/app/nudroidlabs/nustrim/tv/player/TvSubtitleRepository.kt",
+              "app/src/main/java/app/nudroidlabs/nustrim/tv/search/TvSearchModels.kt",
+              "app/src/main/java/app/nudroidlabs/nustrim/tv/search/TvSearchRepository.kt",
+              "app/src/main/java/app/nudroidlabs/nustrim/tv/settings/TvSettingsEntry.kt",
+              "app/src/main/java/app/nudroidlabs/nustrim/tv/settings/TvSettingsModels.kt",
+              "app/src/main/java/app/nudroidlabs/nustrim/tv/settings/TvSettingsScreen.kt",
+              "app/src/main/java/app/nudroidlabs/nustrim/tv/sources/TvSourcesRepository.kt",
+              "scripts/verify_tv_cloudstream_tv_s12_20.py",
+              "scripts/verify_tv_cloudstream_speed_s12_19.py",
+              "scripts/verify_tv_sources_live_tabs_s12_18.py",
+              "scripts/verify_tv_episode_titles_s12_17.py",
+              "scripts/verify_tv_settings_parity_s12_11.py",
+              "scripts/verify_tv_subtitle_panel_s12_16.py",
+          }
+          unexpected = [path for path in changed if path not in allowed]
+          if unexpected:
+              raise SystemExit("S12.20 changed files outside CloudStream TV boundary: " + ", ".join(unexpected))
+
+          expected_hashes = {
+              ".nustrim-tv": "d0e04cde3e5d809f078f9599d7c555a3b8a581277cfa5696d7a6a9218221e944",
+              ".nustrim-version": "3f359f05355cd38dfeab902a29996507637af70822ba72bbaca87dcf5d407497",
+              "app/build.gradle.kts": "2809f4ccd16344d271451653563daa137dd1c875580755c2fc4a8d2ba3939f2e",
+              "app/src/main/java/app/nudroidlabs/nustrim/core/library/LocalMediaStore.kt": "5f42dbd949bef2ba8d3b2719fa37e4a684a7c962fcad97c3514c7d759a1e498b",
+              "app/src/main/java/app/nudroidlabs/nustrim/core/model/MediaModels.kt": "29be8fa2ae59e1f25b94a7388b3544c238f26dc278e44f9fa2120e39b2202fc8",
+              "app/src/main/java/app/nudroidlabs/nustrim/core/source/cloudstream/CloudStreamProviderLocator.kt": "5ec7561cf6e9d6e5017e7077f4622c65c4f89e4e9ff6390e16e5855eef7d9c2c",
+              "app/src/main/java/app/nudroidlabs/nustrim/core/source/cloudstream/CloudStreamProviderSession.kt": "9e0e28bea04b6e8d8e3be84b7ec76a0c3b53980297e72ac1643701f6f7b90027",
+              "app/src/main/java/app/nudroidlabs/nustrim/tv/cloudstream/TvCloudStreamBridge.kt": "20f895f133b2de810cd49b2460ddd48a9ed7a54b82edbd2529f40282aa11838a",
+              "app/src/main/java/app/nudroidlabs/nustrim/tv/details/TvDetailsRepository.kt": "37519742e03a44fecb90f429f713dc19aca9813b3511ec4af4d2800f436be398",
+              "app/src/main/java/app/nudroidlabs/nustrim/tv/home/TvHomeModels.kt": "b5f89f5dfba35892294d22d237827685ec28facd5b584e92638e25711a974002",
+              "app/src/main/java/app/nudroidlabs/nustrim/tv/home/TvHomeRepository.kt": "e933b64ed640f2758f88945554506cf9fb9ac0a4e87bbebc4ec26b3b47df35f5",
+              "app/src/main/java/app/nudroidlabs/nustrim/tv/player/TvSubtitleRepository.kt": "2a3421040733fbd1bf694192e255ecb0e3cc96f09aefd14515558e7d6f3e70eb",
+              "app/src/main/java/app/nudroidlabs/nustrim/tv/search/TvSearchModels.kt": "c0a3d8eeef49c80d64f7a3a53a7c88ca196f1a459f18ff0ed5d71823b82323d7",
+              "app/src/main/java/app/nudroidlabs/nustrim/tv/search/TvSearchRepository.kt": "f960903748a34d7035e5821feec45df51b901f3daabe0cb3cc4510c52fdb883e",
+              "app/src/main/java/app/nudroidlabs/nustrim/tv/settings/TvSettingsEntry.kt": "c94ff7ccddb59d411c4fdb74c0b213e10dc28d3fe371cb0861654701404887f9",
+              "app/src/main/java/app/nudroidlabs/nustrim/tv/settings/TvSettingsModels.kt": "8b1e9f4464d6319577df2b1863ca6a1780ddfbbd7b5220f42cf7c81bb2b90370",
+              "app/src/main/java/app/nudroidlabs/nustrim/tv/settings/TvSettingsScreen.kt": "cbc5ac77daa193b8144ec2a50c851810915985dd371b85000c79de9917f0d053",
+              "app/src/main/java/app/nudroidlabs/nustrim/tv/sources/TvSourcesRepository.kt": "cdcb3975a9e55c26edba06eb309b9a97202aae661007359a0f4202e35438d98f",
+              "scripts/verify_tv_cloudstream_tv_s12_20.py": "48309e55471c36834b5d43eb3b0fa58e72c19c5f6118ba9e7d0ccc1d53a10a5a",
+              "scripts/verify_tv_cloudstream_speed_s12_19.py": "a828df28ec7a312558c353ce95d9146eaad19676295e94fdcc3e431eb309735d",
+              "scripts/verify_tv_sources_live_tabs_s12_18.py": "cfdfc2018a16da616dbd3de5d6c0b356771fee6dbe15e733f05c93595b47e7b3",
+              "scripts/verify_tv_episode_titles_s12_17.py": "8e1c08a11f1214151cf205a785899780d605d68639087d64a567c701acfc1f1c",
+              "scripts/verify_tv_settings_parity_s12_11.py": "fa644c591782d777a88bc08f83aaed4a7de80c6633e68d7283b823140c5c62f9",
+              "scripts/verify_tv_subtitle_panel_s12_16.py": "44776e99c6b37423903d5dc0d076e2a1937923a3841f1ee62f21508ced0268ad",
+          }
+          mismatch = []
+          for relative, expected in expected_hashes.items():
+              path = Path(relative)
+              actual = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else "missing"
+              if actual != expected:
+                  mismatch.append(relative)
+          if mismatch:
+              raise SystemExit("Exact S12.20 payload mismatch: " + ", ".join(mismatch))
+          PY
+          python3 scripts/verify_tv_cloudstream_tv_s12_20.py
+          python3 scripts/verify_tv_cloudstream_speed_s12_19.py
+          python3 scripts/verify_tv_sources_live_tabs_s12_18.py
+          python3 scripts/verify_tv_episode_titles_s12_17.py
+          python3 scripts/verify_tv_subtitle_panel_s12_16.py
+          python3 scripts/verify_tv_settings_parity_s12_11.py
+          python3 scripts/verify_tv_parity_s11.py
+
+      - name: Build permanent signed release APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle --no-daemon --build-cache \
+            :app:lintRelease \
+            :app:testDebugUnitTest \
+            :app:assembleRelease \
+            --stacktrace --console=plain \
+            2>&1 | tee "$RUNNER_TEMP/nustrim-s12-20-build.log"
+          test -s app/build/outputs/apk/release/app-release.apk
+
+      - name: Verify APK identity and certificate
+        id: verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/release/app-release.apk"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)"
+          AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -1)"
+          test -x "$APKSIGNER"
+          test -x "$AAPT"
+          "$APKSIGNER" verify --verbose --print-certs "$APK" | tee "$RUNNER_TEMP/nustrim-s12-20-signature.txt"
+          CERT="$(sed -n -E 's/^.*certificate SHA-256 digest:[[:space:]]*//p' "$RUNNER_TEMP/nustrim-s12-20-signature.txt" | head -1 | tr -d ':' | tr '[:lower:]' '[:upper:]')"
+          test "$CERT" = "$LOCKED_CERT_SHA256"
+          BADGING="$("$AAPT" dump badging "$APK" | head -1)"
+          PACKAGE="$(printf '%s\n' "$BADGING" | sed -n -E "s/^package: name='([^']+)'.*/\1/p")"
+          APK_CODE="$(printf '%s\n' "$BADGING" | sed -n -E "s/^.*versionCode='([^']+)'.*/\1/p")"
+          APK_NAME="$(printf '%s\n' "$BADGING" | sed -n -E "s/^.*versionName='([^']+)'.*/\1/p")"
+          test "$PACKAGE" = "app.nudroidlabs.nustrim"
+          test "$APK_CODE" = "$TARGET_VERSION_CODE"
+          test "$APK_NAME" = "$TARGET_VERSION_NAME"
+          echo "cert_sha=$CERT" >> "$GITHUB_OUTPUT"
+          echo "version_code=$APK_CODE" >> "$GITHUB_OUTPUT"
+          echo "version_name=$APK_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare updater manifest and report
+        id: assets
+        shell: bash
+        env:
+          CERT_SHA: ${{ steps.verify.outputs.cert_sha }}
+          VERSION_CODE: ${{ steps.verify.outputs.version_code }}
+          VERSION_NAME: ${{ steps.verify.outputs.version_name }}
+        run: |
+          set -euo pipefail
+          export CERT_SHA VERSION_CODE VERSION_NAME
+          python3 <<'PY'
+          from pathlib import Path
+          import hashlib
+          import json
+          import os
+
+          code = int(os.environ["VERSION_CODE"])
+          name = os.environ["VERSION_NAME"]
+          cert = os.environ["CERT_SHA"]
+          repo = os.environ["GITHUB_REPOSITORY"]
+          src = Path("app/build/outputs/apk/release/app-release.apk")
+          apk = Path(f"Nustrim-{name}.apk")
+          apk.write_bytes(src.read_bytes())
+          sha = hashlib.sha256(apk.read_bytes()).hexdigest()
+          size = apk.stat().st_size
+          tag = f"v{name}"
+          manifest = {
+              "versionCode": code,
+              "versionName": name,
+              "apkUrl": f"https://github.com/{repo}/releases/download/{tag}/{apk.name}",
+              "sha256": sha,
+              "changelog": "S12.20 makes CloudStream repositories fully usable on TV across Search, Details, Sources, subtitles and Content Manager.",
+              "sizeBytes": size,
+              "signingMode": "permanent",
+              "signingCertSha256": cert,
+          }
+          report = {
+              "stage": "S12.20 CloudStream TV",
+              "issue": "S12-CLOUDSTREAM-TV-01",
+              "status": "build-verified",
+              "changes": [
+                  "search enabled CloudStream providers from the TV Search screen",
+                  "route provider results through Details and directly into playable Sources",
+                  "attach CloudStream extracted subtitle tracks to playback streams",
+                  "manage individual CloudStream providers under Content Manager Add-ons",
+                  "hide repository package cards from Home and keep provider identity stable"
+              ],
+              "preserved": ["S12.19 CloudStream caches and provider priority", "S12.18 playable-only provider tabs", "S12.17 catalog episode titles", "S12.16 subtitle panel", "SmartSubs", "Mobile UI", "signed updater"],
+              "deviceAcceptance": "pending"
+          }
+          Path("update.json").write_text(json.dumps(manifest, indent=2) + "\n")
+          Path("tv-cloudstream-tv-s12-20-report.json").write_text(json.dumps(report, indent=2) + "\n")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"tag={tag}\n")
+              fh.write(f"apk={apk.name}\n")
+              fh.write(f"sha256={sha}\n")
+          PY
+
+      - name: Commit S12.20 only after verified build
+        id: commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            .nustrim-tv \
+            .nustrim-version \
+            app/build.gradle.kts \
+            app/src/main/java/app/nudroidlabs/nustrim/core/library/LocalMediaStore.kt \
+            app/src/main/java/app/nudroidlabs/nustrim/core/model/MediaModels.kt \
+            app/src/main/java/app/nudroidlabs/nustrim/core/source/cloudstream/CloudStreamProviderLocator.kt \
+            app/src/main/java/app/nudroidlabs/nustrim/core/source/cloudstream/CloudStreamProviderSession.kt \
+            app/src/main/java/app/nudroidlabs/nustrim/tv/cloudstream/TvCloudStreamBridge.kt \
+            app/src/main/java/app/nudroidlabs/nustrim/tv/details/TvDetailsRepository.kt \
+            app/src/main/java/app/nudroidlabs/nustrim/tv/home/TvHomeModels.kt \
+            app/src/main/java/app/nudroidlabs/nustrim/tv/home/TvHomeRepository.kt \
+            app/src/main/java/app/nudroidlabs/nustrim/tv/player/TvSubtitleRepository.kt \
+            app/src/main/java/app/nudroidlabs/nustrim/tv/search/TvSearchModels.kt \
+            app/src/main/java/app/nudroidlabs/nustrim/tv/search/TvSearchRepository.kt \
+            app/src/main/java/app/nudroidlabs/nustrim/tv/settings/TvSettingsEntry.kt \
+            app/src/main/java/app/nudroidlabs/nustrim/tv/settings/TvSettingsModels.kt \
+            app/src/main/java/app/nudroidlabs/nustrim/tv/settings/TvSettingsScreen.kt \
+            app/src/main/java/app/nudroidlabs/nustrim/tv/sources/TvSourcesRepository.kt \
+            scripts/verify_tv_cloudstream_tv_s12_20.py \
+            scripts/verify_tv_cloudstream_speed_s12_19.py \
+            scripts/verify_tv_sources_live_tabs_s12_18.py \
+            scripts/verify_tv_episode_titles_s12_17.py \
+            scripts/verify_tv_settings_parity_s12_11.py \
+            scripts/verify_tv_subtitle_panel_s12_16.py
+          if git diff --cached --quiet; then
+            echo "S12.20 source is already committed."
+          else
+            git commit -m "Enable full CloudStream TV flow S12.20 [skip ci]"
+            git push origin HEAD:main
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Create or update GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.assets.outputs.tag }}
+          VERSION: ${{ steps.verify.outputs.version_name }}
+          TARGET_SHA: ${{ steps.commit.outputs.sha }}
+        run: |
+          set -euo pipefail
+          NOTES="$RUNNER_TEMP/s12-20-release-notes.md"
+          printf '%s\n' \
+            "Nustrim $VERSION" "" \
+            "S12.20 makes enabled CloudStream repositories fully usable from the TV Search screen through Details, Sources and playback." "" \
+            "Individual providers can be enabled or disabled under Content Manager, and extracted subtitle tracks are attached to playable links." "" \
+            "S12.19 caches and priority, S12.18 playable-only tabs, catalog episode titles, SmartSubs and Mobile UI are preserved." "" \
+            "Permanent signing certificate SHA-256: $LOCKED_CERT_SHA256" > "$NOTES"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "Nustrim $VERSION" --notes-file "$NOTES" --target "$TARGET_SHA" --latest
+          else
+            gh release create "$TAG" --title "Nustrim $VERSION" --notes-file "$NOTES" --target "$TARGET_SHA" --latest
+          fi
+
+      - name: Upload and verify release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.assets.outputs.tag }}
+          APK: ${{ steps.assets.outputs.apk }}
+          EXPECTED_SHA: ${{ steps.assets.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" "$APK" update.json tv-cloudstream-tv-s12-20-report.json --clobber
+          LIVE="$RUNNER_TEMP/s12-20-live"
+          mkdir -p "$LIVE"
+          gh release download "$TAG" --pattern "$APK" --pattern update.json --pattern tv-cloudstream-tv-s12-20-report.json --dir "$LIVE" --clobber
+          test "$(sha256sum "$LIVE/$APK" | cut -d' ' -f1)" = "$EXPECTED_SHA"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)" = "$TAG"
+
+      - name: Upload verified artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nustrim-tv-cleanroom-s12-20-cloudstream-tv-release
+          path: |
+            Nustrim-${{ steps.verify.outputs.version_name }}.apk
+            update.json
+            tv-cloudstream-tv-s12-20-report.json
+            ${{ runner.temp }}/nustrim-s12-20-signature.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Collect diagnose on failure
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          D="$RUNNER_TEMP/nustrim-s12-20-diagnose"
+          mkdir -p "$D"
+          cp "$RUNNER_TEMP/nustrim-s12-20-build.log" "$D/" 2>/dev/null
+          cp "$RUNNER_TEMP/nustrim-s12-20-signature.txt" "$D/" 2>/dev/null
+          cp app/build.gradle.kts .nustrim-version .nustrim-tv "$D/" 2>/dev/null
+          cp update.json tv-cloudstream-tv-s12-20-report.json "$D/" 2>/dev/null
+          git status --short > "$D/git-status.txt" 2>&1
+          git diff > "$D/git-diff.txt" 2>&1
+
+      - name: Upload diagnose on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nustrim-tv-cleanroom-s12-20-cloudstream-tv-diagnose
+          path: ${{ runner.temp }}/nustrim-s12-20-diagnose
+          if-no-files-found: warn
+          retention-days: 7
