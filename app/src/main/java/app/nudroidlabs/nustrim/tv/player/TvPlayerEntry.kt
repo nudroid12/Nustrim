@@ -17,6 +17,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import app.nudroidlabs.nustrim.core.library.LocalMediaStore
 import app.nudroidlabs.nustrim.tv.episode.TvCanonicalEpisode
 import app.nudroidlabs.nustrim.tv.episode.TvEpisodeCatalogueBuilder
 import app.nudroidlabs.nustrim.tv.navigation.TvRoute
@@ -26,6 +27,7 @@ import app.nudroidlabs.nustrim.tv.sources.TvSourcesSnapshot
 import app.nudroidlabs.nustrim.ui.UiPreferences
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
+import kotlin.math.abs
 
 @Composable
 fun TvPlayerEntry(
@@ -42,6 +44,9 @@ fun TvPlayerEntry(
     val subtitleRepository = remember(context.applicationContext) {
         TvSubtitleRepository(context.applicationContext)
     }
+    val mediaStore = remember(context.applicationContext) {
+        LocalMediaStore(context.applicationContext)
+    }
     val preferences = remember(context.applicationContext) {
         UiPreferences(context.applicationContext)
     }
@@ -50,8 +55,15 @@ fun TvPlayerEntry(
         mutableStateOf(route.request)
     }
     var resumePositionMs by remember(route.request.stableKey) {
-        mutableStateOf(0L)
+        mutableStateOf(
+            mediaStore.resumePosition(
+                sourceUrl = route.request.sourceUrl,
+                item = route.request.media,
+                episode = route.request.episode,
+            ),
+        )
     }
+    var retryToken by remember(route.request.stableKey) { mutableIntStateOf(0) }
     var preparedRequest by remember(activeRequest.stableKey) {
         mutableStateOf<TvPlaybackRequest?>(null)
     }
@@ -73,6 +85,14 @@ fun TvPlayerEntry(
             parentKey = activeRequest.mediaKey,
             providerEpisodes = activeRequest.media.episodes,
         )
+    }
+    val nextEpisode = remember(episodeCatalogue, activeRequest.episode?.id) {
+        val currentId = activeRequest.episode?.id ?: return@remember null
+        val currentIndex = episodeCatalogue.episodes.indexOfFirst {
+            it.providerEpisodeId == currentId
+        }
+        currentIndex.takeIf { it >= 0 }
+            ?.let { episodeCatalogue.episodes.getOrNull(it + 1)?.providerEpisode }
     }
 
     val sourceRoute = remember(
@@ -123,7 +143,7 @@ fun TvPlayerEntry(
                 "${subtitle.url}#${subtitle.language}#${subtitle.label}"
             }.hashCode()
         }
-        val runtimeKey = "${playbackRequest.stableKey}/subtitles/$subtitleFingerprint"
+        val runtimeKey = "${playbackRequest.stableKey}/subtitles/$subtitleFingerprint/retry/$retryToken"
 
         key(runtimeKey) {
             val runtimeResult = remember(runtimeKey, resumePositionMs) {
@@ -143,18 +163,56 @@ fun TvPlayerEntry(
                     message = runtimeResult.exceptionOrNull()?.message
                         .orEmpty()
                         .ifBlank { "Unable to create player" },
+                    onRetry = { retryToken += 1 },
                     onBack = onExitPlayer,
                     modifier = modifier,
                 )
             } else {
-                DisposableEffect(runtime) {
-                    onDispose { runtime.release() }
+                DisposableEffect(runtime, playbackRequest.stableKey) {
+                    onDispose {
+                        if (!runtime.ended) {
+                            mediaStore.recordProgress(
+                                sourceUrl = playbackRequest.sourceUrl,
+                                item = playbackRequest.media,
+                                episode = playbackRequest.episode,
+                                positionMs = runtime.positionMs,
+                                durationMs = runtime.durationMs,
+                            )
+                        }
+                        runtime.release()
+                    }
                 }
 
-                LaunchedEffect(runtime) {
+                LaunchedEffect(runtime, playbackRequest.stableKey) {
+                    var lastSavedPositionMs = resumePositionMs
                     while (true) {
                         runtime.syncTimeline()
-                        delay(250)
+                        val position = runtime.positionMs
+                        if (position > 0L && abs(position - lastSavedPositionMs) >= PROGRESS_SAVE_INTERVAL_MS) {
+                            mediaStore.recordProgress(
+                                sourceUrl = playbackRequest.sourceUrl,
+                                item = playbackRequest.media,
+                                episode = playbackRequest.episode,
+                                positionMs = position,
+                                durationMs = runtime.durationMs,
+                            )
+                            lastSavedPositionMs = position
+                        }
+                        delay(TIMELINE_SYNC_INTERVAL_MS)
+                    }
+                }
+
+                LaunchedEffect(runtime.ended, playbackRequest.stableKey) {
+                    if (runtime.ended) {
+                        mediaStore.recordProgress(
+                            sourceUrl = playbackRequest.sourceUrl,
+                            item = playbackRequest.media,
+                            episode = playbackRequest.episode,
+                            positionMs = runtime.positionMs,
+                            durationMs = runtime.durationMs,
+                            completed = true,
+                            nextEpisode = nextEpisode,
+                        )
                     }
                 }
 
@@ -184,6 +242,10 @@ fun TvPlayerEntry(
                         )
                     },
                     onEpisodeSelected = onOpenEpisode,
+                    onRetryPlayback = {
+                        resumePositionMs = runtime.positionMs
+                        retryToken += 1
+                    },
                     onExitPlayer = onExitPlayer,
                     onReturnToDetails = onReturnToDetails,
                     modifier = modifier,
@@ -192,6 +254,9 @@ fun TvPlayerEntry(
         }
     }
 }
+
+private const val TIMELINE_SYNC_INTERVAL_MS = 500L
+private const val PROGRESS_SAVE_INTERVAL_MS = 10_000L
 
 @Composable
 private fun TvSubtitleLoading(modifier: Modifier = Modifier) {

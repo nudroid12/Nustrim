@@ -28,6 +28,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -92,6 +93,7 @@ fun TvPlayerScreen(
     onRefreshSources: () -> Unit,
     onSwitchSource: (TvSourceStream) -> Unit,
     onEpisodeSelected: (TvCanonicalEpisode) -> Unit,
+    onRetryPlayback: () -> Unit,
     onExitPlayer: () -> Unit,
     onReturnToDetails: () -> Unit,
     modifier: Modifier = Modifier,
@@ -522,7 +524,11 @@ fun TvPlayerScreen(
         }
 
         runtime.errorMessage?.let { message ->
-            TvPlayerErrorOverlay(message = message, onBack = onExitPlayer)
+            TvPlayerErrorOverlay(
+                message = message,
+                onRetry = onRetryPlayback,
+                onBack = onExitPlayer,
+            )
         }
 
         if (runtime.ended && runtime.errorMessage == null) {
@@ -733,15 +739,17 @@ private fun TvSeekOverlay(runtime: TvPlayerRuntime) {
 @Composable
 fun TvPlayerFatalError(
     message: String,
+    onRetry: (() -> Unit)? = null,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    TvPlayerErrorOverlay(message = message, onBack = onBack, modifier = modifier)
+    TvPlayerErrorOverlay(message = message, onRetry = onRetry, onBack = onBack, modifier = modifier)
 }
 
 @Composable
 private fun TvPlayerErrorOverlay(
     message: String,
+    onRetry: (() -> Unit)? = null,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -766,10 +774,22 @@ private fun TvPlayerErrorOverlay(
                 maxLines = 5,
                 overflow = TextOverflow.Ellipsis,
             )
-            Button(onClick = onBack, modifier = Modifier.focusRequester(requester)) {
-                Icon(Icons.Default.ArrowBack, contentDescription = null)
-                Spacer(Modifier.width(8.dp))
-                Text("Back to sources")
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (onRetry != null) {
+                    Button(onClick = onRetry, modifier = Modifier.focusRequester(requester)) {
+                        Icon(Icons.Default.Refresh, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Try again")
+                    }
+                }
+                Button(
+                    onClick = onBack,
+                    modifier = if (onRetry == null) Modifier.focusRequester(requester) else Modifier,
+                ) {
+                    Icon(Icons.Default.ArrowBack, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Back to sources")
+                }
             }
         }
     }
