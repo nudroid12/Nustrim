@@ -49,6 +49,9 @@ import app.nudroidlabs.nustrim.tv.focus.tvFocusAnchor
 import app.nudroidlabs.nustrim.tv.theme.animateTvFocusScale
 import coil3.compose.AsyncImage
 
+internal val HOME_POSTER_WIDTH = 126.dp
+internal val HOME_POSTER_HEIGHT = 189.dp
+
 @Composable
 fun TvHomeRows(
     rows: List<TvHomeRow>,
@@ -150,7 +153,7 @@ private fun TvHomePosterCard(
 
     Column(
         modifier = Modifier
-            .width(146.dp)
+            .width(HOME_POSTER_WIDTH)
             .scale(scale)
             .tvFocusAnchor(anchor)
             .onFocusChanged { state ->
@@ -180,7 +183,7 @@ private fun TvHomePosterCard(
     ) {
         Box(
             modifier = Modifier
-                .size(width = 146.dp, height = 214.dp)
+                .size(width = HOME_POSTER_WIDTH, height = HOME_POSTER_HEIGHT)
                 .clip(RoundedCornerShape(10.dp))
                 .background(Color(0xFF181A1F))
                 .then(

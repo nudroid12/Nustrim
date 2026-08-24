@@ -178,7 +178,7 @@ private fun TvHomeLoading(modifier: Modifier) {
                 repeat(6) {
                     Box(
                         Modifier
-                            .size(width = 146.dp, height = 214.dp)
+                            .size(width = HOME_POSTER_WIDTH, height = HOME_POSTER_HEIGHT)
                             .background(Color(0xFF17191E), RoundedCornerShape(10.dp)),
                     )
                 }

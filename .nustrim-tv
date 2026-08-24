@@ -1,10 +1,12 @@
 generation=cleanroom-v1
 reference=nuvio-tv-0.8.6-beta
-subsystem=12.6-updater-focus
+subsystem=12.7-home-poster-scale
 status=release-candidate
 baseline=0.51.4-tv-cleanroom-s6.2-rollback
 preserve=source-provider-engine,stream-resolver,playback-engine,mobile-ui
 home=cleanroom-s2-accepted
+home-poster-size=126x189dp
+home-poster-reference=nuvio-default
 episode-domain=cleanroom-s3-accepted
 details=cleanroom-s12.2-episode-focus
 details-focus-restore=exact-season-and-episode
