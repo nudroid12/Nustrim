@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -29,10 +30,12 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -51,6 +54,8 @@ import coil3.compose.AsyncImage
 
 internal val HOME_POSTER_WIDTH = 126.dp
 internal val HOME_POSTER_HEIGHT = 189.dp
+internal val HOME_CONTINUE_WIDTH = 210.dp
+internal val HOME_CONTINUE_HEIGHT = 118.dp
 
 @Composable
 fun TvHomeRows(
@@ -150,10 +155,13 @@ private fun TvHomePosterCard(
         focused = focused,
         label = "home-card-scale",
     )
+    val continueEntry = media.continueEntry
+    val cardWidth = if (continueEntry != null) HOME_CONTINUE_WIDTH else HOME_POSTER_WIDTH
+    val cardHeight = if (continueEntry != null) HOME_CONTINUE_HEIGHT else HOME_POSTER_HEIGHT
 
     Column(
         modifier = Modifier
-            .width(HOME_POSTER_WIDTH)
+            .width(cardWidth)
             .scale(scale)
             .tvFocusAnchor(anchor)
             .onFocusChanged { state ->
@@ -183,7 +191,7 @@ private fun TvHomePosterCard(
     ) {
         Box(
             modifier = Modifier
-                .size(width = HOME_POSTER_WIDTH, height = HOME_POSTER_HEIGHT)
+                .size(width = cardWidth, height = cardHeight)
                 .clip(RoundedCornerShape(10.dp))
                 .background(Color(0xFF181A1F))
                 .then(
@@ -197,7 +205,11 @@ private fun TvHomePosterCard(
                     },
                 ),
         ) {
-            val poster = media.item.posterUrl.ifBlank { media.item.backgroundUrl }
+            val poster = if (continueEntry != null) {
+                media.item.backgroundUrl.ifBlank { media.item.posterUrl }
+            } else {
+                media.item.posterUrl.ifBlank { media.item.backgroundUrl }
+            }
             if (poster.isNotBlank()) {
                 AsyncImage(
                     model = poster,
@@ -206,18 +218,91 @@ private fun TvHomePosterCard(
                     contentScale = ContentScale.Crop,
                 )
             }
+            if (continueEntry != null) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(
+                            Brush.verticalGradient(
+                                colors = listOf(
+                                    Color.Transparent,
+                                    Color.Transparent,
+                                    Color.Black.copy(alpha = 0.88f),
+                                ),
+                            ),
+                        ),
+                )
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(start = 11.dp, end = 11.dp, bottom = 10.dp),
+                ) {
+                    Text(
+                        text = media.item.title,
+                        color = Color.White,
+                        fontSize = 13.sp,
+                        lineHeight = 15.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        text = continueWatchingLabel(continueEntry),
+                        color = Color(0xFFD4D5D8),
+                        fontSize = 11.sp,
+                        lineHeight = 13.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                if (continueEntry.progressFraction > 0f) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .fillMaxWidth()
+                            .height(4.dp)
+                            .background(Color.White.copy(alpha = 0.28f)),
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxHeight()
+                                .fillMaxWidth(continueEntry.progressFraction.coerceIn(0f, 1f))
+                                .background(Color(0xFFF2F2F4)),
+                        )
+                    }
+                }
+            }
         }
-        Spacer(Modifier.height(9.dp))
-        Text(
-            text = media.item.title,
-            color = if (focused) Color.White else Color(0xFFD4D5D8),
-            fontSize = 13.sp,
-            lineHeight = 16.sp,
-            fontWeight = if (focused) FontWeight.SemiBold else FontWeight.Normal,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.fillMaxWidth(),
-        )
+        if (continueEntry == null) {
+            Spacer(Modifier.height(9.dp))
+            Text(
+                text = media.item.title,
+                color = if (focused) Color.White else Color(0xFFD4D5D8),
+                fontSize = 13.sp,
+                lineHeight = 16.sp,
+                fontWeight = if (focused) FontWeight.SemiBold else FontWeight.Normal,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+    }
+}
+
+private fun continueWatchingLabel(entry: app.nudroidlabs.nustrim.core.library.LocalMediaEntry): String {
+    val episode = when {
+        entry.season != null && entry.episode != null -> "S${entry.season} E${entry.episode}"
+        entry.episode != null -> "Episode ${entry.episode}"
+        else -> ""
+    }
+    val progress = (entry.progressFraction * 100f).toInt().coerceIn(0, 100)
+    return when {
+        entry.nextUp && episode.isNotBlank() -> "Next up  •  $episode"
+        entry.nextUp -> "Next up"
+        episode.isNotBlank() && progress > 0 -> "$episode  •  $progress%"
+        episode.isNotBlank() -> episode
+        progress > 0 -> "$progress% watched"
+        else -> "Continue watching"
     }
 }
 

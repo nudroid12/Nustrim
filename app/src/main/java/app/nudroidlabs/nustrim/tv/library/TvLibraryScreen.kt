@@ -405,14 +405,14 @@ private fun LibraryEmptyState(
             Icon(Icons.Default.Bookmark, contentDescription = null, tint = Color(0xFF62656D), modifier = Modifier.size(42.dp))
             Spacer(Modifier.height(13.dp))
             Text(
-                text = if (filtersActive) "No matching titles" else if (section == TvLibrarySection.SAVED) "Your Library is empty" else "Nothing to continue",
+                text = if (filtersActive) "No matching titles" else "Your Library is empty",
                 color = Color(0xFFF0F0F2),
                 fontSize = 20.sp,
                 fontWeight = FontWeight.SemiBold,
             )
             Spacer(Modifier.height(6.dp))
             Text(
-                text = if (filtersActive) "Try another filter." else if (section == TvLibrarySection.SAVED) "Save a title from Details to find it here." else "Start watching a title and it will appear here.",
+                text = if (filtersActive) "Try another filter." else "Save a title from Details to find it here.",
                 color = Color(0xFF858891),
                 fontSize = 13.sp,
             )

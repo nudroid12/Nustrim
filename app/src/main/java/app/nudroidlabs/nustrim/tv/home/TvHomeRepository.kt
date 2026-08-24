@@ -1,6 +1,8 @@
 package app.nudroidlabs.nustrim.tv.home
 
 import android.content.Context
+import app.nudroidlabs.nustrim.core.library.LocalMediaEntry
+import app.nudroidlabs.nustrim.core.library.LocalMediaStore
 import app.nudroidlabs.nustrim.core.model.MediaCatalog
 import app.nudroidlabs.nustrim.core.source.CatalogSectionSourceSession
 import app.nudroidlabs.nustrim.core.source.InstalledSource
@@ -17,23 +19,32 @@ class TvHomeRepository(context: Context) {
     private val appContext = context.applicationContext
     private val sourceEngine = SourceEngine(appContext)
     private val sourceStore = InstalledSourceStore(appContext)
+    private val mediaStore = LocalMediaStore(appContext)
 
     suspend fun load(forceRefresh: Boolean = false): TvHomeSnapshot = coroutineScope {
         val enabled = sourceStore.sources().filter { it.enabled }
         val sourceSignature = enabled.joinToString("|") { it.url }
+        val continueEntries = mediaStore.continueWatching()
+            .filter { it.sourceUrl.isNotBlank() && it.title.isNotBlank() }
+            .take(MAX_CONTINUE_ITEMS)
+        val continueSignature = continueEntries.joinToString("|") { entry ->
+            "${entry.key}:${entry.episodeId}:${entry.positionMs}:${entry.updatedAt}:${entry.nextUp}"
+        }
+        val continueRow = buildContinueWatchingRow(continueEntries)
         val now = System.currentTimeMillis()
         val cached = cachedSnapshot
         if (
             !forceRefresh &&
             cached != null &&
             cachedSourceSignature == sourceSignature &&
+            cachedContinueSignature == continueSignature &&
             now - cachedAtMs < SNAPSHOT_CACHE_TTL_MS
         ) {
             return@coroutineScope cached
         }
         if (enabled.isEmpty()) {
             return@coroutineScope TvHomeSnapshot(
-                rows = emptyList(),
+                rows = listOfNotNull(continueRow),
                 failedSources = 0,
                 totalSources = 0,
             )
@@ -45,9 +56,13 @@ class TvHomeRepository(context: Context) {
             }
         }.awaitAll().sortedBy { it.first }
 
-        val rows = results.flatMap { it.second.rows }
+        val catalogRows = results.flatMap { it.second.rows }
             .filter { it.items.isNotEmpty() }
             .distinctBy { it.key }
+        val rows = buildList {
+            continueRow?.let(::add)
+            addAll(catalogRows)
+        }
 
         TvHomeSnapshot(
             rows = rows,
@@ -57,9 +72,28 @@ class TvHomeRepository(context: Context) {
             if (snapshot.rows.isNotEmpty()) {
                 cachedSnapshot = snapshot
                 cachedSourceSignature = sourceSignature
+                cachedContinueSignature = continueSignature
                 cachedAtMs = System.currentTimeMillis()
             }
         }
+    }
+
+    private fun buildContinueWatchingRow(entries: List<LocalMediaEntry>): TvHomeRow? {
+        val items = entries.map { entry ->
+            TvHomeMedia(
+                sourceUrl = entry.sourceUrl,
+                sourceName = CONTINUE_WATCHING_TITLE,
+                item = entry.toMediaItem(),
+                continueEntry = entry,
+            )
+        }
+        if (items.isEmpty()) return null
+        return TvHomeRow(
+            key = CONTINUE_WATCHING_ROW_KEY,
+            title = CONTINUE_WATCHING_TITLE,
+            sourceName = CONTINUE_WATCHING_TITLE,
+            items = items,
+        )
     }
 
     private suspend fun loadSource(installed: InstalledSource): SourceLoadResult {
@@ -146,12 +180,18 @@ class TvHomeRepository(context: Context) {
         const val SOURCE_TIMEOUT_MS = 7_500L
         const val SNAPSHOT_CACHE_TTL_MS = 120_000L
         const val MAX_ITEMS_PER_ROW = 32
+        const val MAX_CONTINUE_ITEMS = 24
+        const val CONTINUE_WATCHING_ROW_KEY = "home:continue-watching"
+        const val CONTINUE_WATCHING_TITLE = "Continue Watching"
 
         @Volatile
         var cachedSnapshot: TvHomeSnapshot? = null
 
         @Volatile
         var cachedSourceSignature: String = ""
+
+        @Volatile
+        var cachedContinueSignature: String = ""
 
         @Volatile
         var cachedAtMs: Long = 0L

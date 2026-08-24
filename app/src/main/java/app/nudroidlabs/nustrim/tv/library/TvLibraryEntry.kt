@@ -25,12 +25,8 @@ fun TvLibraryEntry(
         focusRegistry = focusRegistry,
         focusRequestToken = focusRequestToken,
         memory = memory,
-        loadEntries = { section ->
-            val entries = when (section) {
-                TvLibrarySection.SAVED -> store.saved()
-                TvLibrarySection.CONTINUE_WATCHING -> store.continueWatching()
-            }
-            entries.map { entry ->
+        loadEntries = {
+            store.saved().map { entry ->
                 TvLibraryMedia(
                     entry = entry,
                     watched = store.isWatched(entry.sourceUrl, entry.toMediaItem()),

@@ -174,18 +174,34 @@ private fun TvRouteContent(
                 focusRegistry = focusRegistry,
                 focusRequestToken = focusRequestToken,
                 onOpen = { media, rowIndex, itemIndex ->
-                    navigator.push(
-                        TvRoute.Details(
-                            contentKey = media.stableKey,
-                            sourceUrl = media.sourceUrl,
-                            media = media.item,
-                            returnFocus = TvReturnFocus(
-                                scopeKey = route.focusScope,
-                                row = rowIndex,
-                                column = itemIndex,
-                            ),
-                        ),
+                    val returnFocus = TvReturnFocus(
+                        scopeKey = route.focusScope,
+                        row = rowIndex,
+                        column = itemIndex,
                     )
+                    val details = TvRoute.Details(
+                        contentKey = media.stableKey,
+                        sourceUrl = media.sourceUrl,
+                        media = media.item,
+                        returnFocus = returnFocus,
+                    )
+                    val continueEntry = media.continueEntry
+                    if (continueEntry == null) {
+                        navigator.push(details)
+                    } else {
+                        navigator.push(details)
+                        navigator.push(
+                            TvRoute.Sources(
+                                mediaKey = media.stableKey,
+                                sourceUrl = media.sourceUrl,
+                                media = media.item,
+                                episode = continueEntry.toEpisode(),
+                                returnFocus = TvReturnFocus(
+                                    scopeKey = details.focusScope,
+                                ),
+                            ),
+                        )
+                    }
                 },
                 modifier = rootModifier,
             )

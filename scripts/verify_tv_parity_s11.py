@@ -100,7 +100,14 @@ def build_checks() -> list[Check]:
         check("Search", "Loading, empty and error states", has(search_screen, "TvSearchLoading", "TvSearchUiState.Empty", "TvSearchUiState.Error", "TvSearchMessage"), "TvSearchScreen.kt"),
         check("Search", "Exact result focus and Details route", has(search_rows, "searchCardAnchorKey", "rememberTvFocusAnchor") and has(shell, "TvSearchEntry", "focusRegistry.lastFocused", "TvRoute.Details"), "TvSearchRows.kt, TvShell.kt"),
 
-        check("Library", "Saved and Continue Watching sections", has(library_models, "SAVED", "CONTINUE_WATCHING"), "TvLibraryModels.kt"),
+        check(
+            "Library",
+            "Continue Watching is first on Home and Library keeps Saved",
+            has(home_repo, "mediaStore.continueWatching()", "continueRow?.let(::add)", "addAll(catalogRows)")
+            and has(library_models, "SAVED")
+            and "CONTINUE_WATCHING" not in library_models,
+            "TvHomeRepository.kt, TvLibraryModels.kt",
+        ),
         check("Library", "Media, watched and sort filters", has(library_models, "TvLibraryTypeFilter", "TvLibraryWatchedFilter", "TvLibrarySort") and has(library_entry, "filteredAndSorted"), "TvLibraryModels.kt, TvLibraryEntry.kt"),
         check("Library", "Poster grid presentation", has(library_screen, "LazyVerticalGrid", "LibraryPosterCard"), "TvLibraryScreen.kt"),
         check("Library", "Empty-state guidance", has(library_screen, "LibraryEmptyState", "Bookmark"), "TvLibraryScreen.kt"),

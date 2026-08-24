@@ -4,7 +4,6 @@ import app.nudroidlabs.nustrim.core.library.LocalMediaEntry
 
 enum class TvLibrarySection(val label: String) {
     SAVED("Saved"),
-    CONTINUE_WATCHING("Continue Watching"),
 }
 
 enum class TvLibraryTypeFilter(val label: String) {

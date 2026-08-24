@@ -1,11 +1,13 @@
 package app.nudroidlabs.nustrim.tv.home
 
+import app.nudroidlabs.nustrim.core.library.LocalMediaEntry
 import app.nudroidlabs.nustrim.core.model.MediaItem
 
 data class TvHomeMedia(
     val sourceUrl: String,
     val sourceName: String,
     val item: MediaItem,
+    val continueEntry: LocalMediaEntry? = null,
 ) {
     val stableKey: String = buildString {
         append(sourceUrl)
