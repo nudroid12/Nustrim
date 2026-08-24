@@ -214,6 +214,10 @@ internal class TvSubtitleRepository(context: Context) {
     ): String = buildString {
         append(media.ref?.metaId ?: media.id)
         append('/')
+        media.ref?.providerLocator?.takeIf { it.isNotBlank() }?.let { locator ->
+            append(locator.hashCode().toString(16))
+            append('/')
+        }
         append(episode?.id ?: "movie")
         append('/')
         installed.forEach { source ->

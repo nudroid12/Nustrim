@@ -29,9 +29,10 @@ check(
     version in {
         "0.57.17-tv-cleanroom-s12.18-sources-live-tabs",
         "0.57.18-tv-cleanroom-s12.19-cloudstream-speed",
+        "0.57.19-tv-cleanroom-s12.20-cloudstream-tv",
     },
 )
-check("post-S12.18 versionCode", "versionCode = 140" in gradle or "versionCode = 141" in gradle)
+check("post-S12.18 versionCode", any(f"versionCode = {code}" in gradle for code in (140, 141, 142)))
 check("Playable streams are explicit", "val playableStreams" in models and "streams.filter { it.playable }" in models)
 check("Source labels come from playable links", "val sourceLabels: List<String> = playableStreams" in models)
 check("All filter returns playable links only", "if (sourceLabel == null) playableStreams" in models)

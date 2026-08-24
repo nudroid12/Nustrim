@@ -85,6 +85,7 @@ internal fun TvSettingsScreen(
     onToggleSubtitleBold: () -> Unit,
     onAddSource: () -> Unit,
     onToggleSource: (InstalledSource) -> Unit,
+    onToggleCloudStreamProvider: (TvSettingsCloudStreamProvider) -> Unit,
     onToggleCatalog: (TvSettingsCatalog) -> Unit,
     onMoveCatalog: (TvSettingsCatalog, Int) -> Unit,
     onResetCatalogs: () -> Unit,
@@ -171,6 +172,7 @@ internal fun TvSettingsScreen(
                 },
                 onAddSource = onAddSource,
                 onToggleSource = onToggleSource,
+                onToggleCloudStreamProvider = onToggleCloudStreamProvider,
                 onToggleCatalog = onToggleCatalog,
                 onMoveCatalog = onMoveCatalog,
                 onResetCatalogs = onResetCatalogs,
@@ -309,6 +311,7 @@ private fun SettingsDetailPane(
     onContentManagerSectionSelected: (TvContentManagerSection) -> Unit,
     onAddSource: () -> Unit,
     onToggleSource: (InstalledSource) -> Unit,
+    onToggleCloudStreamProvider: (TvSettingsCloudStreamProvider) -> Unit,
     onToggleCatalog: (TvSettingsCatalog) -> Unit,
     onMoveCatalog: (TvSettingsCatalog, Int) -> Unit,
     onResetCatalogs: () -> Unit,
@@ -514,19 +517,67 @@ private fun SettingsDetailPane(
                                     onClick = onAddSource,
                                 )
                             }
-                            items(snapshot.sources, key = { "source:${it.url}" }) { source ->
-                                SettingsActionRow(
-                                    title = sourceDisplayName(source),
-                                    subtitle = source.url,
-                                    value = onOff(source.enabled),
-                                    checked = source.enabled,
-                                    anchorKey = "settings:content:${source.url}",
-                                    category = category,
-                                    memory = memory,
-                                    scopeKey = scopeKey,
-                                    focusRegistry = focusRegistry,
-                                    onClick = { onToggleSource(source) },
-                                )
+                            snapshot.sources.forEach { source ->
+                                item(key = "source:${source.url}") {
+                                    SettingsActionRow(
+                                        title = sourceDisplayName(source),
+                                        subtitle = source.url,
+                                        value = onOff(source.enabled),
+                                        checked = source.enabled,
+                                        anchorKey = "settings:content:${source.url}",
+                                        category = category,
+                                        memory = memory,
+                                        scopeKey = scopeKey,
+                                        focusRegistry = focusRegistry,
+                                        onClick = { onToggleSource(source) },
+                                    )
+                                }
+                                val providers = snapshot.cloudStreamProviders.filter {
+                                    it.repositoryUrl == source.url
+                                }
+                                if (source.enabled && providers.isNotEmpty()) {
+                                    item(key = "providers-heading:${source.url}") {
+                                        SettingsInfoCard(
+                                            title = "CloudStream providers",
+                                            lines = listOf(
+                                                "Repository" to sourceDisplayName(source),
+                                                "Enabled" to providers.count { it.enabled }.toString(),
+                                                "Available" to providers.size.toString(),
+                                            ),
+                                        )
+                                    }
+                                    items(
+                                        providers,
+                                        key = {
+                                            "provider:${it.repositoryId}:${it.item.ref?.metaId ?: it.item.id}"
+                                        },
+                                    ) { provider ->
+                                        SettingsActionRow(
+                                            title = provider.item.title,
+                                            subtitle = provider.item.description.lineSequence().firstOrNull().orEmpty()
+                                                .ifBlank { "CloudStream provider" },
+                                            value = onOff(provider.enabled),
+                                            checked = provider.enabled,
+                                            anchorKey = "settings:content:provider:${provider.repositoryId}:${provider.item.id}",
+                                            category = category,
+                                            memory = memory,
+                                            scopeKey = scopeKey,
+                                            focusRegistry = focusRegistry,
+                                            onClick = { onToggleCloudStreamProvider(provider) },
+                                        )
+                                    }
+                                } else if (
+                                    source.enabled &&
+                                    snapshot.cloudStreamProvidersLoading &&
+                                    source.url.substringBefore('?').endsWith("repo.json", ignoreCase = true)
+                                ) {
+                                    item(key = "providers-loading:${source.url}") {
+                                        SettingsInfoCard(
+                                            title = "CloudStream providers",
+                                            lines = listOf("Status" to "Loading provider list..."),
+                                        )
+                                    }
+                                }
                             }
                         }
 

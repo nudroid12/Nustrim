@@ -38,6 +38,7 @@ class CloudStreamProviderContainerSession(
     private val pluginName: String,
     private val providers: List<MainAPI>
 ) : SourceSession, ChildSourceOpener {
+    val providerNames: List<String> = providers.map { it.name }
     override val id: String = "cloudstream-plugin:$pluginUrl"
     override val displayName: String = if (providers.size == 1) providers.first().name else pluginName
     override val description: String = if (providers.size == 1) {
@@ -89,6 +90,20 @@ class CloudStreamProviderContainerSession(
         val provider = index?.let(providers::getOrNull)
         if (provider == null) {
             onError(IllegalArgumentException("CloudStream provider reference is invalid"))
+        } else {
+            onSuccess(CloudStreamProviderSession(pluginUrl, provider))
+        }
+    }
+
+    fun openProvider(
+        providerName: String,
+        onSuccess: (CloudStreamProviderSession) -> Unit,
+        onError: (Throwable) -> Unit,
+    ) {
+        val provider = providers.firstOrNull { it.name == providerName }
+            ?: providers.singleOrNull()
+        if (provider == null) {
+            onError(IllegalArgumentException("CloudStream provider is unavailable: $providerName"))
         } else {
             onSuccess(CloudStreamProviderSession(pluginUrl, provider))
         }
@@ -248,6 +263,15 @@ class CloudStreamProviderSession(
                     }
                 }
                 val quality = link.quality.takeIf { it > 0 }?.let { " · ${it}p" }.orEmpty()
+                val mappedSubtitles = subtitles.mapNotNull { subtitle ->
+                    subtitle.url.takeIf { it.isNotBlank() }?.let { url ->
+                        app.nudroidlabs.nustrim.core.model.SubtitleSource(
+                            url = url,
+                            language = subtitle.lang,
+                            label = subtitle.lang,
+                        )
+                    }
+                }.distinctBy { "${it.url}|${it.language}" }
                 StreamSource(
                     name = link.name + quality,
                     url = link.url,
@@ -258,7 +282,8 @@ class CloudStreamProviderSession(
                     },
                     headers = headers,
                     playable = directPlayable,
-                    note = if (directPlayable) "" else "CloudStream transport $typeName is not supported by Media3 in this build."
+                    note = if (directPlayable) "" else "CloudStream transport $typeName is not supported by Media3 in this build.",
+                    subtitles = mappedSubtitles,
                 )
             }
 
@@ -337,7 +362,8 @@ class CloudStreamProviderSession(
             ref = MediaRef(
                 sourceKind = "cloudstream-loaded-item",
                 mediaType = response.type.name,
-                metaId = response.url
+                metaId = response.url,
+                providerLocator = original.ref?.providerLocator.orEmpty(),
             )
         )
     }

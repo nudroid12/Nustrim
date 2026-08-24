@@ -1,6 +1,7 @@
 package app.nudroidlabs.nustrim.tv.settings
 
 import app.nudroidlabs.nustrim.core.source.InstalledSource
+import app.nudroidlabs.nustrim.core.model.MediaItem
 import app.nudroidlabs.nustrim.core.update.UpdateInfo
 import app.nudroidlabs.nustrim.ui.SubtitleDisplayMode
 
@@ -30,6 +31,8 @@ data class TvSettingsSnapshot(
     val subtitleFontSize: Int,
     val subtitleBold: Boolean,
     val sources: List<InstalledSource>,
+    val cloudStreamProviders: List<TvSettingsCloudStreamProvider>,
+    val cloudStreamProvidersLoading: Boolean,
     val catalogs: List<TvSettingsCatalog>,
     val catalogsLoading: Boolean,
     val developerMode: Boolean,
@@ -50,6 +53,13 @@ data class TvSettingsCatalog(
     val title: String,
     val sourceName: String,
     val visible: Boolean,
+)
+
+data class TvSettingsCloudStreamProvider(
+    val repositoryUrl: String,
+    val repositoryId: String,
+    val item: MediaItem,
+    val enabled: Boolean,
 )
 
 sealed interface TvSettingsEditor {

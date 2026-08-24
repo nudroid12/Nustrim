@@ -1,6 +1,13 @@
 generation=cleanroom-v1
 reference=nuvio-tv-0.8.6-beta
-subsystem=12.19-cloudstream-speed
+subsystem=12.20-cloudstream-tv
+cloudstream-tv-search=enabled-provider-rows
+cloudstream-tv-details=provider-locator-route
+cloudstream-tv-sources=selected-provider-direct-resolution
+cloudstream-tv-subtitles=extracted-tracks-attached
+cloudstream-tv-settings=per-provider-enable-disable
+cloudstream-tv-home=repository-cards-suppressed
+cloudstream-tv-identity=provider-aware-library-focus-cache
 cloudstream-repository-cache=24h-stale-while-refresh
 cloudstream-positive-cache=30m
 cloudstream-negative-cache=10m

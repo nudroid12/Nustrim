@@ -6,7 +6,9 @@ import app.nudroidlabs.nustrim.core.source.CatalogSectionSourceSession
 import app.nudroidlabs.nustrim.core.source.InstalledSourceStore
 import app.nudroidlabs.nustrim.core.source.SearchableSourceSession
 import app.nudroidlabs.nustrim.core.source.SourceEngine
+import app.nudroidlabs.nustrim.core.source.SourceKind
 import app.nudroidlabs.nustrim.core.source.SourceSession
+import app.nudroidlabs.nustrim.tv.cloudstream.TvCloudStreamBridge
 import app.nudroidlabs.nustrim.ui.UiPreferences
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
@@ -19,6 +21,7 @@ class TvSearchRepository(context: Context) {
     private val sourceEngine = SourceEngine(appContext)
     private val sourceStore = InstalledSourceStore(appContext)
     private val uiPreferences = UiPreferences(appContext)
+    private val cloudStreamBridge = TvCloudStreamBridge(appContext)
 
     suspend fun search(query: String): TvSearchSnapshot = coroutineScope {
         val clean = query.trim()
@@ -75,11 +78,25 @@ class TvSearchRepository(context: Context) {
         return withTimeoutOrNull(SOURCE_TIMEOUT_MS) {
             runCatching {
                 val session = openSession(url)
+                if (session.kind == SourceKind.CLOUDSTREAM) {
+                    val groups = cloudStreamBridge.search(url, query)
+                    return@runCatching SourceResult(
+                        rows = groups.mapIndexedNotNull { index, group ->
+                            MediaCatalog(
+                                name = group.providerName,
+                                items = group.items,
+                                sourceLabel = group.providerName,
+                            ).toRow(url, group.providerName, index, MAX_SEARCH_RESULTS)
+                        },
+                        failed = false,
+                        searchable = true,
+                    )
+                }
                 val searchable = session as? SearchableSourceSession
                     ?: return@runCatching SourceResult(emptyList(), failed = false, searchable = false)
                 val catalog = search(searchable, query)
                 SourceResult(
-                    rows = listOfNotNull(catalog.toRow(url, session, 0, MAX_SEARCH_RESULTS)),
+                    rows = listOfNotNull(catalog.toRow(url, session.displayName, 0, MAX_SEARCH_RESULTS)),
                     failed = false,
                     searchable = true,
                 )
@@ -93,10 +110,13 @@ class TvSearchRepository(context: Context) {
         return withTimeoutOrNull(SOURCE_TIMEOUT_MS) {
             runCatching {
                 val session = openSession(url)
+                if (session.kind == SourceKind.CLOUDSTREAM) {
+                    return@runCatching SourceResult(emptyList(), failed = false, searchable = true)
+                }
                 val catalogs = loadCatalogs(session)
                 SourceResult(
                     rows = catalogs.take(MAX_DISCOVER_ROWS_PER_SOURCE).mapIndexedNotNull { index, catalog ->
-                        catalog.toRow(url, session, index, MAX_DISCOVER_ITEMS_PER_ROW)
+                        catalog.toRow(url, session.displayName, index, MAX_DISCOVER_ITEMS_PER_ROW)
                     },
                     failed = false,
                     searchable = session is SearchableSourceSession,
@@ -109,7 +129,7 @@ class TvSearchRepository(context: Context) {
 
     private fun MediaCatalog.toRow(
         sourceUrl: String,
-        session: SourceSession,
+        sourceName: String,
         index: Int,
         limit: Int,
     ): TvSearchRow? {
@@ -120,17 +140,17 @@ class TvSearchRepository(context: Context) {
             .map { item ->
                 TvSearchMedia(
                     sourceUrl = sourceUrl,
-                    sourceName = session.displayName,
+                    sourceName = sourceName,
                     item = item,
                 )
             }
             .toList()
         if (media.isEmpty()) return null
-        val rowTitle = name.ifBlank { session.displayName }
+        val rowTitle = name.ifBlank { sourceName }
         return TvSearchRow(
             key = "$sourceUrl|$rowTitle|$index",
             title = rowTitle,
-            sourceName = session.displayName,
+            sourceName = sourceName,
             items = media,
         )
     }
@@ -191,7 +211,7 @@ class TvSearchRepository(context: Context) {
     )
 
     private companion object {
-        const val SOURCE_TIMEOUT_MS = 10_000L
+        const val SOURCE_TIMEOUT_MS = 45_000L
         const val DISCOVER_CACHE_TTL_MS = 120_000L
         const val MAX_SEARCH_RESULTS = 32
         const val MAX_DISCOVER_ROWS_PER_SOURCE = 6

@@ -12,6 +12,8 @@ import app.nudroidlabs.nustrim.core.source.SearchableSourceSession
 import app.nudroidlabs.nustrim.core.source.SourceEngine
 import app.nudroidlabs.nustrim.core.source.SourceKind
 import app.nudroidlabs.nustrim.core.source.SourceSession
+import app.nudroidlabs.nustrim.core.source.cloudstream.CloudStreamProviderLocator
+import app.nudroidlabs.nustrim.tv.cloudstream.TvCloudStreamBridge
 import app.nudroidlabs.nustrim.tv.navigation.TvRoute
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -35,6 +37,7 @@ class TvSourcesRepository(context: Context) {
     private val appContext = context.applicationContext
     private val sourceEngine = SourceEngine(appContext)
     private val sourceStore = InstalledSourceStore(appContext)
+    private val cloudStreamBridge = TvCloudStreamBridge(appContext)
     private val providerPerformance = TvCloudStreamPerformanceStore(appContext)
     private val cloudStreamProviderSlots = Semaphore(MAX_PARALLEL_CLOUDSTREAM_PROVIDERS)
 
@@ -196,6 +199,24 @@ class TvSourcesRepository(context: Context) {
         forceRefresh: Boolean,
         onProgress: suspend (SourceResolveResult) -> Unit,
     ): SourceResolveResult {
+        val locator = CloudStreamProviderLocator.decode(route.media.ref?.providerLocator.orEmpty())
+        if (installed.url == route.sourceUrl && locator != null) {
+            return runCatching {
+                val (provider, detailed) = cloudStreamBridge.openLocated(route.media)
+                val streams = resolveProviderStreams(route, provider, detailed)
+                providerResult(provider.displayName, installed.url, streams)
+            }.getOrElse { error ->
+                SourceResolveResult(
+                    attempts = listOf(
+                        TvSourceAttempt(
+                            sourceLabel = locator.providerName,
+                            status = TvSourceAttemptStatus.ERROR,
+                            message = error.message.orEmpty().ifBlank { error::class.java.simpleName },
+                        ),
+                    ),
+                )
+            }
+        }
         val session = sourceEngine.awaitOpen(installed.url, forceRefresh)
         return resolveSession(
             route = route,
@@ -478,10 +499,24 @@ class TvSourcesRepository(context: Context) {
             }
         }
 
-        val children = catalogItems
-            .sortedByDescending { child ->
-                providerPerformance.score(sourceUrl, providerIdentity(child))
-            }
+        val locatedProvider = CloudStreamProviderLocator.decode(
+            route.media.ref?.providerLocator.orEmpty(),
+        )
+        val routedChildren = if (locatedProvider == null) {
+            catalogItems
+        } else if (exposesProviderCards) {
+            catalogItems.filter { it.title == locatedProvider.providerName }.ifEmpty { catalogItems }
+        } else {
+            catalogItems.filter { it.ref?.metaId == locatedProvider.pluginUrl }.ifEmpty { catalogItems }
+        }
+        val children = routedChildren
+            .sortedWith(
+                compareByDescending<MediaItem> { child ->
+                    child.ref?.metaId == locatedProvider?.pluginUrl || child.title == locatedProvider?.providerName
+                }.thenByDescending { child ->
+                    providerPerformance.score(sourceUrl, providerIdentity(child))
+                },
+            )
             .take(MAX_CHILDREN_PER_CONTAINER)
         if (children.isEmpty()) {
             return SourceResolveResult(
@@ -594,6 +629,16 @@ class TvSourcesRepository(context: Context) {
         searchable: SearchableSourceSession,
     ): SourceResolveResult {
         val label = session.displayName.ifBlank { "Provider" }
+        val locator = CloudStreamProviderLocator.decode(route.media.ref?.providerLocator.orEmpty())
+        if (locator?.providerName == session.displayName) {
+            val directDetails = runCatching { session.awaitDetails(route.media) }.getOrNull()
+            if (directDetails != null) {
+                val directStreams = resolveProviderStreams(route, session, directDetails)
+                if (directStreams.isNotEmpty()) {
+                    return providerResult(label, sourceUrl, directStreams)
+                }
+            }
+        }
         val searchCatalog = runCatching { searchable.awaitSearch(route.media.title) }.getOrElse { error ->
             return SourceResolveResult(
                 attempts = listOf(
@@ -629,37 +674,51 @@ class TvSourcesRepository(context: Context) {
             )
         }
 
-        val resolvedStreams = if (route.episode == null) {
-            runCatching { session.awaitStreams(details, null) }.getOrElse { emptyList() }
+        val resolvedStreams = resolveProviderStreams(route, session, details)
+        return providerResult(label, sourceUrl, resolvedStreams)
+    }
+
+    private suspend fun resolveProviderStreams(
+        route: TvRoute.Sources,
+        session: SourceSession,
+        details: MediaItem,
+    ): List<StreamSource> = if (route.episode == null) {
+        runCatching { session.awaitStreams(details, null) }.getOrElse { emptyList() }
+    } else {
+        val requestedSeason = route.episode.season
+        val requestedEpisode = route.episode.episode
+        if (requestedSeason == null || requestedEpisode == null) {
+            emptyList()
         } else {
-            val requestedSeason = route.episode.season
-            val requestedEpisode = route.episode.episode
-            if (requestedSeason == null || requestedEpisode == null) {
-                emptyList()
-            } else {
-                val matches = details.episodes.filter {
-                    it.season == requestedSeason && it.episode == requestedEpisode
-                }
-                coroutineScope {
-                    matches.map { providerEpisode ->
-                        async {
-                            runCatching { session.awaitStreams(details, providerEpisode) }
-                                .getOrElse { emptyList() }
-                        }
-                    }.awaitAll().flatten()
-                }
+            val matches = details.episodes.filter {
+                it.season == requestedSeason && it.episode == requestedEpisode
+            }
+            coroutineScope {
+                matches.map { providerEpisode ->
+                    async {
+                        runCatching { session.awaitStreams(details, providerEpisode) }
+                            .getOrElse { emptyList() }
+                    }
+                }.awaitAll().flatten()
             }
         }
+    }
 
+    private fun providerResult(
+        label: String,
+        sourceUrl: String,
+        resolvedStreams: List<StreamSource>,
+    ): SourceResolveResult {
+        val playableStreams = resolvedStreams.filter { it.playable && it.url.isNotBlank() }
         return SourceResolveResult(
             attempts = listOf(
                 TvSourceAttempt(
                     sourceLabel = label,
-                    status = if (resolvedStreams.isEmpty()) TvSourceAttemptStatus.EMPTY else TvSourceAttemptStatus.SUCCESS,
-                    streamCount = resolvedStreams.size,
+                    status = if (playableStreams.isEmpty()) TvSourceAttemptStatus.EMPTY else TvSourceAttemptStatus.SUCCESS,
+                    streamCount = playableStreams.size,
                 ),
             ),
-            streams = resolvedStreams.map { stream ->
+            streams = playableStreams.map { stream ->
                 TvSourceStream(
                     sourceLabel = label,
                     sourceUrl = sourceUrl,

@@ -29,9 +29,12 @@ marker = read(".nustrim-tv")
 version = read(".nustrim-version").strip()
 gradle = read("app/build.gradle.kts")
 
-check("S12.19 marker", "subsystem=12.19-cloudstream-speed" in marker)
-check("S12.19 version", version == "0.57.18-tv-cleanroom-s12.19-cloudstream-speed")
-check("S12.19 versionCode", "versionCode = 141" in gradle)
+check("S12.19 feature marker", "cloudstream-repository-cache=24h-stale-while-refresh" in marker)
+check("post-S12.19 version", version in {
+    "0.57.18-tv-cleanroom-s12.19-cloudstream-speed",
+    "0.57.19-tv-cleanroom-s12.20-cloudstream-tv",
+})
+check("post-S12.19 versionCode", "versionCode = 141" in gradle or "versionCode = 142" in gradle)
 check("Repository cache is app-private", "context.applicationContext.cacheDir" in cache)
 check("Repository cache is URL keyed", 'MessageDigest.getInstance("SHA-256")' in cache)
 check("Repository cache uses a temporary commit file", 'target.name + ".tmp"' in cache and "renameTo(target)" in cache)
@@ -46,7 +49,10 @@ check("Four-provider concurrency limit", "MAX_PARALLEL_CLOUDSTREAM_PROVIDERS = 4
 check("Semaphore enforces provider concurrency", "cloudStreamProviderSlots.withPermit" in sources)
 check("Nested provider deadlock is avoided", "if (depth == 0)" in sources)
 check("Successful provider history persists", "getSharedPreferences" in history and "recordSuccess" in history)
-check("Successful providers are prioritised", "sortedByDescending" in sources and "providerPerformance.score" in sources)
+check(
+    "Successful providers are prioritised",
+    ("sortedByDescending" in sources or "sortedWith" in sources) and "providerPerformance.score" in sources,
+)
 check("Positive result cache is 30 minutes", "POSITIVE_CACHE_TTL_MS = 30L * 60L * 1_000L" in sources)
 check("Negative result cache is 10 minutes", "NEGATIVE_CACHE_TTL_MS = 10L * 60L * 1_000L" in sources)
 check("Per-provider no-match cache is 10 minutes", "NEGATIVE_PROVIDER_CACHE_TTL_MS = 10L * 60L * 1_000L" in sources)

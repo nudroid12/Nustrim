@@ -16,8 +16,8 @@ android {
         applicationId = "app.nudroidlabs.nustrim"
         minSdk = 23
         targetSdk = 37
-        versionCode = 141
-        versionName = "0.57.18-tv-cleanroom-s12.19-cloudstream-speed"
+        versionCode = 142
+        versionName = "0.57.19-tv-cleanroom-s12.20-cloudstream-tv"
     }
 
     val persistentUpdateSigning = if (

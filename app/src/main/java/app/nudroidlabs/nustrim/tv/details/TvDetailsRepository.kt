@@ -10,6 +10,7 @@ import app.nudroidlabs.nustrim.core.source.SearchableSourceSession
 import app.nudroidlabs.nustrim.core.source.SourceEngine
 import app.nudroidlabs.nustrim.core.source.SourceSession
 import app.nudroidlabs.nustrim.tv.episode.TvEpisodeCatalogueBuilder
+import app.nudroidlabs.nustrim.tv.cloudstream.TvCloudStreamBridge
 import app.nudroidlabs.nustrim.tv.navigation.TvRoute
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.withTimeout
@@ -17,6 +18,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 
 class TvDetailsRepository(context: Context) {
     private val sourceEngine = SourceEngine(context.applicationContext)
+    private val cloudStreamBridge = TvCloudStreamBridge(context.applicationContext)
 
     suspend fun load(route: TvRoute.Details, forceRefresh: Boolean = false): TvDetailsSnapshot {
         val now = System.currentTimeMillis()
@@ -25,13 +27,27 @@ class TvDetailsRepository(context: Context) {
             return cached.snapshot
         }
 
-        val (sourceName, providerDetailed) = withTimeout(DETAIL_TIMEOUT_MS) {
-            val session = openSession(route.sourceUrl)
-            session.displayName to loadDetails(session, route.media)
+        val providerLocated = route.media.ref?.providerLocator.orEmpty().isNotBlank()
+        val detailTimeoutMs = if (providerLocated) CLOUDSTREAM_DETAIL_TIMEOUT_MS else DETAIL_TIMEOUT_MS
+        val (sourceName, providerDetailed) = withTimeout(detailTimeoutMs) {
+            if (providerLocated) {
+                val (provider, detailed) = cloudStreamBridge.openLocated(route.media)
+                provider.displayName to detailed
+            } else {
+                val session = openSession(route.sourceUrl)
+                session.displayName to loadDetails(session, route.media)
+            }
         }
         val detailed = enrichFromCatalogMetadata(providerDetailed)
         val parentIdentity = detailed.ref?.metaId?.takeIf { it.isNotBlank() } ?: detailed.id
-        val parentKey = "${route.sourceUrl}|${detailed.type.name}|$parentIdentity"
+        val providerIdentity = detailed.ref?.providerLocator
+            ?.takeIf { it.isNotBlank() }
+            ?.hashCode()
+            ?.toString(16)
+            .orEmpty()
+        val parentKey = listOf(route.sourceUrl, detailed.type.name, parentIdentity, providerIdentity)
+            .filter { it.isNotBlank() }
+            .joinToString("|")
         return TvDetailsSnapshot(
             sourceName = sourceName,
             item = detailed,
@@ -159,6 +175,7 @@ class TvDetailsRepository(context: Context) {
 
     private companion object {
         const val DETAIL_TIMEOUT_MS = 15_000L
+        const val CLOUDSTREAM_DETAIL_TIMEOUT_MS = 45_000L
         const val CATALOG_METADATA_TIMEOUT_MS = 8_000L
         const val CACHE_TTL_MS = 120_000L
         val IMDB_ID = Regex("tt\\d+", RegexOption.IGNORE_CASE)

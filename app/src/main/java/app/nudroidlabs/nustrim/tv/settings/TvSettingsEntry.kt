@@ -20,6 +20,7 @@ import app.nudroidlabs.nustrim.core.source.InstalledSourceStore
 import app.nudroidlabs.nustrim.core.source.CatalogSectionSourceSession
 import app.nudroidlabs.nustrim.core.source.SourceEngine
 import app.nudroidlabs.nustrim.core.source.SourceKind
+import app.nudroidlabs.nustrim.core.source.cloudstream.CloudStreamProviderStore
 import app.nudroidlabs.nustrim.core.diagnostics.NustrimDiagnostics
 import app.nudroidlabs.nustrim.core.integrations.MdbListClient
 import app.nudroidlabs.nustrim.core.integrations.TmdbClient
@@ -48,6 +49,7 @@ fun TvSettingsEntry(
     val preferences = remember(context) { UiPreferences(context) }
     val sourceStore = remember(context) { InstalledSourceStore(context) }
     val sourceEngine = remember(context) { SourceEngine(context) }
+    val cloudStreamProviderStore = remember(context) { CloudStreamProviderStore(context) }
     val mediaStore = remember(context) { LocalMediaStore(context) }
     val updater = remember(context) { AppUpdater(context) }
     val coroutineScope = rememberCoroutineScope()
@@ -57,7 +59,11 @@ fun TvSettingsEntry(
     var editor by remember { mutableStateOf<TvSettingsEditor?>(null) }
     var statusMessage by remember { mutableStateOf("") }
     var discoveredCatalogs by remember { mutableStateOf<List<TvSettingsCatalog>>(emptyList()) }
+    var discoveredCloudStreamProviders by remember {
+        mutableStateOf<List<TvSettingsCloudStreamProvider>>(emptyList())
+    }
     var catalogsLoading by remember { mutableStateOf(true) }
+    var cloudStreamProvidersLoading by remember { mutableStateOf(true) }
     val diagnosticEntries by NustrimDiagnostics.entries.collectAsState()
 
     fun installDownloaded(info: app.nudroidlabs.nustrim.core.update.UpdateInfo, apkPath: String) {
@@ -102,23 +108,43 @@ fun TvSettingsEntry(
 
     fun reloadCatalogs() {
         catalogsLoading = true
+        cloudStreamProvidersLoading = true
         discoveredCatalogs = emptyList()
+        discoveredCloudStreamProviders = emptyList()
         val urls = sourceStore.enabledUrls(preferences.developerMode)
         if (urls.isEmpty()) {
             catalogsLoading = false
+            cloudStreamProvidersLoading = false
             return
         }
         var pending = urls.size
         fun finish() {
             pending -= 1
-            if (pending <= 0) catalogsLoading = false
+            if (pending <= 0) {
+                catalogsLoading = false
+                cloudStreamProvidersLoading = false
+            }
         }
         urls.forEach { url ->
             sourceEngine.open(
                 url,
                 onSuccess = { session ->
                     if (session.kind == SourceKind.CLOUDSTREAM) {
-                        finish()
+                        session.loadCatalog(
+                            onSuccess = { catalog ->
+                                discoveredCloudStreamProviders = discoveredCloudStreamProviders +
+                                    catalog.items.map { item ->
+                                        TvSettingsCloudStreamProvider(
+                                            repositoryUrl = url,
+                                            repositoryId = session.id,
+                                            item = item,
+                                            enabled = cloudStreamProviderStore.isEnabled(session.id, item),
+                                        )
+                                    }
+                                finish()
+                            },
+                            onError = { finish() },
+                        )
                     } else {
                         val sectioned = session as? CatalogSectionSourceSession
                         if (sectioned != null) {
@@ -161,7 +187,15 @@ fun TvSettingsEntry(
 
     androidx.compose.runtime.LaunchedEffect(Unit) { reloadCatalogs() }
 
-    val snapshot = remember(revision, discoveredCatalogs, catalogsLoading, diagnosticEntries, statusMessage) {
+    val snapshot = remember(
+        revision,
+        discoveredCatalogs,
+        discoveredCloudStreamProviders,
+        catalogsLoading,
+        cloudStreamProvidersLoading,
+        diagnosticEntries,
+        statusMessage,
+    ) {
         val ranks = preferences.catalogOrder.withIndex().associate { it.value to it.index }
         val sortedCatalogs = discoveredCatalogs.distinctBy { it.key }.sortedWith(
             compareBy<TvSettingsCatalog> { ranks[it.key] ?: Int.MAX_VALUE }
@@ -178,6 +212,10 @@ fun TvSettingsEntry(
             subtitleFontSize = preferences.subtitleFontSize,
             subtitleBold = preferences.subtitleBold,
             sources = sourceStore.visibleSources(preferences.developerMode),
+            cloudStreamProviders = discoveredCloudStreamProviders.distinctBy {
+                "${it.repositoryId}|${CloudStreamProviderStore.providerIdentityInternal(it.item)}"
+            },
+            cloudStreamProvidersLoading = cloudStreamProvidersLoading,
             catalogs = sortedCatalogs,
             catalogsLoading = catalogsLoading,
             developerMode = preferences.developerMode,
@@ -261,6 +299,30 @@ fun TvSettingsEntry(
         onToggleSource = { source ->
             sourceStore.setEnabled(source.url, !source.enabled)
             reloadCatalogs()
+            refresh()
+        },
+        onToggleCloudStreamProvider = { provider ->
+            cloudStreamProviderStore.setEnabled(
+                provider.repositoryId,
+                provider.item,
+                !provider.enabled,
+            )
+            discoveredCloudStreamProviders = discoveredCloudStreamProviders.map {
+                if (
+                    it.repositoryId == provider.repositoryId &&
+                    CloudStreamProviderStore.providerIdentityInternal(it.item) ==
+                    CloudStreamProviderStore.providerIdentityInternal(provider.item)
+                ) {
+                    it.copy(enabled = !provider.enabled)
+                } else {
+                    it
+                }
+            }
+            statusMessage = if (provider.enabled) {
+                "${provider.item.title} disabled."
+            } else {
+                "${provider.item.title} enabled."
+            }
             refresh()
         },
         onToggleCatalog = { catalog ->

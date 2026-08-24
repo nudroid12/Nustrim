@@ -21,6 +21,7 @@ data class LocalMediaEntry(
     val refSourceKind: String = "",
     val refMediaType: String = "",
     val refMetaId: String = "",
+    val refProviderLocator: String = "",
     val saved: Boolean = false,
     val episodeId: String = "",
     val episodeTitle: String = "",
@@ -51,7 +52,8 @@ data class LocalMediaEntry(
         ref = if (refMetaId.isBlank()) null else MediaRef(
             sourceKind = refSourceKind,
             mediaType = refMediaType,
-            metaId = refMetaId
+            metaId = refMetaId,
+            providerLocator = refProviderLocator,
         )
     )
 
@@ -334,7 +336,14 @@ class LocalMediaStore(context: Context) {
     private fun mediaKey(sourceUrl: String, item: MediaItem): String {
         val identity = item.ref?.metaId?.takeIf { it.isNotBlank() } ?: item.id
         val type = item.ref?.mediaType?.takeIf { it.isNotBlank() } ?: item.type.name
-        return "$sourceUrl|$type|$identity"
+        val provider = item.ref?.providerLocator
+            ?.takeIf { it.isNotBlank() }
+            ?.hashCode()
+            ?.toString(16)
+            .orEmpty()
+        return listOf(sourceUrl, type, identity, provider)
+            .filter { it.isNotBlank() }
+            .joinToString("|")
     }
 
     private fun episodeWatchedStorageKey(
@@ -375,6 +384,7 @@ class LocalMediaStore(context: Context) {
         refSourceKind = item.ref?.sourceKind.orEmpty(),
         refMediaType = item.ref?.mediaType.orEmpty(),
         refMetaId = item.ref?.metaId.orEmpty(),
+        refProviderLocator = item.ref?.providerLocator.orEmpty(),
         episodeId = episode?.id.orEmpty(),
         episodeTitle = episode?.title.orEmpty(),
         season = episode?.season,
@@ -419,6 +429,7 @@ class LocalMediaStore(context: Context) {
                     .put("refSourceKind", entry.refSourceKind)
                     .put("refMediaType", entry.refMediaType)
                     .put("refMetaId", entry.refMetaId)
+                    .put("refProviderLocator", entry.refProviderLocator)
                     .put("saved", entry.saved)
                     .put("episodeId", entry.episodeId)
                     .put("episodeTitle", entry.episodeTitle)
@@ -454,6 +465,7 @@ class LocalMediaStore(context: Context) {
                     refSourceKind = obj.optString("refSourceKind"),
                     refMediaType = obj.optString("refMediaType"),
                     refMetaId = obj.optString("refMetaId"),
+                    refProviderLocator = obj.optString("refProviderLocator"),
                     saved = obj.optBoolean("saved", false),
                     episodeId = obj.optString("episodeId"),
                     episodeTitle = obj.optString("episodeTitle"),

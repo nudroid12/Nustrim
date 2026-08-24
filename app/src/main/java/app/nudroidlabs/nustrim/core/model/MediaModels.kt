@@ -46,7 +46,8 @@ data class MediaRef(
     val sourceKind: String,
     val mediaType: String,
     val metaId: String,
-    val integrity: String = ""
+    val integrity: String = "",
+    val providerLocator: String = "",
 )
 
 enum class MediaType {

@@ -15,6 +15,10 @@ data class TvHomeMedia(
         append(item.ref?.mediaType ?: item.type.name)
         append('|')
         append(item.ref?.metaId?.takeIf { it.isNotBlank() } ?: item.id)
+        item.ref?.providerLocator?.takeIf { it.isNotBlank() }?.let { locator ->
+            append('|')
+            append(locator.hashCode().toString(16))
+        }
     }
 
     val backdropUrl: String

@@ -8,6 +8,7 @@ import app.nudroidlabs.nustrim.core.source.CatalogSectionSourceSession
 import app.nudroidlabs.nustrim.core.source.InstalledSource
 import app.nudroidlabs.nustrim.core.source.InstalledSourceStore
 import app.nudroidlabs.nustrim.core.source.SourceEngine
+import app.nudroidlabs.nustrim.core.source.SourceKind
 import app.nudroidlabs.nustrim.core.source.SourceSession
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
@@ -100,6 +101,9 @@ class TvHomeRepository(context: Context) {
         val result = withTimeoutOrNull(SOURCE_TIMEOUT_MS) {
             runCatching {
                 val session = openSession(installed.url)
+                if (session.kind == SourceKind.CLOUDSTREAM) {
+                    return@runCatching SourceLoadResult(emptyList(), failed = false)
+                }
                 val catalogs = loadCatalogs(session)
                 SourceLoadResult(
                     rows = catalogs.mapIndexedNotNull { index, catalog ->
