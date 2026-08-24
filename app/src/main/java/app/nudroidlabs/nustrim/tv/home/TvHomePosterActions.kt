@@ -134,6 +134,7 @@ private fun TvHomePosterActionButton(
             .onKeyEvent { event ->
                 if (
                     event.type == KeyEventType.KeyDown &&
+                    event.nativeKeyEvent.repeatCount == 0 &&
                     (event.key == Key.DirectionCenter || event.key == Key.Enter)
                 ) {
                     onClick()

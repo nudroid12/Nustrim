@@ -14,7 +14,7 @@ internal class TvHomeLongPressTracker(
 ) {
     private var activeKeyCode: Int? = null
     private var pressedAtMs: Long = 0L
-    private var longPressHandled = false
+    private var longPressDetected = false
 
     fun handle(
         event: KeyEvent,
@@ -29,25 +29,27 @@ internal class TvHomeLongPressTracker(
 
         return when (event.action) {
             KeyEvent.ACTION_DOWN -> {
-                if (activeKeyCode != event.keyCode || event.repeatCount == 0) {
+                if (activeKeyCode != event.keyCode) {
                     activeKeyCode = event.keyCode
                     pressedAtMs = event.eventTime
-                    longPressHandled = false
+                    longPressDetected = false
                 }
                 val heldMs = event.eventTime - pressedAtMs
-                if (!longPressHandled && (event.isLongPress || event.repeatCount > 0 || heldMs >= timeoutMs)) {
-                    longPressHandled = true
-                    onLongPress()
+                if (event.isLongPress || event.repeatCount > 0 || heldMs >= timeoutMs) {
+                    longPressDetected = true
                 }
                 true
             }
 
             KeyEvent.ACTION_UP -> {
                 val heldMs = event.eventTime - pressedAtMs
-                if (!longPressHandled && activeKeyCode == event.keyCode) {
-                    if (heldMs >= timeoutMs) onLongPress() else onClick()
+                if (activeKeyCode == event.keyCode) {
+                    val openActions = longPressDetected || heldMs >= timeoutMs
+                    reset()
+                    if (openActions) onLongPress() else onClick()
+                } else {
+                    reset()
                 }
-                reset()
                 true
             }
 
@@ -58,7 +60,7 @@ internal class TvHomeLongPressTracker(
     private fun reset() {
         activeKeyCode = null
         pressedAtMs = 0L
-        longPressHandled = false
+        longPressDetected = false
     }
 
     private fun isSelectKey(keyCode: Int): Boolean = when (keyCode) {
