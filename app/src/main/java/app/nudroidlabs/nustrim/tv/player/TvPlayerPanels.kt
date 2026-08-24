@@ -355,7 +355,12 @@ fun TvPlayerSubtitlePanel(
         }
     }
 
-    TvPlayerBottomOverlayScaffold(title = "Subtitles", width = 1_040.dp, modifier = modifier) {
+    TvPlayerBottomOverlayScaffold(
+        title = "Subtitles",
+        width = 860.dp,
+        strongScrim = true,
+        modifier = modifier,
+    ) {
         if (tracks.isEmpty()) {
             TvPanelTextRow(
                 title = "Off",
@@ -366,12 +371,12 @@ fun TvPlayerSubtitlePanel(
             )
         } else {
             Row(
-                horizontalArrangement = Arrangement.spacedBy(18.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
                 verticalAlignment = Alignment.Top,
             ) {
                 Column(
-                    modifier = Modifier.width(220.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.width(175.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     Text("Options", color = Color.White.copy(alpha = 0.54f), fontSize = 12.sp)
                     TvPanelTextRow(
@@ -379,6 +384,7 @@ fun TvPlayerSubtitlePanel(
                         subtitle = "Disable subtitles",
                         selected = tracks.none { it.selected },
                         focusRequester = offRequester,
+                        compact = true,
                         onClick = onDisable,
                     )
                     Spacer(Modifier.height(4.dp))
@@ -394,17 +400,24 @@ fun TvPlayerSubtitlePanel(
                             fontSize = 12.sp,
                         )
                     } else {
-                        languages.take(7).forEach { (language, languageTracks) ->
-                            TvPanelTextRow(
-                                title = language,
-                                subtitle = "${languageTracks.size} track(s)",
-                                selected = selectedLanguage == language,
-                                onClick = { selectedLanguage = language },
-                            )
+                        LazyColumn(
+                            modifier = Modifier.height(284.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                            contentPadding = PaddingValues(bottom = 6.dp),
+                        ) {
+                            items(languages, key = { it.first }) { (language, languageTracks) ->
+                                TvPanelTextRow(
+                                    title = language,
+                                    subtitle = "${languageTracks.size} track(s)",
+                                    selected = selectedLanguage == language,
+                                    compact = true,
+                                    onClick = { selectedLanguage = language },
+                                )
+                            }
                         }
                     }
                 }
-                Column(modifier = Modifier.width(500.dp)) {
+                Column(modifier = Modifier.width(390.dp)) {
                     Text("Tracks", color = Color.White.copy(alpha = 0.54f), fontSize = 12.sp)
                     Spacer(Modifier.height(8.dp))
                     if (visibleTracks.isEmpty()) {
@@ -415,16 +428,17 @@ fun TvPlayerSubtitlePanel(
                         )
                     } else {
                         LazyColumn(
-                            modifier = Modifier.height(330.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
-                            contentPadding = PaddingValues(bottom = 8.dp),
+                            modifier = Modifier.height(318.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                            contentPadding = PaddingValues(bottom = 6.dp),
                         ) {
                             itemsIndexed(visibleTracks, key = { _, track -> track.key }) { index, track ->
                                 TvPanelTextRow(
-                                    title = track.label,
-                                    subtitle = track.provider,
+                                    title = subtitleTrackTitle(track),
+                                    subtitle = subtitleTrackDescription(track),
                                     selected = track.selected,
                                     focusRequester = requesters[index],
+                                    compact = true,
                                     onClick = { onSelect(track) },
                                 )
                             }
@@ -432,34 +446,30 @@ fun TvPlayerSubtitlePanel(
                     }
                 }
                 Column(
-                    modifier = Modifier.width(250.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.width(190.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     Text("Style", color = Color.White.copy(alpha = 0.54f), fontSize = 12.sp)
-                    TvPanelTextRow(
-                        title = "Text size +",
-                        subtitle = "$fontSizeSp sp",
-                        selected = false,
-                        onClick = {
-                            val next = (fontSizeSp + TvSubtitleStyleStore.FONT_SIZE_STEP)
-                                .coerceAtMost(TvSubtitleStyleStore.MAX_FONT_SIZE)
-                            onFontSizeChange(next)
+                    TvSubtitleSizeControl(
+                        fontSizeSp = fontSizeSp,
+                        onDecrease = {
+                            onFontSizeChange(
+                                (fontSizeSp - TvSubtitleStyleStore.FONT_SIZE_STEP)
+                                    .coerceAtLeast(TvSubtitleStyleStore.MIN_FONT_SIZE),
+                            )
                         },
-                    )
-                    TvPanelTextRow(
-                        title = "Text size -",
-                        subtitle = "$fontSizeSp sp",
-                        selected = false,
-                        onClick = {
-                            val next = (fontSizeSp - TvSubtitleStyleStore.FONT_SIZE_STEP)
-                                .coerceAtLeast(TvSubtitleStyleStore.MIN_FONT_SIZE)
-                            onFontSizeChange(next)
+                        onIncrease = {
+                            onFontSizeChange(
+                                (fontSizeSp + TvSubtitleStyleStore.FONT_SIZE_STEP)
+                                    .coerceAtMost(TvSubtitleStyleStore.MAX_FONT_SIZE),
+                            )
                         },
                     )
                     TvPanelTextRow(
                         title = "Bold",
                         subtitle = if (bold) "On" else "Off",
                         selected = bold,
+                        compact = true,
                         onClick = { onBoldChange(!bold) },
                     )
                 }
@@ -685,6 +695,7 @@ private fun TvPanelTextRow(
     subtitle: String,
     selected: Boolean,
     focusRequester: FocusRequester? = null,
+    compact: Boolean = false,
     onClick: () -> Unit,
 ) {
     var focused by remember { mutableStateOf(false) }
@@ -708,7 +719,7 @@ private fun TvPanelTextRow(
             )
             .clickable(onClick = onClick)
             .focusable()
-            .padding(horizontal = 14.dp, vertical = 12.dp),
+            .padding(horizontal = if (compact) 12.dp else 14.dp, vertical = if (compact) 9.dp else 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(modifier = Modifier.weight(1f)) {
@@ -716,6 +727,9 @@ private fun TvPanelTextRow(
                 title,
                 color = Color.White,
                 fontWeight = FontWeight.Medium,
+                fontSize = if (compact) 14.sp else 16.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
             subtitle.takeIf { it.isNotBlank() }?.let {
                 Spacer(Modifier.height(2.dp))
@@ -723,6 +737,8 @@ private fun TvPanelTextRow(
                     it,
                     color = Color.White.copy(alpha = if (focused) 0.78f else 0.56f),
                     fontSize = 11.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
         }
@@ -733,6 +749,115 @@ private fun TvPanelTextRow(
                 tint = Color.White,
             )
         }
+    }
+}
+
+@Composable
+private fun TvSubtitleSizeControl(
+    fontSizeSp: Int,
+    onDecrease: () -> Unit,
+    onIncrease: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color(0xE61B1D22))
+            .border(1.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(12.dp))
+            .padding(10.dp),
+    ) {
+        Text("Text size", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+        Spacer(Modifier.height(8.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            TvPanelCompactButton(
+                label = "−",
+                enabled = fontSizeSp > TvSubtitleStyleStore.MIN_FONT_SIZE,
+                onClick = onDecrease,
+            )
+            Text(
+                text = "$fontSizeSp sp",
+                color = Color.White,
+                fontSize = 12.sp,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                modifier = Modifier.weight(1f),
+            )
+            TvPanelCompactButton(
+                label = "+",
+                enabled = fontSizeSp < TvSubtitleStyleStore.MAX_FONT_SIZE,
+                onClick = onIncrease,
+            )
+        }
+    }
+}
+
+@Composable
+private fun TvPanelCompactButton(
+    label: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    var focused by remember { mutableStateOf(false) }
+    Box(
+        modifier = Modifier
+            .size(40.dp)
+            .onFocusChanged { focused = it.isFocused }
+            .clip(RoundedCornerShape(10.dp))
+            .background(
+                when {
+                    !enabled -> Color.White.copy(alpha = 0.04f)
+                    focused -> Color.White
+                    else -> Color.White.copy(alpha = 0.10f)
+                },
+            )
+            .border(
+                width = if (focused) 2.dp else 1.dp,
+                color = if (focused) Color.White else Color.White.copy(alpha = 0.14f),
+                shape = RoundedCornerShape(10.dp),
+            )
+            .clickable(enabled = enabled, onClick = onClick)
+            .focusable(enabled)
+            .padding(6.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(label, color = if (focused) Color.Black else Color.White, fontSize = 20.sp)
+    }
+}
+
+private fun subtitleTrackTitle(track: TvPlayerTrack): String {
+    val raw = track.label.trim()
+    val alias = when (raw.lowercase()) {
+        "eng" -> "en"
+        "msa", "may" -> "ms"
+        "ind" -> "id"
+        "spa" -> "es"
+        "por" -> "pt"
+        "fra", "fre" -> "fr"
+        "deu", "ger" -> "de"
+        "ita" -> "it"
+        "jpn" -> "ja"
+        "kor" -> "ko"
+        "zho", "chi" -> "zh"
+        "ara" -> "ar"
+        "tha" -> "th"
+        "vie" -> "vi"
+        else -> raw.lowercase()
+    }
+    return if (raw.isBlank() || alias == track.languageCode.lowercase()) {
+        track.language.ifBlank { "Unknown subtitle" }
+    } else {
+        raw
+    }
+}
+
+private fun subtitleTrackDescription(track: TvPlayerTrack): String = buildString {
+    append(track.provider.ifBlank { "Embedded" })
+    if (track.languageCode.isNotBlank()) {
+        append(" · ")
+        append(track.languageCode.uppercase())
     }
 }
 
@@ -831,6 +956,7 @@ private fun TvPlayerSidePanelScaffold(
 private fun TvPlayerBottomOverlayScaffold(
     title: String,
     width: androidx.compose.ui.unit.Dp,
+    strongScrim: Boolean = false,
     modifier: Modifier = Modifier,
     content: @Composable ColumnScope.() -> Unit,
 ) {
@@ -839,11 +965,19 @@ private fun TvPlayerBottomOverlayScaffold(
             .fillMaxSize()
             .background(
                 Brush.horizontalGradient(
-                    listOf(
-                        Color.Black.copy(alpha = 0.84f),
-                        Color.Black.copy(alpha = 0.58f),
-                        Color.Transparent,
-                    ),
+                    if (strongScrim) {
+                        listOf(
+                            Color.Black.copy(alpha = 0.95f),
+                            Color.Black.copy(alpha = 0.78f),
+                            Color.Black.copy(alpha = 0.22f),
+                        )
+                    } else {
+                        listOf(
+                            Color.Black.copy(alpha = 0.84f),
+                            Color.Black.copy(alpha = 0.58f),
+                            Color.Transparent,
+                        )
+                    },
                 ),
             ),
     ) {

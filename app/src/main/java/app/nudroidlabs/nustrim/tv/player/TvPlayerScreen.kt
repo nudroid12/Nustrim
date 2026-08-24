@@ -3,6 +3,7 @@ package app.nudroidlabs.nustrim.tv.player
 import android.graphics.Typeface
 import android.text.format.DateFormat
 import android.util.TypedValue
+import android.view.View
 import android.view.KeyEvent as AndroidKeyEvent
 import androidx.activity.compose.BackHandler
 import androidx.annotation.OptIn
@@ -375,6 +376,7 @@ fun TvPlayerScreen(
                 if (view.resizeMode != aspectMode.resizeMode) view.resizeMode = aspectMode.resizeMode
                 view.keepScreenOn = runtime.isPlaying || runtime.isBuffering
                 view.subtitleView?.apply {
+                    visibility = if (activePanel == TvPlayerPanel.SUBTITLES) View.INVISIBLE else View.VISIBLE
                     setApplyEmbeddedFontSizes(false)
                     setApplyEmbeddedStyles(false)
                     setFixedTextSize(TypedValue.COMPLEX_UNIT_SP, subtitleFontSizeSp.toFloat())
