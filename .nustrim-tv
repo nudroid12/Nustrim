@@ -1,6 +1,6 @@
 generation=cleanroom-v1
 reference=nuvio-tv-0.8.6-beta
-subsystem=12.12-long-press-fix
+subsystem=12.13-content-manager
 status=release-candidate
 baseline=0.51.4-tv-cleanroom-s6.2-rollback
 preserve=source-provider-engine,stream-resolver,playback-engine,mobile-ui
@@ -55,7 +55,9 @@ library-focus=exact-card-restoration
 settings=cleanroom-s12.11-mobile-feature-parity
 settings-layout=category-rail,detail-pane
 settings-sections=playback,subtitles,content,integrations,local-data,advanced,about
+settings-content-manager=installed-addons
 settings-content-sources=enable-disable
+settings-catalog-order=separate-category
 settings-catalog-layout=order,visibility,reset
 settings-subtitles=languages,font-size,bold,display-mode
 settings-integrations=tmdb,mdblist,trakt-device-auth

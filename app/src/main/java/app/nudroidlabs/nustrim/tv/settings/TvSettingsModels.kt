@@ -7,7 +7,8 @@ import app.nudroidlabs.nustrim.ui.SubtitleDisplayMode
 enum class TvSettingsCategory(val label: String, val subtitle: String) {
     PLAYBACK("Playback", "Source and episode behaviour"),
     SUBTITLES("Subtitles", "Language and visibility"),
-    CONTENT("Content", "Installed source management"),
+    CONTENT("Content Manager", "Installed add-on management"),
+    CATALOG_ORDER("Catalogue order", "Home catalogue visibility and order"),
     INTEGRATIONS("Integrations", "Metadata, ratings and tracking"),
     LOCAL_DATA("Local data", "Backup and restore"),
     ADVANCED("Advanced", "Developer and diagnostic controls"),

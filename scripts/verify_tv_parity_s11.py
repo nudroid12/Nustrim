@@ -114,7 +114,7 @@ def build_checks() -> list[Check]:
         check("Library", "Exact card focus and Details route", has(library_screen, "libraryMediaAnchorKey", "TvFocusRestoreEffect") and has(shell, "TvLibraryEntry", "focusRegistry.lastFocused", "TvRoute.Details"), "TvLibraryScreen.kt, TvShell.kt"),
 
         check("Settings", "Category rail and detail pane", has(settings_screen, "SettingsRail", "SettingsDetailPane", "LazyColumn"), "TvSettingsScreen.kt"),
-        check("Settings", "Seven product settings categories", has(settings_models, "PLAYBACK", "SUBTITLES", "CONTENT", "INTEGRATIONS", "LOCAL_DATA", "ADVANCED", "ABOUT"), "TvSettingsModels.kt"),
+        check("Settings", "Content Manager and catalogue order are separate", has(settings_models, "PLAYBACK", "SUBTITLES", "CONTENT", "CATALOG_ORDER", "INTEGRATIONS", "LOCAL_DATA", "ADVANCED", "ABOUT"), "TvSettingsModels.kt"),
         check("Settings", "Functional playback and subtitle preferences", has(settings_entry, "autoplayFirstSource", "autoplayNextEpisode", "tvSeekStepSeconds", "subtitlePreferredLanguage", "subtitleDisplayMode"), "TvSettingsEntry.kt"),
         check("Settings", "Source management and signed updater", has(settings_entry, "InstalledSourceStore", "sourceStore.setEnabled", "AppUpdater", "updater.check()"), "TvSettingsEntry.kt"),
         check("Settings", "Category and detail focus restoration", has(settings_screen, "settingsRailAnchorKey", "settingsFirstDetailAnchorKey", "TvFocusRestoreEffect"), "TvSettingsScreen.kt"),

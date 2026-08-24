@@ -29,6 +29,7 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Reorder
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Icon
@@ -492,9 +493,12 @@ private fun SettingsDetailPane(
                             onClick = { onToggleSource(source) },
                         )
                     }
+                }
+
+                TvSettingsCategory.CATALOG_ORDER -> {
                     item("catalog-layout-heading") {
                         SettingsInfoCard(
-                            title = "Home catalog layout",
+                            title = "Home catalogue order",
                             lines = listOf(
                                 "Rows" to if (snapshot.catalogsLoading) "Loading..." else snapshot.catalogs.size.toString(),
                                 "Control" to "Visibility and order",
@@ -503,10 +507,10 @@ private fun SettingsDetailPane(
                     }
                     item("catalog-layout-reset") {
                         SettingsActionRow(
-                            title = "Reset catalog layout",
-                            subtitle = "Restore the provider order and show every catalog row.",
+                            title = "Reset catalogue order",
+                            subtitle = "Restore the provider order and show every catalogue row.",
                             value = "Reset",
-                            anchorKey = "settings:content:catalog-reset",
+                            anchorKey = settingsFirstDetailAnchorKey(category),
                             category = category,
                             memory = memory,
                             scopeKey = scopeKey,
@@ -521,7 +525,7 @@ private fun SettingsDetailPane(
                                 subtitle = catalog.sourceName,
                                 value = if (catalog.visible) "Visible" else "Hidden",
                                 checked = catalog.visible,
-                                anchorKey = "settings:content:catalog:${catalog.key}",
+                                anchorKey = "settings:catalog-order:${catalog.key}",
                                 category = category,
                                 memory = memory,
                                 scopeKey = scopeKey,
@@ -935,6 +939,7 @@ private fun settingsCategoryIcon(category: TvSettingsCategory): ImageVector = wh
     TvSettingsCategory.PLAYBACK -> Icons.Default.PlayArrow
     TvSettingsCategory.SUBTITLES -> Icons.Default.ClosedCaption
     TvSettingsCategory.CONTENT -> Icons.Default.GridView
+    TvSettingsCategory.CATALOG_ORDER -> Icons.Default.Reorder
     TvSettingsCategory.INTEGRATIONS -> Icons.Default.Link
     TvSettingsCategory.LOCAL_DATA -> Icons.Default.Save
     TvSettingsCategory.ADVANCED -> Icons.Default.Build
