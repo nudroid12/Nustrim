@@ -1,0 +1,355 @@
+name: Nustrim TV Cleanroom S12.12 Long Press Fix Auto Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nustrim-tv-cleanroom-s12-12-long-press-fix
+  cancel-in-progress: false
+
+env:
+  LOCKED_CERT_SHA256: "30C625B9112CD04D43B631D6020D0D52E61695111B8E2125F29AD19651EB165D"
+  TARGET_VERSION_NAME: "0.57.11-tv-cleanroom-s12.12-long-press-fix"
+  TARGET_VERSION_CODE: "134"
+
+jobs:
+  build-test-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Guard accepted S12.11 baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          current_build="$(sed -n -E 's/.*versionName[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' app/build.gradle.kts | head -1)"
+          current_marker="$(cat .nustrim-version 2>/dev/null || true)"
+          case "$current_build" in
+            "0.57.10-tv-cleanroom-s12.11-settings-parity"|"$TARGET_VERSION_NAME") ;;
+            *)
+              echo "::error::Unexpected baseline: $current_build"
+              exit 20
+              ;;
+          esac
+          test "$current_marker" = "$current_build" || {
+            echo "::error::Build version and .nustrim-version differ."
+            exit 21
+          }
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Gradle 9.5.0
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "9.5.0"
+
+      - name: Prepare permanent signing
+        shell: bash
+        env:
+          KEYSTORE_B64: ${{ secrets.NUSTRIM_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.NUSTRIM_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.NUSTRIM_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.NUSTRIM_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for name in KEYSTORE_B64 KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::Signing secret $name is missing."
+              exit 30
+            fi
+          done
+          KS="$RUNNER_TEMP/nustrim-release.jks"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$KS"
+          chmod 600 "$KS"
+          keytool -list -keystore "$KS" -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" >/dev/null
+          CERT="$(
+            keytool -exportcert -rfc -keystore "$KS" -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" |
+            openssl x509 -noout -fingerprint -sha256 |
+            cut -d= -f2 | tr -d ':' | tr '[:lower:]' '[:upper:]'
+          )"
+          test "$CERT" = "$LOCKED_CERT_SHA256" || {
+            echo "::error::Keystore certificate is not the locked Nustrim certificate."
+            exit 31
+          }
+          echo "NUSTRIM_KEYSTORE_PATH=$KS" >> "$GITHUB_ENV"
+          echo "NUSTRIM_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "NUSTRIM_KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
+          echo "NUSTRIM_KEY_PASSWORD=$KEY_PASSWORD" >> "$GITHUB_ENV"
+
+      - name: Apply exact S12.12 source
+        shell: bash
+        env:
+          SOURCE_PATCH_B64: "ZGlmZiAtLWdpdCBhLy5udXN0cmltLXR2IGIvLm51c3RyaW0tdHYKaW5kZXggMzU4NmI0MC4uYzc1MjhiMCAxMDA2NDQKLS0tIGEvLm51c3RyaW0tdHYKKysrIGIvLm51c3RyaW0tdHYKQEAgLTEsNiArMSw2IEBACiBnZW5lcmF0aW9uPWNsZWFucm9vbS12MQogcmVmZXJlbmNlPW51dmlvLXR2LTAuOC42LWJldGEKLXN1YnN5c3RlbT0xMi4xMS1zZXR0aW5ncy1wYXJpdHkKK3N1YnN5c3RlbT0xMi4xMi1sb25nLXByZXNzLWZpeAogc3RhdHVzPXJlbGVhc2UtY2FuZGlkYXRlCiBiYXNlbGluZT0wLjUxLjQtdHYtY2xlYW5yb29tLXM2LjItcm9sbGJhY2sKIHByZXNlcnZlPXNvdXJjZS1wcm92aWRlci1lbmdpbmUsc3RyZWFtLXJlc29sdmVyLHBsYXliYWNrLWVuZ2luZSxtb2JpbGUtdWkKQEAgLTE0LDYgKzE0LDggQEAgaG9tZS1jb250aW51ZS13YXRjaGluZz1maXJzdC1yb3cKIGhvbWUtY29udGludWUtd2F0Y2hpbmctc291cmNlPWxvY2FsLW1lZGlhLXN0b3JlCiBob21lLWNvbnRpbnVlLXdhdGNoaW5nLWNhcmQ9bGFuZHNjYXBlLXByb2dyZXNzCiBob21lLWNvbnRpbnVlLXdhdGNoaW5nLWFjdGlvbj1kZXRhaWxzLWJhY2tlZC1zb3VyY2VzLXJlc3VtZQoraG9tZS1wb3N0ZXItbG9uZy1wcmVzcz1yZWxlYXNlLWdhdGVkLXRpdGxlLWFjdGlvbnMKK2hvbWUtcG9zdGVyLWxvbmctcHJlc3MtcmVwZWF0PWNvbnN1bWVkLWJlZm9yZS1kaWFsb2cKIGVwaXNvZGUtZG9tYWluPWNsZWFucm9vbS1zMy1hY2NlcHRlZAogZGV0YWlscz1jbGVhbnJvb20tczEyLjItZXBpc29kZS1mb2N1cwogZGV0YWlscy1mb2N1cy1yZXN0b3JlPWV4YWN0LXNlYXNvbi1hbmQtZXBpc29kZQpkaWZmIC0tZ2l0IGEvLm51c3RyaW0tdmVyc2lvbiBiLy5udXN0cmltLXZlcnNpb24KaW5kZXggNDYzZjEyMi4uOGEzZTlhOCAxMDA2NDQKLS0tIGEvLm51c3RyaW0tdmVyc2lvbgorKysgYi8ubnVzdHJpbS12ZXJzaW9uCkBAIC0xICsxIEBACi0wLjU3LjEwLXR2LWNsZWFucm9vbS1zMTIuMTEtc2V0dGluZ3MtcGFyaXR5CiswLjU3LjExLXR2LWNsZWFucm9vbS1zMTIuMTItbG9uZy1wcmVzcy1maXgKZGlmZiAtLWdpdCBhL2FwcC9idWlsZC5ncmFkbGUua3RzIGIvYXBwL2J1aWxkLmdyYWRsZS5rdHMKaW5kZXggNjI4MjViOS4uODhkMDE4NiAxMDA2NDQKLS0tIGEvYXBwL2J1aWxkLmdyYWRsZS5rdHMKKysrIGIvYXBwL2J1aWxkLmdyYWRsZS5rdHMKQEAgLTE2LDggKzE2LDggQEAgYW5kcm9pZCB7CiAgICAgICAgIGFwcGxpY2F0aW9uSWQgPSAiYXBwLm51ZHJvaWRsYWJzLm51c3RyaW0iCiAgICAgICAgIG1pblNkayA9IDIzCiAgICAgICAgIHRhcmdldFNkayA9IDM3Ci0gICAgICAgIHZlcnNpb25Db2RlID0gMTMzCi0gICAgICAgIHZlcnNpb25OYW1lID0gIjAuNTcuMTAtdHYtY2xlYW5yb29tLXMxMi4xMS1zZXR0aW5ncy1wYXJpdHkiCisgICAgICAgIHZlcnNpb25Db2RlID0gMTM0CisgICAgICAgIHZlcnNpb25OYW1lID0gIjAuNTcuMTEtdHYtY2xlYW5yb29tLXMxMi4xMi1sb25nLXByZXNzLWZpeCIKICAgICB9CiAKICAgICB2YWwgcGVyc2lzdGVudFVwZGF0ZVNpZ25pbmcgPSBpZiAoCmRpZmYgLS1naXQgYS9hcHAvc3JjL21haW4vamF2YS9hcHAvbnVkcm9pZGxhYnMvbnVzdHJpbS90di9ob21lL1R2SG9tZUxvbmdQcmVzcy5rdCBiL2FwcC9zcmMvbWFpbi9qYXZhL2FwcC9udWRyb2lkbGFicy9udXN0cmltL3R2L2hvbWUvVHZIb21lTG9uZ1ByZXNzLmt0CmluZGV4IDkwMGZkMGIuLjUwNDZiZDkgMTAwNjQ0Ci0tLSBhL2FwcC9zcmMvbWFpbi9qYXZhL2FwcC9udWRyb2lkbGFicy9udXN0cmltL3R2L2hvbWUvVHZIb21lTG9uZ1ByZXNzLmt0CisrKyBiL2FwcC9zcmMvbWFpbi9qYXZhL2FwcC9udWRyb2lkbGFicy9udXN0cmltL3R2L2hvbWUvVHZIb21lTG9uZ1ByZXNzLmt0CkBAIC0xNCw3ICsxNCw3IEBAIGludGVybmFsIGNsYXNzIFR2SG9tZUxvbmdQcmVzc1RyYWNrZXIoCiApIHsKICAgICBwcml2YXRlIHZhciBhY3RpdmVLZXlDb2RlOiBJbnQ/ID0gbnVsbAogICAgIHByaXZhdGUgdmFyIHByZXNzZWRBdE1zOiBMb25nID0gMEwKLSAgICBwcml2YXRlIHZhciBsb25nUHJlc3NIYW5kbGVkID0gZmFsc2UKKyAgICBwcml2YXRlIHZhciBsb25nUHJlc3NEZXRlY3RlZCA9IGZhbHNlCiAKICAgICBmdW4gaGFuZGxlKAogICAgICAgICBldmVudDogS2V5RXZlbnQsCkBAIC0yOSwyNSArMjksMjcgQEAgaW50ZXJuYWwgY2xhc3MgVHZIb21lTG9uZ1ByZXNzVHJhY2tlcigKIAogICAgICAgICByZXR1cm4gd2hlbiAoZXZlbnQuYWN0aW9uKSB7CiAgICAgICAgICAgICBLZXlFdmVudC5BQ1RJT05fRE9XTiAtPiB7Ci0gICAgICAgICAgICAgICAgaWYgKGFjdGl2ZUtleUNvZGUgIT0gZXZlbnQua2V5Q29kZSB8fCBldmVudC5yZXBlYXRDb3VudCA9PSAwKSB7CisgICAgICAgICAgICAgICAgaWYgKGFjdGl2ZUtleUNvZGUgIT0gZXZlbnQua2V5Q29kZSkgewogICAgICAgICAgICAgICAgICAgICBhY3RpdmVLZXlDb2RlID0gZXZlbnQua2V5Q29kZQogICAgICAgICAgICAgICAgICAgICBwcmVzc2VkQXRNcyA9IGV2ZW50LmV2ZW50VGltZQotICAgICAgICAgICAgICAgICAgICBsb25nUHJlc3NIYW5kbGVkID0gZmFsc2UKKyAgICAgICAgICAgICAgICAgICAgbG9uZ1ByZXNzRGV0ZWN0ZWQgPSBmYWxzZQogICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgICAgICB2YWwgaGVsZE1zID0gZXZlbnQuZXZlbnRUaW1lIC0gcHJlc3NlZEF0TXMKLSAgICAgICAgICAgICAgICBpZiAoIWxvbmdQcmVzc0hhbmRsZWQgJiYgKGV2ZW50LmlzTG9uZ1ByZXNzIHx8IGV2ZW50LnJlcGVhdENvdW50ID4gMCB8fCBoZWxkTXMgPj0gdGltZW91dE1zKSkgewotICAgICAgICAgICAgICAgICAgICBsb25nUHJlc3NIYW5kbGVkID0gdHJ1ZQotICAgICAgICAgICAgICAgICAgICBvbkxvbmdQcmVzcygpCisgICAgICAgICAgICAgICAgaWYgKGV2ZW50LmlzTG9uZ1ByZXNzIHx8IGV2ZW50LnJlcGVhdENvdW50ID4gMCB8fCBoZWxkTXMgPj0gdGltZW91dE1zKSB7CisgICAgICAgICAgICAgICAgICAgIGxvbmdQcmVzc0RldGVjdGVkID0gdHJ1ZQogICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgICAgICB0cnVlCiAgICAgICAgICAgICB9CiAKICAgICAgICAgICAgIEtleUV2ZW50LkFDVElPTl9VUCAtPiB7CiAgICAgICAgICAgICAgICAgdmFsIGhlbGRNcyA9IGV2ZW50LmV2ZW50VGltZSAtIHByZXNzZWRBdE1zCi0gICAgICAgICAgICAgICAgaWYgKCFsb25nUHJlc3NIYW5kbGVkICYmIGFjdGl2ZUtleUNvZGUgPT0gZXZlbnQua2V5Q29kZSkgewotICAgICAgICAgICAgICAgICAgICBpZiAoaGVsZE1zID49IHRpbWVvdXRNcykgb25Mb25nUHJlc3MoKSBlbHNlIG9uQ2xpY2soKQorICAgICAgICAgICAgICAgIGlmIChhY3RpdmVLZXlDb2RlID09IGV2ZW50LmtleUNvZGUpIHsKKyAgICAgICAgICAgICAgICAgICAgdmFsIG9wZW5BY3Rpb25zID0gbG9uZ1ByZXNzRGV0ZWN0ZWQgfHwgaGVsZE1zID49IHRpbWVvdXRNcworICAgICAgICAgICAgICAgICAgICByZXNldCgpCisgICAgICAgICAgICAgICAgICAgIGlmIChvcGVuQWN0aW9ucykgb25Mb25nUHJlc3MoKSBlbHNlIG9uQ2xpY2soKQorICAgICAgICAgICAgICAgIH0gZWxzZSB7CisgICAgICAgICAgICAgICAgICAgIHJlc2V0KCkKICAgICAgICAgICAgICAgICB9Ci0gICAgICAgICAgICAgICAgcmVzZXQoKQogICAgICAgICAgICAgICAgIHRydWUKICAgICAgICAgICAgIH0KIApAQCAtNTgsNyArNjAsNyBAQCBpbnRlcm5hbCBjbGFzcyBUdkhvbWVMb25nUHJlc3NUcmFja2VyKAogICAgIHByaXZhdGUgZnVuIHJlc2V0KCkgewogICAgICAgICBhY3RpdmVLZXlDb2RlID0gbnVsbAogICAgICAgICBwcmVzc2VkQXRNcyA9IDBMCi0gICAgICAgIGxvbmdQcmVzc0hhbmRsZWQgPSBmYWxzZQorICAgICAgICBsb25nUHJlc3NEZXRlY3RlZCA9IGZhbHNlCiAgICAgfQogCiAgICAgcHJpdmF0ZSBmdW4gaXNTZWxlY3RLZXkoa2V5Q29kZTogSW50KTogQm9vbGVhbiA9IHdoZW4gKGtleUNvZGUpIHsKZGlmZiAtLWdpdCBhL2FwcC9zcmMvbWFpbi9qYXZhL2FwcC9udWRyb2lkbGFicy9udXN0cmltL3R2L2hvbWUvVHZIb21lUG9zdGVyQWN0aW9ucy5rdCBiL2FwcC9zcmMvbWFpbi9qYXZhL2FwcC9udWRyb2lkbGFicy9udXN0cmltL3R2L2hvbWUvVHZIb21lUG9zdGVyQWN0aW9ucy5rdAppbmRleCA5M2E4MzhkLi5iZjVjMTg2IDEwMDY0NAotLS0gYS9hcHAvc3JjL21haW4vamF2YS9hcHAvbnVkcm9pZGxhYnMvbnVzdHJpbS90di9ob21lL1R2SG9tZVBvc3RlckFjdGlvbnMua3QKKysrIGIvYXBwL3NyYy9tYWluL2phdmEvYXBwL251ZHJvaWRsYWJzL251c3RyaW0vdHYvaG9tZS9UdkhvbWVQb3N0ZXJBY3Rpb25zLmt0CkBAIC0xMzQsNiArMTM0LDcgQEAgcHJpdmF0ZSBmdW4gVHZIb21lUG9zdGVyQWN0aW9uQnV0dG9uKAogICAgICAgICAgICAgLm9uS2V5RXZlbnQgeyBldmVudCAtPgogICAgICAgICAgICAgICAgIGlmICgKICAgICAgICAgICAgICAgICAgICAgZXZlbnQudHlwZSA9PSBLZXlFdmVudFR5cGUuS2V5RG93biAmJgorICAgICAgICAgICAgICAgICAgICBldmVudC5uYXRpdmVLZXlFdmVudC5yZXBlYXRDb3VudCA9PSAwICYmCiAgICAgICAgICAgICAgICAgICAgIChldmVudC5rZXkgPT0gS2V5LkRpcmVjdGlvbkNlbnRlciB8fCBldmVudC5rZXkgPT0gS2V5LkVudGVyKQogICAgICAgICAgICAgICAgICkgewogICAgICAgICAgICAgICAgICAgICBvbkNsaWNrKCkK"
+        run: |
+          set -euo pipefail
+          if ! grep -qx 'subsystem=12.12-long-press-fix' .nustrim-tv; then
+            PATCH_FILE="$RUNNER_TEMP/s12-12-long-press-fix.patch"
+            printf '%s' "$SOURCE_PATCH_B64" | base64 --decode > "$PATCH_FILE"
+            git apply --check "$PATCH_FILE"
+            git apply "$PATCH_FILE"
+          fi
+
+      - name: Verify S12.12 boundary and exact payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          changed="$({ git diff --name-only; git ls-files --others --exclude-standard; } | sort -u)"
+          printf '%s\n' "$changed"
+          export CHANGED="$changed"
+          python3 <<'PY'
+          from pathlib import Path
+          import hashlib
+          import os
+
+          changed = [line for line in os.environ.get("CHANGED", "").splitlines() if line]
+          allowed = {
+              ".nustrim-tv",
+              ".nustrim-version",
+              "app/build.gradle.kts",
+              "app/src/main/java/app/nudroidlabs/nustrim/tv/home/TvHomeLongPress.kt",
+              "app/src/main/java/app/nudroidlabs/nustrim/tv/home/TvHomePosterActions.kt",
+          }
+          unexpected = [path for path in changed if path not in allowed]
+          if unexpected:
+              raise SystemExit("S12.12 changed files outside the long press boundary: " + ", ".join(unexpected))
+
+          expected_hashes = {
+              ".nustrim-tv": "69c7ae6a8aeddcdbf96eac9d2b5413f1e2a02375f88d799742cccfa0dabc36c5",
+              ".nustrim-version": "8a6edcf87cd8ee4a2e4e4312025e336ec267cee83cce476383593e6c39dcd7d1",
+              "app/build.gradle.kts": "8e1a80173ed2a9e39db0b9cd4d93b237dc6a88aa50711f1703857e8ca8bc1aba",
+              "app/src/main/java/app/nudroidlabs/nustrim/tv/home/TvHomeLongPress.kt": "dd884b1dc75dd12808de68300bb2b3bf1fdde5e0694044a00c70b138a866a78e",
+              "app/src/main/java/app/nudroidlabs/nustrim/tv/home/TvHomePosterActions.kt": "6649dfc359623de22cfb7ef0ac50ea5cc874af1b1a6349e5fda39fe4d7b532cd",
+          }
+          mismatch = []
+          for relative, expected in expected_hashes.items():
+              path = Path(relative)
+              actual = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else "missing"
+              if actual != expected:
+                  mismatch.append(relative)
+          if mismatch:
+              raise SystemExit("Exact S12.12 payload mismatch: " + ", ".join(mismatch))
+
+          tracker = Path("app/src/main/java/app/nudroidlabs/nustrim/tv/home/TvHomeLongPress.kt").read_text()
+          dialog = Path("app/src/main/java/app/nudroidlabs/nustrim/tv/home/TvHomePosterActions.kt").read_text()
+          checks = {
+              "long press recorded during key down": "longPressDetected = true" in tracker,
+              "action deferred until key up": "if (openActions) onLongPress() else onClick()" in tracker,
+              "state reset before navigation": "reset()\n                    if (openActions)" in tracker,
+              "dialog ignores repeated select": "nativeKeyEvent.repeatCount == 0" in dialog,
+              "target version": 'versionName = "0.57.11-tv-cleanroom-s12.12-long-press-fix"' in Path("app/build.gradle.kts").read_text(),
+          }
+          for name, ok in checks.items():
+              print(("PASS" if ok else "FAIL") + " " + name)
+          failed = [name for name, ok in checks.items() if not ok]
+          if failed:
+              raise SystemExit("S12.12 invariant failure: " + ", ".join(failed))
+          PY
+          python3 scripts/verify_tv_parity_s11.py
+
+      - name: Build permanent signed release APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle --no-daemon --build-cache \
+            :app:lintRelease \
+            :app:testDebugUnitTest \
+            :app:assembleRelease \
+            --stacktrace --console=plain \
+            2>&1 | tee "$RUNNER_TEMP/nustrim-s12-12-build.log"
+          test -s app/build/outputs/apk/release/app-release.apk
+
+      - name: Verify APK identity and certificate
+        id: verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/release/app-release.apk"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)"
+          AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -1)"
+          test -x "$APKSIGNER"
+          test -x "$AAPT"
+          "$APKSIGNER" verify --verbose --print-certs "$APK" | tee "$RUNNER_TEMP/nustrim-s12-12-signature.txt"
+          CERT="$(sed -n -E 's/^.*certificate SHA-256 digest:[[:space:]]*//p' "$RUNNER_TEMP/nustrim-s12-12-signature.txt" | head -1 | tr -d ':' | tr '[:lower:]' '[:upper:]')"
+          test "$CERT" = "$LOCKED_CERT_SHA256"
+          BADGING="$("$AAPT" dump badging "$APK" | head -1)"
+          PACKAGE="$(printf '%s\n' "$BADGING" | sed -n -E "s/^package: name='([^']+)'.*/\1/p")"
+          APK_CODE="$(printf '%s\n' "$BADGING" | sed -n -E "s/^.*versionCode='([^']+)'.*/\1/p")"
+          APK_NAME="$(printf '%s\n' "$BADGING" | sed -n -E "s/^.*versionName='([^']+)'.*/\1/p")"
+          test "$PACKAGE" = "app.nudroidlabs.nustrim"
+          test "$APK_CODE" = "$TARGET_VERSION_CODE"
+          test "$APK_NAME" = "$TARGET_VERSION_NAME"
+          echo "cert_sha=$CERT" >> "$GITHUB_OUTPUT"
+          echo "version_code=$APK_CODE" >> "$GITHUB_OUTPUT"
+          echo "version_name=$APK_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare updater manifest and report
+        id: assets
+        shell: bash
+        env:
+          CERT_SHA: ${{ steps.verify.outputs.cert_sha }}
+          VERSION_CODE: ${{ steps.verify.outputs.version_code }}
+          VERSION_NAME: ${{ steps.verify.outputs.version_name }}
+        run: |
+          set -euo pipefail
+          export CERT_SHA VERSION_CODE VERSION_NAME
+          python3 <<'PY'
+          from pathlib import Path
+          import hashlib
+          import json
+          import os
+
+          code = int(os.environ["VERSION_CODE"])
+          name = os.environ["VERSION_NAME"]
+          cert = os.environ["CERT_SHA"]
+          repo = os.environ["GITHUB_REPOSITORY"]
+          src = Path("app/build/outputs/apk/release/app-release.apk")
+          apk = Path(f"Nustrim-{name}.apk")
+          apk.write_bytes(src.read_bytes())
+          sha = hashlib.sha256(apk.read_bytes()).hexdigest()
+          size = apk.stat().st_size
+          tag = f"v{name}"
+          manifest = {
+              "versionCode": code,
+              "versionName": name,
+              "apkUrl": f"https://github.com/{repo}/releases/download/{tag}/{apk.name}",
+              "sha256": sha,
+              "changelog": "S12.12 fixes Home poster long press input leakage. Title actions now open only after the original select key is released, and repeated select events cannot activate Details or Sources.",
+              "sizeBytes": size,
+              "signingMode": "permanent",
+              "signingCertSha256": cert,
+          }
+          report = {
+              "stage": "S12.12 Long Press Fix",
+              "issue": "S12-HOME-LONG-PRESS-01",
+              "status": "build-verified",
+              "cause": "Repeated select KeyDown events reached newly focused actions before the original key was released.",
+              "fix": [
+                  "record long press while the select key remains down",
+                  "open Title actions only after ACTION_UP",
+                  "ignore repeated select KeyDown events inside the action dialog",
+                  "preserve exact poster focus restoration"
+              ],
+              "preserved": ["Settings S12.11", "Home catalogue data", "Details", "Sources", "Player", "provider engine", "Mobile UI", "signed updater"],
+              "deviceAcceptance": "pending",
+              "requiredDeviceChecks": [
+                  "short press a Home poster and confirm Details opens once",
+                  "hold a Home poster and confirm Title actions remains visible after release",
+                  "keep holding beyond the threshold and confirm Details and Sources do not open",
+                  "activate each Title action using one fresh OK press",
+                  "dismiss the dialog and confirm focus returns to the exact poster"
+              ]
+          }
+          Path("update.json").write_text(json.dumps(manifest, indent=2) + "\n")
+          Path("tv-long-press-fix-s12-12-report.json").write_text(json.dumps(report, indent=2) + "\n")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"tag={tag}\n")
+              fh.write(f"apk={apk.name}\n")
+              fh.write(f"sha256={sha}\n")
+          PY
+
+      - name: Commit S12.12 only after verified build
+        id: commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            .nustrim-version .nustrim-tv app/build.gradle.kts \
+            app/src/main/java/app/nudroidlabs/nustrim/tv/home/TvHomeLongPress.kt \
+            app/src/main/java/app/nudroidlabs/nustrim/tv/home/TvHomePosterActions.kt
+          if git diff --cached --quiet; then
+            echo "S12.12 source is already committed."
+          else
+            git commit -m "Fix Home poster long press input leak S12.12 [skip ci]"
+            git push origin HEAD:main
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Create or update GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.assets.outputs.tag }}
+          VERSION: ${{ steps.verify.outputs.version_name }}
+          TARGET_SHA: ${{ steps.commit.outputs.sha }}
+        run: |
+          set -euo pipefail
+          NOTES="$RUNNER_TEMP/s12-12-release-notes.md"
+          printf '%s\n' \
+            "Nustrim $VERSION" "" \
+            "S12.12 fixes the Home poster long press event leak seen on Android TV remotes." "" \
+            "Title actions now open after the original OK key is released. Repeated OK events can no longer cascade into Details, Play or Sources." "" \
+            "Settings S12.11 and all backend systems are preserved." "" \
+            "Device acceptance is still required for the exact remote model." "" \
+            "Permanent signing certificate SHA-256: $LOCKED_CERT_SHA256" > "$NOTES"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "Nustrim $VERSION" --notes-file "$NOTES" --target "$TARGET_SHA" --latest
+          else
+            gh release create "$TAG" --title "Nustrim $VERSION" --notes-file "$NOTES" --target "$TARGET_SHA" --latest
+          fi
+
+      - name: Upload and verify release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.assets.outputs.tag }}
+          APK: ${{ steps.assets.outputs.apk }}
+          EXPECTED_SHA: ${{ steps.assets.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" "$APK" update.json tv-long-press-fix-s12-12-report.json --clobber
+          LIVE="$RUNNER_TEMP/s12-12-live"
+          mkdir -p "$LIVE"
+          gh release download "$TAG" --pattern "$APK" --pattern update.json --pattern tv-long-press-fix-s12-12-report.json --dir "$LIVE" --clobber
+          test "$(sha256sum "$LIVE/$APK" | cut -d' ' -f1)" = "$EXPECTED_SHA"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)" = "$TAG"
+
+      - name: Upload verified artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nustrim-tv-cleanroom-s12-12-long-press-fix-release
+          path: |
+            Nustrim-${{ steps.verify.outputs.version_name }}.apk
+            update.json
+            tv-long-press-fix-s12-12-report.json
+            ${{ runner.temp }}/nustrim-s12-12-signature.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Collect diagnose on failure
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          D="$RUNNER_TEMP/nustrim-s12-12-diagnose"
+          mkdir -p "$D"
+          cp "$RUNNER_TEMP/nustrim-s12-12-build.log" "$D/" 2>/dev/null
+          cp "$RUNNER_TEMP/nustrim-s12-12-signature.txt" "$D/" 2>/dev/null
+          cp app/build.gradle.kts .nustrim-version .nustrim-tv "$D/" 2>/dev/null
+          cp update.json tv-long-press-fix-s12-12-report.json "$D/" 2>/dev/null
+          git status --short > "$D/git-status.txt" 2>&1
+          git diff > "$D/git-diff.txt" 2>&1
+
+      - name: Upload diagnose on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nustrim-tv-cleanroom-s12-12-long-press-fix-diagnose
+          path: ${{ runner.temp }}/nustrim-s12-12-diagnose
+          if-no-files-found: warn
+          retention-days: 7
