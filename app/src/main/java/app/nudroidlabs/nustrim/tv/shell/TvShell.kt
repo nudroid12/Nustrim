@@ -49,6 +49,7 @@ fun TvShell(
     navigator: TvNavigator,
     focusRegistry: TvFocusRegistry,
     onExit: () -> Unit,
+    onSwitchToMobile: () -> Unit,
 ) {
     val focusManager = LocalFocusManager.current
     var sidebarOpen by remember { mutableStateOf(false) }
@@ -116,6 +117,7 @@ fun TvShell(
                 sidebarOpen = sidebarOpen,
                 navigator = navigator,
                 onOpenSidebar = ::openSidebar,
+                onSwitchToMobile = onSwitchToMobile,
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(start = if (route is TvRoute.Root) TvTokens.SidebarCollapsedWidth else 0.dp),
@@ -150,6 +152,7 @@ private fun TvRouteContent(
     sidebarOpen: Boolean,
     navigator: TvNavigator,
     onOpenSidebar: () -> Unit,
+    onSwitchToMobile: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val rootModifier = modifier.onKeyEvent { event ->
@@ -250,6 +253,7 @@ private fun TvRouteContent(
                 scopeKey = route.focusScope,
                 focusRegistry = focusRegistry,
                 focusRequestToken = focusRequestToken,
+                onSwitchToMobile = onSwitchToMobile,
                 modifier = rootModifier,
             )
         }

@@ -7,7 +7,10 @@ import app.nudroidlabs.nustrim.tv.shell.TvShell
 import app.nudroidlabs.nustrim.tv.theme.NustrimTvTheme
 
 @Composable
-fun TvApp(onExit: () -> Unit) {
+fun TvApp(
+    onExit: () -> Unit,
+    onSwitchToMobile: () -> Unit,
+) {
     val navigator = rememberTvNavigator()
     val focusRegistry = rememberTvFocusRegistry()
 
@@ -16,6 +19,7 @@ fun TvApp(onExit: () -> Unit) {
             navigator = navigator,
             focusRegistry = focusRegistry,
             onExit = onExit,
+            onSwitchToMobile = onSwitchToMobile,
         )
     }
 }

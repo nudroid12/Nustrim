@@ -14,6 +14,7 @@ enum class SubtitleDisplayMode {
 
 class UiPreferences(context: Context) {
     private val preferences = context.getSharedPreferences("nustrim_ui", Context.MODE_PRIVATE)
+    private val layoutPreferences = context.getSharedPreferences("nustrim_tv_layout", Context.MODE_PRIVATE)
 
     var interfaceMode: InterfaceMode?
         get() = preferences.getString(KEY_INTERFACE_MODE, null)
@@ -87,6 +88,14 @@ class UiPreferences(context: Context) {
             ?.let { stored -> runCatching { SubtitleDisplayMode.valueOf(stored) }.getOrNull() }
             ?: SubtitleDisplayMode.SHOW_ALL
         set(value) = preferences.edit().putString(KEY_SUBTITLE_DISPLAY_MODE, value.name).apply()
+
+    var subtitleFontSize: Int
+        get() = layoutPreferences.getInt(KEY_SUBTITLE_FONT_SIZE, 18).coerceIn(12, 32)
+        set(value) = layoutPreferences.edit().putInt(KEY_SUBTITLE_FONT_SIZE, value.coerceIn(12, 32)).apply()
+
+    var subtitleBold: Boolean
+        get() = layoutPreferences.getBoolean(KEY_SUBTITLE_BOLD, false)
+        set(value) = layoutPreferences.edit().putBoolean(KEY_SUBTITLE_BOLD, value).apply()
 
     var catalogOrder: List<String>
         get() = preferences.getString(KEY_CATALOG_ORDER, "")
@@ -215,6 +224,8 @@ class UiPreferences(context: Context) {
         private const val KEY_TRAKT_REFRESH_TOKEN = "trakt_refresh_token"
         private const val KEY_TRAKT_EXPIRES_AT = "trakt_expires_at"
         private const val KEY_TRAKT_USERNAME = "trakt_username"
+        private const val KEY_SUBTITLE_FONT_SIZE = "subtitle_font_size"
+        private const val KEY_SUBTITLE_BOLD = "subtitle_bold"
 
         private val DEFAULT_MDBLIST_PROVIDERS = setOf(
             "imdb",

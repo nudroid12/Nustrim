@@ -9,6 +9,7 @@ enum class TvSettingsCategory(val label: String, val subtitle: String) {
     SUBTITLES("Subtitles", "Language and visibility"),
     CONTENT("Content", "Installed source management"),
     INTEGRATIONS("Integrations", "Metadata, ratings and tracking"),
+    LOCAL_DATA("Local data", "Backup and restore"),
     ADVANCED("Advanced", "Developer and diagnostic controls"),
     ABOUT("About", "Version and update information"),
 }
@@ -21,15 +22,36 @@ data class TvSettingsSnapshot(
     val subtitlePreferredLanguage: String,
     val subtitleSecondPreferredLanguage: String,
     val subtitleDisplayMode: SubtitleDisplayMode,
+    val subtitleFontSize: Int,
+    val subtitleBold: Boolean,
     val sources: List<InstalledSource>,
+    val catalogs: List<TvSettingsCatalog>,
+    val catalogsLoading: Boolean,
     val developerMode: Boolean,
     val developerDiagnostics: Boolean,
     val tmdbConfigured: Boolean,
     val tmdbEnabled: Boolean,
     val mdbListConfigured: Boolean,
     val mdbListEnabled: Boolean,
+    val mdbListProviders: Map<String, Boolean>,
     val traktConnected: Boolean,
+    val traktUsername: String,
+    val diagnosticsLineCount: Int,
+    val statusMessage: String,
 )
+
+data class TvSettingsCatalog(
+    val key: String,
+    val title: String,
+    val sourceName: String,
+    val visible: Boolean,
+)
+
+sealed interface TvSettingsEditor {
+    data class Tmdb(val credential: String) : TvSettingsEditor
+    data class MdbList(val apiKey: String) : TvSettingsEditor
+    data class Trakt(val clientId: String, val clientSecret: String) : TvSettingsEditor
+}
 
 sealed interface TvSettingsUpdateState {
     data object Idle : TvSettingsUpdateState
@@ -49,5 +71,22 @@ internal val TV_SUBTITLE_LANGUAGES = listOf(
     "zh" to "Chinese",
     "ja" to "Japanese",
     "ko" to "Korean",
+    "th" to "Thai",
     "ar" to "Arabic",
+    "es" to "Spanish",
+    "fr" to "French",
+    "de" to "German",
+)
+
+internal val TV_MDBLIST_PROVIDERS = listOf(
+    "imdb" to "IMDb",
+    "tmdb" to "TMDB",
+    "tomatoes" to "Rotten Tomatoes",
+    "metacritic" to "Metacritic",
+    "trakt" to "Trakt",
+    "letterboxd" to "Letterboxd",
+    "audience" to "Audience",
+    "mal" to "MyAnimeList",
+    "metacriticuser" to "Metacritic User",
+    "rogerebert" to "Roger Ebert",
 )

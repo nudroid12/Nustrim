@@ -27,8 +27,10 @@ import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -78,11 +80,27 @@ internal fun TvSettingsScreen(
     onCyclePreferredLanguage: () -> Unit,
     onCycleSecondLanguage: () -> Unit,
     onToggleSubtitleDisplayMode: () -> Unit,
+    onDecreaseSubtitleFontSize: () -> Unit,
+    onIncreaseSubtitleFontSize: () -> Unit,
+    onToggleSubtitleBold: () -> Unit,
     onToggleSource: (InstalledSource) -> Unit,
+    onToggleCatalog: (TvSettingsCatalog) -> Unit,
+    onMoveCatalog: (TvSettingsCatalog, Int) -> Unit,
+    onResetCatalogs: () -> Unit,
     onToggleTmdb: () -> Unit,
+    onEditTmdb: () -> Unit,
     onToggleMdbList: () -> Unit,
+    onEditMdbList: () -> Unit,
+    onToggleMdbListProvider: (String) -> Unit,
+    onEditTrakt: () -> Unit,
+    onDisconnectTrakt: () -> Unit,
+    onCopyBackup: () -> Unit,
+    onRestoreBackup: () -> Unit,
     onToggleDeveloperMode: () -> Unit,
     onToggleDeveloperDiagnostics: () -> Unit,
+    onCopyDiagnostics: () -> Unit,
+    onClearDiagnostics: () -> Unit,
+    onSwitchToMobile: () -> Unit,
     onUpdateAction: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -141,11 +159,27 @@ internal fun TvSettingsScreen(
                 onCyclePreferredLanguage = onCyclePreferredLanguage,
                 onCycleSecondLanguage = onCycleSecondLanguage,
                 onToggleSubtitleDisplayMode = onToggleSubtitleDisplayMode,
+                onDecreaseSubtitleFontSize = onDecreaseSubtitleFontSize,
+                onIncreaseSubtitleFontSize = onIncreaseSubtitleFontSize,
+                onToggleSubtitleBold = onToggleSubtitleBold,
                 onToggleSource = onToggleSource,
+                onToggleCatalog = onToggleCatalog,
+                onMoveCatalog = onMoveCatalog,
+                onResetCatalogs = onResetCatalogs,
                 onToggleTmdb = onToggleTmdb,
+                onEditTmdb = onEditTmdb,
                 onToggleMdbList = onToggleMdbList,
+                onEditMdbList = onEditMdbList,
+                onToggleMdbListProvider = onToggleMdbListProvider,
+                onEditTrakt = onEditTrakt,
+                onDisconnectTrakt = onDisconnectTrakt,
+                onCopyBackup = onCopyBackup,
+                onRestoreBackup = onRestoreBackup,
                 onToggleDeveloperMode = onToggleDeveloperMode,
                 onToggleDeveloperDiagnostics = onToggleDeveloperDiagnostics,
+                onCopyDiagnostics = onCopyDiagnostics,
+                onClearDiagnostics = onClearDiagnostics,
+                onSwitchToMobile = onSwitchToMobile,
                 onUpdateAction = onUpdateAction,
                 modifier = Modifier.weight(1f).fillMaxHeight(),
             )
@@ -260,11 +294,27 @@ private fun SettingsDetailPane(
     onCyclePreferredLanguage: () -> Unit,
     onCycleSecondLanguage: () -> Unit,
     onToggleSubtitleDisplayMode: () -> Unit,
+    onDecreaseSubtitleFontSize: () -> Unit,
+    onIncreaseSubtitleFontSize: () -> Unit,
+    onToggleSubtitleBold: () -> Unit,
     onToggleSource: (InstalledSource) -> Unit,
+    onToggleCatalog: (TvSettingsCatalog) -> Unit,
+    onMoveCatalog: (TvSettingsCatalog, Int) -> Unit,
+    onResetCatalogs: () -> Unit,
     onToggleTmdb: () -> Unit,
+    onEditTmdb: () -> Unit,
     onToggleMdbList: () -> Unit,
+    onEditMdbList: () -> Unit,
+    onToggleMdbListProvider: (String) -> Unit,
+    onEditTrakt: () -> Unit,
+    onDisconnectTrakt: () -> Unit,
+    onCopyBackup: () -> Unit,
+    onRestoreBackup: () -> Unit,
     onToggleDeveloperMode: () -> Unit,
     onToggleDeveloperDiagnostics: () -> Unit,
+    onCopyDiagnostics: () -> Unit,
+    onClearDiagnostics: () -> Unit,
+    onSwitchToMobile: () -> Unit,
     onUpdateAction: () -> Unit,
     modifier: Modifier,
 ) {
@@ -381,6 +431,48 @@ private fun SettingsDetailPane(
                             onClick = onToggleSubtitleDisplayMode,
                         )
                     }
+                    item("subtitle-size-down") {
+                        SettingsActionRow(
+                            title = "Subtitle font size",
+                            subtitle = "Decrease the default subtitle size used by the player.",
+                            value = "${snapshot.subtitleFontSize} sp  −",
+                            enabled = snapshot.subtitleFontSize > 12,
+                            anchorKey = "settings:subtitles:size-down",
+                            category = category,
+                            memory = memory,
+                            scopeKey = scopeKey,
+                            focusRegistry = focusRegistry,
+                            onClick = onDecreaseSubtitleFontSize,
+                        )
+                    }
+                    item("subtitle-size-up") {
+                        SettingsActionRow(
+                            title = "Subtitle font size",
+                            subtitle = "Increase the default subtitle size used by the player.",
+                            value = "${snapshot.subtitleFontSize} sp  +",
+                            enabled = snapshot.subtitleFontSize < 32,
+                            anchorKey = "settings:subtitles:size-up",
+                            category = category,
+                            memory = memory,
+                            scopeKey = scopeKey,
+                            focusRegistry = focusRegistry,
+                            onClick = onIncreaseSubtitleFontSize,
+                        )
+                    }
+                    item("subtitle-bold") {
+                        SettingsActionRow(
+                            title = "Bold subtitles",
+                            subtitle = "Use bold text for subtitles by default.",
+                            value = onOff(snapshot.subtitleBold),
+                            checked = snapshot.subtitleBold,
+                            anchorKey = "settings:subtitles:bold",
+                            category = category,
+                            memory = memory,
+                            scopeKey = scopeKey,
+                            focusRegistry = focusRegistry,
+                            onClick = onToggleSubtitleBold,
+                        )
+                    }
                 }
 
                 TvSettingsCategory.CONTENT -> {
@@ -400,17 +492,80 @@ private fun SettingsDetailPane(
                             onClick = { onToggleSource(source) },
                         )
                     }
+                    item("catalog-layout-heading") {
+                        SettingsInfoCard(
+                            title = "Home catalog layout",
+                            lines = listOf(
+                                "Rows" to if (snapshot.catalogsLoading) "Loading..." else snapshot.catalogs.size.toString(),
+                                "Control" to "Visibility and order",
+                            ),
+                        )
+                    }
+                    item("catalog-layout-reset") {
+                        SettingsActionRow(
+                            title = "Reset catalog layout",
+                            subtitle = "Restore the provider order and show every catalog row.",
+                            value = "Reset",
+                            anchorKey = "settings:content:catalog-reset",
+                            category = category,
+                            memory = memory,
+                            scopeKey = scopeKey,
+                            focusRegistry = focusRegistry,
+                            onClick = onResetCatalogs,
+                        )
+                    }
+                    items(snapshot.catalogs, key = { "catalog:${it.key}" }) { catalog ->
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            SettingsActionRow(
+                                title = catalog.title,
+                                subtitle = catalog.sourceName,
+                                value = if (catalog.visible) "Visible" else "Hidden",
+                                checked = catalog.visible,
+                                anchorKey = "settings:content:catalog:${catalog.key}",
+                                category = category,
+                                memory = memory,
+                                scopeKey = scopeKey,
+                                focusRegistry = focusRegistry,
+                                onClick = { onToggleCatalog(catalog) },
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                SettingsCompactAction(
+                                    label = "Move up",
+                                    onClick = { onMoveCatalog(catalog, -1) },
+                                    modifier = Modifier.weight(1f),
+                                )
+                                SettingsCompactAction(
+                                    label = "Move down",
+                                    onClick = { onMoveCatalog(catalog, 1) },
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
+                        }
+                    }
                 }
 
                 TvSettingsCategory.INTEGRATIONS -> {
+                    item("integration-tmdb-credential") {
+                        SettingsActionRow(
+                            title = "TMDB credential",
+                            subtitle = "Enter or replace the API key or read token on this TV.",
+                            value = if (snapshot.tmdbConfigured) "Configured" else "Set up",
+                            anchorKey = settingsFirstDetailAnchorKey(category),
+                            category = category,
+                            memory = memory,
+                            scopeKey = scopeKey,
+                            focusRegistry = focusRegistry,
+                            onClick = onEditTmdb,
+                        )
+                    }
                     item("integration-tmdb") {
                         SettingsActionRow(
                             title = "TMDB enrichment",
-                            subtitle = if (snapshot.tmdbConfigured) "Metadata credential is configured." else "Add a credential in Mobile settings first.",
+                            subtitle = if (snapshot.tmdbConfigured) "Metadata credential is configured." else "Set the credential above first.",
                             value = if (!snapshot.tmdbConfigured) "Not configured" else onOff(snapshot.tmdbEnabled),
                             checked = snapshot.tmdbEnabled,
                             enabled = snapshot.tmdbConfigured,
-                            anchorKey = settingsFirstDetailAnchorKey(category),
+                            anchorKey = "settings:integrations:tmdb-toggle",
                             category = category,
                             memory = memory,
                             scopeKey = scopeKey,
@@ -418,10 +573,23 @@ private fun SettingsDetailPane(
                             onClick = onToggleTmdb,
                         )
                     }
+                    item("integration-mdblist-credential") {
+                        SettingsActionRow(
+                            title = "MDBList API key",
+                            subtitle = "Enter or replace the API key on this TV.",
+                            value = if (snapshot.mdbListConfigured) "Configured" else "Set up",
+                            anchorKey = "settings:integrations:mdblist-key",
+                            category = category,
+                            memory = memory,
+                            scopeKey = scopeKey,
+                            focusRegistry = focusRegistry,
+                            onClick = onEditMdbList,
+                        )
+                    }
                     item("integration-mdblist") {
                         SettingsActionRow(
                             title = "MDBList ratings",
-                            subtitle = if (snapshot.mdbListConfigured) "Ratings credential is configured." else "Add an API key in Mobile settings first.",
+                            subtitle = if (snapshot.mdbListConfigured) "Ratings credential is configured." else "Set the API key above first.",
                             value = if (!snapshot.mdbListConfigured) "Not configured" else onOff(snapshot.mdbListEnabled),
                             checked = snapshot.mdbListEnabled,
                             enabled = snapshot.mdbListConfigured,
@@ -433,19 +601,77 @@ private fun SettingsDetailPane(
                             onClick = onToggleMdbList,
                         )
                     }
+                    items(TV_MDBLIST_PROVIDERS, key = { "mdblist:${it.first}" }) { (id, label) ->
+                        val enabled = snapshot.mdbListProviders[id] == true
+                        SettingsActionRow(
+                            title = "MDBList: $label",
+                            subtitle = "Choose whether this rating is shown on Details.",
+                            value = onOff(enabled),
+                            checked = enabled,
+                            enabled = snapshot.mdbListConfigured && snapshot.mdbListEnabled,
+                            anchorKey = "settings:integrations:mdblist:$id",
+                            category = category,
+                            memory = memory,
+                            scopeKey = scopeKey,
+                            focusRegistry = focusRegistry,
+                            onClick = { onToggleMdbListProvider(id) },
+                        )
+                    }
                     item("integration-trakt") {
                         SettingsActionRow(
                             title = "Trakt",
-                            subtitle = "Connection is managed in Mobile settings.",
-                            value = if (snapshot.traktConnected) "Connected" else "Not connected",
-                            enabled = false,
+                            subtitle = if (snapshot.traktConnected) {
+                                snapshot.traktUsername.takeIf { it.isNotBlank() }?.let { "Connected as $it" } ?: "Connected"
+                            } else {
+                                "Enter your Trakt application credentials and connect with a device code."
+                            },
+                            value = if (snapshot.traktConnected) "Disconnect" else "Set up",
                             anchorKey = "settings:integrations:trakt",
                             category = category,
                             memory = memory,
                             scopeKey = scopeKey,
                             focusRegistry = focusRegistry,
-                            onClick = {},
+                            onClick = if (snapshot.traktConnected) onDisconnectTrakt else onEditTrakt,
                         )
+                    }
+                    if (snapshot.statusMessage.isNotBlank()) {
+                        item("integration-status") {
+                            SettingsInfoCard("Status", listOf("Result" to snapshot.statusMessage))
+                        }
+                    }
+                }
+
+                TvSettingsCategory.LOCAL_DATA -> {
+                    item("data-copy") {
+                        SettingsActionRow(
+                            title = "Copy backup",
+                            subtitle = "Copy addons, library, watch progress and UI settings. API keys are excluded.",
+                            value = "Copy",
+                            anchorKey = settingsFirstDetailAnchorKey(category),
+                            category = category,
+                            memory = memory,
+                            scopeKey = scopeKey,
+                            focusRegistry = focusRegistry,
+                            onClick = onCopyBackup,
+                        )
+                    }
+                    item("data-restore") {
+                        SettingsActionRow(
+                            title = "Restore backup",
+                            subtitle = "Restore a Nustrim backup currently held in the Android clipboard.",
+                            value = "Restore",
+                            anchorKey = "settings:data:restore",
+                            category = category,
+                            memory = memory,
+                            scopeKey = scopeKey,
+                            focusRegistry = focusRegistry,
+                            onClick = onRestoreBackup,
+                        )
+                    }
+                    if (snapshot.statusMessage.isNotBlank()) {
+                        item("data-status") {
+                            SettingsInfoCard("Status", listOf("Result" to snapshot.statusMessage))
+                        }
                     }
                 }
 
@@ -479,9 +705,50 @@ private fun SettingsDetailPane(
                             onClick = onToggleDeveloperDiagnostics,
                         )
                     }
+                    item("advanced-copy-log") {
+                        SettingsActionRow(
+                            title = "Copy diagnostics log",
+                            subtitle = "${snapshot.diagnosticsLineCount} runtime diagnostic line(s).",
+                            value = "Copy",
+                            enabled = snapshot.developerMode && snapshot.diagnosticsLineCount > 0,
+                            anchorKey = "settings:advanced:copy-log",
+                            category = category,
+                            memory = memory,
+                            scopeKey = scopeKey,
+                            focusRegistry = focusRegistry,
+                            onClick = onCopyDiagnostics,
+                        )
+                    }
+                    item("advanced-clear-log") {
+                        SettingsActionRow(
+                            title = "Clear diagnostics log",
+                            subtitle = "Remove the in-memory troubleshooting log.",
+                            value = "Clear",
+                            enabled = snapshot.developerMode && snapshot.diagnosticsLineCount > 0,
+                            anchorKey = "settings:advanced:clear-log",
+                            category = category,
+                            memory = memory,
+                            scopeKey = scopeKey,
+                            focusRegistry = focusRegistry,
+                            onClick = onClearDiagnostics,
+                        )
+                    }
                 }
 
                 TvSettingsCategory.ABOUT -> {
+                    item("about-interface") {
+                        SettingsActionRow(
+                            title = "Switch to Mobile interface",
+                            subtitle = "Leave the remote-first TV layout and open the touch-first interface.",
+                            value = "Switch",
+                            anchorKey = settingsFirstDetailAnchorKey(category),
+                            category = category,
+                            memory = memory,
+                            scopeKey = scopeKey,
+                            focusRegistry = focusRegistry,
+                            onClick = onSwitchToMobile,
+                        )
+                    }
                     item("about-version") {
                         SettingsInfoCard(
                             title = "Nustrim",
@@ -501,7 +768,7 @@ private fun SettingsDetailPane(
                             enabled = true,
                             loading = updateState is TvSettingsUpdateState.Checking ||
                                 updateState is TvSettingsUpdateState.Downloading,
-                            anchorKey = settingsFirstDetailAnchorKey(category),
+                            anchorKey = "settings:about:update",
                             category = category,
                             memory = memory,
                             scopeKey = scopeKey,
@@ -633,6 +900,17 @@ private fun SettingsToggleIndicator(checked: Boolean, focused: Boolean, enabled:
 }
 
 @Composable
+private fun SettingsCompactAction(
+    label: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    OutlinedButton(onClick = onClick, modifier = modifier) {
+        Text(label, maxLines = 1)
+    }
+}
+
+@Composable
 private fun SettingsInfoCard(title: String, lines: List<Pair<String, String>>) {
     Column(
         modifier = Modifier
@@ -658,6 +936,7 @@ private fun settingsCategoryIcon(category: TvSettingsCategory): ImageVector = wh
     TvSettingsCategory.SUBTITLES -> Icons.Default.ClosedCaption
     TvSettingsCategory.CONTENT -> Icons.Default.GridView
     TvSettingsCategory.INTEGRATIONS -> Icons.Default.Link
+    TvSettingsCategory.LOCAL_DATA -> Icons.Default.Save
     TvSettingsCategory.ADVANCED -> Icons.Default.Build
     TvSettingsCategory.ABOUT -> Icons.Default.Info
 }

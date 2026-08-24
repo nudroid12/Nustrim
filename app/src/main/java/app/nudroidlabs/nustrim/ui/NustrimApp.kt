@@ -749,6 +749,7 @@ fun NustrimApp() {
             val physicalTvDevice = rememberIsPhysicalTv()
             if (tvModeSessionActive || interfaceMode == InterfaceMode.TV) {
                 TvApp(
+                    onSwitchToMobile = { switchInterfaceMode(InterfaceMode.MOBILE) },
                     onExit = {
                         if (physicalTvDevice) {
                             activity?.finish()
