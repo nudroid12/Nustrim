@@ -257,6 +257,7 @@ fun TvSettingsEntry(
             preferences.subtitleBold = !snapshot.subtitleBold
             refresh()
         },
+        onAddSource = { editor = TvSettingsEditor.Addon() },
         onToggleSource = { source ->
             sourceStore.setEnabled(source.url, !source.enabled)
             reloadCatalogs()
@@ -444,6 +445,7 @@ fun TvSettingsEntry(
             onDismiss = { editor = null },
             onSave = { first, second ->
                 when (active) {
+                    is TvSettingsEditor.Addon -> Unit
                     is TvSettingsEditor.Tmdb -> {
                         preferences.tmdbApiKey = first
                         preferences.tmdbEnrichmentEnabled = first.isNotBlank()
@@ -466,6 +468,25 @@ fun TvSettingsEntry(
             onTestOrConnect = { first, second ->
                 coroutineScope.launch {
                     when (active) {
+                        is TvSettingsEditor.Addon -> {
+                            editor = TvSettingsEditor.Addon(first, "Checking add-on...")
+                            sourceEngine.open(
+                                first,
+                                onSuccess = {
+                                    sourceStore.add(first)
+                                    statusMessage = "Add-on added."
+                                    editor = null
+                                    reloadCatalogs()
+                                    refresh()
+                                },
+                                onError = { error ->
+                                    editor = TvSettingsEditor.Addon(
+                                        first,
+                                        error.message.orEmpty().ifBlank { "Unable to open this add-on URL." },
+                                    )
+                                },
+                            )
+                        }
                         is TvSettingsEditor.Tmdb -> {
                             statusMessage = "Testing TMDB..."
                             TmdbClient.validate(first).fold(

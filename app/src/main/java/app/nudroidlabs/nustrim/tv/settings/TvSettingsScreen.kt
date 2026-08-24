@@ -29,7 +29,6 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Reorder
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Icon
@@ -84,6 +83,7 @@ internal fun TvSettingsScreen(
     onDecreaseSubtitleFontSize: () -> Unit,
     onIncreaseSubtitleFontSize: () -> Unit,
     onToggleSubtitleBold: () -> Unit,
+    onAddSource: () -> Unit,
     onToggleSource: (InstalledSource) -> Unit,
     onToggleCatalog: (TvSettingsCatalog) -> Unit,
     onMoveCatalog: (TvSettingsCatalog, Int) -> Unit,
@@ -106,6 +106,7 @@ internal fun TvSettingsScreen(
     modifier: Modifier = Modifier,
 ) {
     var category by remember(scopeKey) { mutableStateOf(memory.selectedCategory) }
+    var contentManagerSection by remember(scopeKey) { mutableStateOf(memory.contentManagerSection) }
     val fallback = memory.lastDetailAnchor[category] ?: settingsRailAnchorKey(category)
 
     TvFocusRestoreEffect(
@@ -163,6 +164,12 @@ internal fun TvSettingsScreen(
                 onDecreaseSubtitleFontSize = onDecreaseSubtitleFontSize,
                 onIncreaseSubtitleFontSize = onIncreaseSubtitleFontSize,
                 onToggleSubtitleBold = onToggleSubtitleBold,
+                contentManagerSection = contentManagerSection,
+                onContentManagerSectionSelected = {
+                    contentManagerSection = it
+                    memory.contentManagerSection = it
+                },
+                onAddSource = onAddSource,
                 onToggleSource = onToggleSource,
                 onToggleCatalog = onToggleCatalog,
                 onMoveCatalog = onMoveCatalog,
@@ -298,6 +305,9 @@ private fun SettingsDetailPane(
     onDecreaseSubtitleFontSize: () -> Unit,
     onIncreaseSubtitleFontSize: () -> Unit,
     onToggleSubtitleBold: () -> Unit,
+    contentManagerSection: TvContentManagerSection,
+    onContentManagerSectionSelected: (TvContentManagerSection) -> Unit,
+    onAddSource: () -> Unit,
     onToggleSource: (InstalledSource) -> Unit,
     onToggleCatalog: (TvSettingsCatalog) -> Unit,
     onMoveCatalog: (TvSettingsCatalog, Int) -> Unit,
@@ -324,6 +334,18 @@ private fun SettingsDetailPane(
         Spacer(Modifier.height(4.dp))
         Text(category.subtitle, color = Color(0xFF8D9099), fontSize = 13.sp)
         Spacer(Modifier.height(20.dp))
+
+        if (category == TvSettingsCategory.CONTENT) {
+            ContentManagerTabs(
+                selected = contentManagerSection,
+                category = category,
+                memory = memory,
+                scopeKey = scopeKey,
+                focusRegistry = focusRegistry,
+                onSelected = onContentManagerSectionSelected,
+            )
+            Spacer(Modifier.height(14.dp))
+        }
 
         val listState = rememberLazyListState()
         LazyColumn(
@@ -477,72 +499,87 @@ private fun SettingsDetailPane(
                 }
 
                 TvSettingsCategory.CONTENT -> {
-                    val visible = snapshot.sources
-                    items(visible, key = { it.url }) { source ->
-                        val first = source === visible.firstOrNull()
-                        SettingsActionRow(
-                            title = sourceDisplayName(source),
-                            subtitle = source.url,
-                            value = onOff(source.enabled),
-                            checked = source.enabled,
-                            anchorKey = if (first) settingsFirstDetailAnchorKey(category) else "settings:content:${source.url}",
-                            category = category,
-                            memory = memory,
-                            scopeKey = scopeKey,
-                            focusRegistry = focusRegistry,
-                            onClick = { onToggleSource(source) },
-                        )
-                    }
-                }
+                    when (contentManagerSection) {
+                        TvContentManagerSection.ADDONS -> {
+                            item("content-add-url") {
+                                SettingsActionRow(
+                                    title = "Add add-on URL",
+                                    subtitle = "Enter a Stremio manifest or repository URL.",
+                                    value = "Add",
+                                    anchorKey = "settings:content:add-url",
+                                    category = category,
+                                    memory = memory,
+                                    scopeKey = scopeKey,
+                                    focusRegistry = focusRegistry,
+                                    onClick = onAddSource,
+                                )
+                            }
+                            items(snapshot.sources, key = { "source:${it.url}" }) { source ->
+                                SettingsActionRow(
+                                    title = sourceDisplayName(source),
+                                    subtitle = source.url,
+                                    value = onOff(source.enabled),
+                                    checked = source.enabled,
+                                    anchorKey = "settings:content:${source.url}",
+                                    category = category,
+                                    memory = memory,
+                                    scopeKey = scopeKey,
+                                    focusRegistry = focusRegistry,
+                                    onClick = { onToggleSource(source) },
+                                )
+                            }
+                        }
 
-                TvSettingsCategory.CATALOG_ORDER -> {
-                    item("catalog-layout-heading") {
-                        SettingsInfoCard(
-                            title = "Home catalogue order",
-                            lines = listOf(
-                                "Rows" to if (snapshot.catalogsLoading) "Loading..." else snapshot.catalogs.size.toString(),
-                                "Control" to "Visibility and order",
-                            ),
-                        )
-                    }
-                    item("catalog-layout-reset") {
-                        SettingsActionRow(
-                            title = "Reset catalogue order",
-                            subtitle = "Restore the provider order and show every catalogue row.",
-                            value = "Reset",
-                            anchorKey = settingsFirstDetailAnchorKey(category),
-                            category = category,
-                            memory = memory,
-                            scopeKey = scopeKey,
-                            focusRegistry = focusRegistry,
-                            onClick = onResetCatalogs,
-                        )
-                    }
-                    items(snapshot.catalogs, key = { "catalog:${it.key}" }) { catalog ->
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            SettingsActionRow(
-                                title = catalog.title,
-                                subtitle = catalog.sourceName,
-                                value = if (catalog.visible) "Visible" else "Hidden",
-                                checked = catalog.visible,
-                                anchorKey = "settings:catalog-order:${catalog.key}",
-                                category = category,
-                                memory = memory,
-                                scopeKey = scopeKey,
-                                focusRegistry = focusRegistry,
-                                onClick = { onToggleCatalog(catalog) },
-                            )
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                SettingsCompactAction(
-                                    label = "Move up",
-                                    onClick = { onMoveCatalog(catalog, -1) },
-                                    modifier = Modifier.weight(1f),
+                        TvContentManagerSection.CATALOG_ORDER -> {
+                            item("catalog-layout-heading") {
+                                SettingsInfoCard(
+                                    title = "Home catalogue order",
+                                    lines = listOf(
+                                        "Rows" to if (snapshot.catalogsLoading) "Loading..." else snapshot.catalogs.size.toString(),
+                                        "Control" to "Visibility and order",
+                                    ),
                                 )
-                                SettingsCompactAction(
-                                    label = "Move down",
-                                    onClick = { onMoveCatalog(catalog, 1) },
-                                    modifier = Modifier.weight(1f),
+                            }
+                            item("catalog-layout-reset") {
+                                SettingsActionRow(
+                                    title = "Reset catalogue order",
+                                    subtitle = "Restore the provider order and show every catalogue row.",
+                                    value = "Reset",
+                                    anchorKey = "settings:content:catalog-reset",
+                                    category = category,
+                                    memory = memory,
+                                    scopeKey = scopeKey,
+                                    focusRegistry = focusRegistry,
+                                    onClick = onResetCatalogs,
                                 )
+                            }
+                            items(snapshot.catalogs, key = { "catalog:${it.key}" }) { catalog ->
+                                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    SettingsActionRow(
+                                        title = catalog.title,
+                                        subtitle = catalog.sourceName,
+                                        value = if (catalog.visible) "Visible" else "Hidden",
+                                        checked = catalog.visible,
+                                        anchorKey = "settings:content:catalog:${catalog.key}",
+                                        category = category,
+                                        memory = memory,
+                                        scopeKey = scopeKey,
+                                        focusRegistry = focusRegistry,
+                                        onClick = { onToggleCatalog(catalog) },
+                                    )
+                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        SettingsCompactAction(
+                                            label = "Move up",
+                                            onClick = { onMoveCatalog(catalog, -1) },
+                                            modifier = Modifier.weight(1f),
+                                        )
+                                        SettingsCompactAction(
+                                            label = "Move down",
+                                            onClick = { onMoveCatalog(catalog, 1) },
+                                            modifier = Modifier.weight(1f),
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
@@ -787,6 +824,72 @@ private fun SettingsDetailPane(
 }
 
 @Composable
+private fun ContentManagerTabs(
+    selected: TvContentManagerSection,
+    category: TvSettingsCategory,
+    memory: TvSettingsMemory,
+    scopeKey: String,
+    focusRegistry: TvFocusRegistry,
+    onSelected: (TvContentManagerSection) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        TvContentManagerSection.entries.forEach { section ->
+            val anchorKey = if (section == TvContentManagerSection.ADDONS) {
+                settingsFirstDetailAnchorKey(category)
+            } else {
+                "settings:content:catalog-tab"
+            }
+            val anchor = rememberTvFocusAnchor(focusRegistry, scopeKey, anchorKey)
+            var focused by remember(section) { mutableStateOf(false) }
+            val active = selected == section
+            val foreground = if (focused) Color(0xFF101114) else Color.White
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(
+                        when {
+                            focused -> Color.White
+                            active -> Color(0xFF34373E)
+                            else -> Color(0xFF1B1D22)
+                        },
+                    )
+                    .border(1.dp, if (active) Color(0xFF666A73) else Color(0xFF30333A), RoundedCornerShape(12.dp))
+                    .tvFocusAnchor(anchor)
+                    .onFocusChanged {
+                        focused = it.isFocused
+                        if (it.isFocused) memory.lastDetailAnchor[category] = anchorKey
+                    }
+                    .onKeyEvent { event ->
+                        when {
+                            section == TvContentManagerSection.ADDONS &&
+                                event.type == KeyEventType.KeyDown && event.key == Key.DirectionLeft -> {
+                                focusRegistry.requestAnchor(scopeKey, settingsRailAnchorKey(category))
+                                true
+                            }
+                            event.type == KeyEventType.KeyDown &&
+                                (event.key == Key.DirectionCenter || event.key == Key.Enter) -> {
+                                onSelected(section)
+                                true
+                            }
+                            else -> false
+                        }
+                    }
+                    .clickable { onSelected(section) }
+                    .focusable()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(section.label, color = foreground, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+            }
+        }
+    }
+}
+
+@Composable
 private fun SettingsActionRow(
     title: String,
     subtitle: String,
@@ -939,7 +1042,6 @@ private fun settingsCategoryIcon(category: TvSettingsCategory): ImageVector = wh
     TvSettingsCategory.PLAYBACK -> Icons.Default.PlayArrow
     TvSettingsCategory.SUBTITLES -> Icons.Default.ClosedCaption
     TvSettingsCategory.CONTENT -> Icons.Default.GridView
-    TvSettingsCategory.CATALOG_ORDER -> Icons.Default.Reorder
     TvSettingsCategory.INTEGRATIONS -> Icons.Default.Link
     TvSettingsCategory.LOCAL_DATA -> Icons.Default.Save
     TvSettingsCategory.ADVANCED -> Icons.Default.Build

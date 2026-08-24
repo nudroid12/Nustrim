@@ -19,6 +19,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 
@@ -30,6 +31,7 @@ internal fun TvSettingsCredentialDialog(
     onTestOrConnect: (String, String) -> Unit,
 ) {
     val initialFirst = when (editor) {
+        is TvSettingsEditor.Addon -> editor.url
         is TvSettingsEditor.Tmdb -> editor.credential
         is TvSettingsEditor.MdbList -> editor.apiKey
         is TvSettingsEditor.Trakt -> editor.clientId
@@ -45,30 +47,45 @@ internal fun TvSettingsCredentialDialog(
     }
 
     val title = when (editor) {
+        is TvSettingsEditor.Addon -> "Add add-on"
         is TvSettingsEditor.Tmdb -> "TMDB credential"
         is TvSettingsEditor.MdbList -> "MDBList API key"
         is TvSettingsEditor.Trakt -> "Trakt application"
     }
     val firstLabel = when (editor) {
+        is TvSettingsEditor.Addon -> "Manifest or repository URL"
         is TvSettingsEditor.Tmdb -> "API key or read token"
         is TvSettingsEditor.MdbList -> "API key"
         is TvSettingsEditor.Trakt -> "Client ID"
     }
-    val action = if (editor is TvSettingsEditor.Trakt) "Connect" else "Test"
+    val action = when (editor) {
+        is TvSettingsEditor.Addon -> "Add"
+        is TvSettingsEditor.Trakt -> "Connect"
+        else -> "Test"
+    }
+    val description = if (editor is TvSettingsEditor.Addon) {
+        "Enter a Stremio manifest or repository URL. Nustrim checks it before adding it."
+    } else {
+        "Use the TV keyboard to enter your own credential. It is stored only on this device."
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(title) },
         text = {
             Column {
-                Text("Use the TV keyboard to enter your own credential. It is stored only on this device.")
+                Text(description)
                 Spacer(Modifier.height(12.dp))
                 OutlinedTextField(
                     value = first,
                     onValueChange = { first = it },
                     label = { Text(firstLabel) },
                     singleLine = true,
-                    visualTransformation = PasswordVisualTransformation(),
+                    visualTransformation = if (editor is TvSettingsEditor.Addon) {
+                        VisualTransformation.None
+                    } else {
+                        PasswordVisualTransformation()
+                    },
                     modifier = Modifier.fillMaxWidth().focusRequester(requester),
                 )
                 if (editor is TvSettingsEditor.Trakt) {
@@ -82,6 +99,10 @@ internal fun TvSettingsCredentialDialog(
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
+                if (editor is TvSettingsEditor.Addon && editor.message.isNotBlank()) {
+                    Spacer(Modifier.height(10.dp))
+                    Text(editor.message)
+                }
             }
         },
         confirmButton = {
@@ -92,8 +113,10 @@ internal fun TvSettingsCredentialDialog(
         },
         dismissButton = {
             Column {
-                OutlinedButton(onClick = { onSave(first.trim(), second.trim()) }) { Text("Save") }
-                Spacer(Modifier.height(4.dp))
+                if (editor !is TvSettingsEditor.Addon) {
+                    OutlinedButton(onClick = { onSave(first.trim(), second.trim()) }) { Text("Save") }
+                    Spacer(Modifier.height(4.dp))
+                }
                 OutlinedButton(onClick = onDismiss) { Text("Cancel") }
             }
         },

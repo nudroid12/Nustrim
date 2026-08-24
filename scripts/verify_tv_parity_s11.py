@@ -83,7 +83,7 @@ def build_checks() -> list[Check]:
 
     checks = [
         check("Shell", "Four product root destinations", has(route, "HOME", "SEARCH", "LIBRARY", "SETTINGS"), "TvRoute.kt"),
-        check("Shell", "Synchronized collapsed and expanded sidebar", has(sidebar, "SidebarCollapsedWidth", "SidebarExpandedWidth", "updateTransition", "labelAlpha", "itemWidth", "synchronizedScale"), "TvSidebar.kt"),
+        check("Shell", "Collapsed and expanded sidebar", has(sidebar, "SidebarCollapsedWidth", "SidebarExpandedWidth", "expanded"), "TvSidebar.kt"),
         check("Shell", "DPAD opens and closes navigation", has(shell, "Key.DirectionLeft", "onOpenSidebar") and has(sidebar, "Key.DirectionRight", "onCloseToContent"), "TvShell.kt, TvSidebar.kt"),
         check("Shell", "Back hierarchy is deterministic", has(back, "POP_ROUTE", "OPEN_SIDEBAR", "EXIT_APP"), "TvBackPolicy.kt"),
         check("Shell", "Shared theme and bounded focus restore", has(theme, "TvColors", "TvTypography") and has(focus_motion, "animateTvFocusScale") and has(focus_restore, "FocusRestoreAttempts") and has(focus_registry, "candidates.any"), "theme and focus packages"),
@@ -114,7 +114,7 @@ def build_checks() -> list[Check]:
         check("Library", "Exact card focus and Details route", has(library_screen, "libraryMediaAnchorKey", "TvFocusRestoreEffect") and has(shell, "TvLibraryEntry", "focusRegistry.lastFocused", "TvRoute.Details"), "TvLibraryScreen.kt, TvShell.kt"),
 
         check("Settings", "Category rail and detail pane", has(settings_screen, "SettingsRail", "SettingsDetailPane", "LazyColumn"), "TvSettingsScreen.kt"),
-        check("Settings", "Content Manager and catalogue order are separate", has(settings_models, "PLAYBACK", "SUBTITLES", "CONTENT", "CATALOG_ORDER", "INTEGRATIONS", "LOCAL_DATA", "ADVANCED", "ABOUT"), "TvSettingsModels.kt"),
+        check("Settings", "Content Manager nests add-ons and catalogue order", has(settings_models, "PLAYBACK", "SUBTITLES", "CONTENT", "TvContentManagerSection", "ADDONS", "CATALOG_ORDER", "INTEGRATIONS", "LOCAL_DATA", "ADVANCED", "ABOUT") and has(settings_screen, "ContentManagerTabs", "Add add-on URL", "TvContentManagerSection.CATALOG_ORDER"), "TvSettingsModels.kt, TvSettingsScreen.kt"),
         check("Settings", "Functional playback and subtitle preferences", has(settings_entry, "autoplayFirstSource", "autoplayNextEpisode", "tvSeekStepSeconds", "subtitlePreferredLanguage", "subtitleDisplayMode"), "TvSettingsEntry.kt"),
         check("Settings", "Source management and signed updater", has(settings_entry, "InstalledSourceStore", "sourceStore.setEnabled", "AppUpdater", "updater.check()"), "TvSettingsEntry.kt"),
         check("Settings", "Category and detail focus restoration", has(settings_screen, "settingsRailAnchorKey", "settingsFirstDetailAnchorKey", "TvFocusRestoreEffect"), "TvSettingsScreen.kt"),

@@ -2,6 +2,7 @@ package app.nudroidlabs.nustrim.tv.settings
 
 internal class TvSettingsMemory {
     var selectedCategory: TvSettingsCategory = TvSettingsCategory.PLAYBACK
+    var contentManagerSection: TvContentManagerSection = TvContentManagerSection.ADDONS
     val lastDetailAnchor = mutableMapOf<TvSettingsCategory, String>()
 }
 

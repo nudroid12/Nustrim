@@ -21,25 +21,44 @@ entry = read("app/src/main/java/app/nudroidlabs/nustrim/tv/settings/TvSettingsEn
 screen = read("app/src/main/java/app/nudroidlabs/nustrim/tv/settings/TvSettingsScreen.kt")
 models = read("app/src/main/java/app/nudroidlabs/nustrim/tv/settings/TvSettingsModels.kt")
 dialog = read("app/src/main/java/app/nudroidlabs/nustrim/tv/settings/TvSettingsCredentialDialog.kt")
+session = read("app/src/main/java/app/nudroidlabs/nustrim/tv/settings/TvSettingsSessionStore.kt")
 preferences = read("app/src/main/java/app/nudroidlabs/nustrim/ui/UiPreferences.kt")
 shell = read("app/src/main/java/app/nudroidlabs/nustrim/tv/shell/TvShell.kt")
 app = read("app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt")
 metadata = read(".nustrim-tv")
 gradle = read("app/build.gradle.kts")
 
-require("target version name", 'versionName = "0.57.13-tv-cleanroom-s12.14-sidebar-flicker"' in gradle)
-require("target version code", "versionCode = 136" in gradle)
-require("eight TV categories", len(re.findall(r'^    [A-Z_]+\("', models, re.MULTILINE)) == 8)
-require("Content Manager separated from catalogue order", 'CONTENT("Content Manager"' in models and "CATALOG_ORDER" in models)
+require("target version name", 'versionName = "0.57.14-tv-cleanroom-s12.15-content-manager-nesting"' in gradle)
+require("target version code", "versionCode = 137" in gradle)
+category_block = models.split("enum class TvSettingsCategory", 1)[1].split("}", 1)[0]
+require("seven TV categories", len(re.findall(r'^    [A-Z_]+\("', category_block, re.MULTILINE)) == 7)
+require(
+    "Content Manager contains add-ons and catalogue order",
+    'CONTENT("Content Manager"' in models
+    and "enum class TvContentManagerSection" in models
+    and 'ADDONS("Add-ons")' in models
+    and 'CATALOG_ORDER("Catalogue order")' in models
+    and "contentManagerSection" in session
+    and "ContentManagerTabs" in screen,
+)
 require("local data category", "LOCAL_DATA" in models and "TvSettingsCategory.LOCAL_DATA" in screen)
 require("complete subtitle languages", all(code in models for code in ['"th"', '"es"', '"fr"', '"de"']))
 require("subtitle font size shared", "var subtitleFontSize" in preferences and "onIncreaseSubtitleFontSize" in entry)
 require("subtitle bold shared", "var subtitleBold" in preferences and "onToggleSubtitleBold" in entry)
 require("source toggles preserved", "sourceStore.setEnabled" in entry)
+require(
+    "add-on URL is first add-on row and validated",
+    screen.index('item("content-add-url")') < screen.index('items(snapshot.sources')
+    and "TvSettingsEditor.Addon" in entry
+    and "sourceEngine.open" in entry
+    and "sourceStore.add(first)" in entry
+    and "Manifest or repository URL" in dialog,
+)
 require("catalogs load in parallel", "urls.forEach" in entry and "sourceEngine.open" in entry)
 require("catalog order", "preferences.catalogOrder = keys" in entry)
 require("catalog visibility", "preferences.setCatalogHidden" in entry)
 require("catalog reset", "preferences.resetCatalogLayout" in entry)
+require("catalog order nested under Content Manager", "TvContentManagerSection.CATALOG_ORDER" in screen)
 require("TMDB editor", "TvSettingsEditor.Tmdb" in entry and "TmdbClient.validate" in entry)
 require("MDBList editor", "TvSettingsEditor.MdbList" in entry and "MdbListClient.validate" in entry)
 require("MDBList providers", "TV_MDBLIST_PROVIDERS" in models and "setMdbListProviderEnabled" in entry)

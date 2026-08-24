@@ -7,12 +7,16 @@ import app.nudroidlabs.nustrim.ui.SubtitleDisplayMode
 enum class TvSettingsCategory(val label: String, val subtitle: String) {
     PLAYBACK("Playback", "Source and episode behaviour"),
     SUBTITLES("Subtitles", "Language and visibility"),
-    CONTENT("Content Manager", "Installed add-on management"),
-    CATALOG_ORDER("Catalogue order", "Home catalogue visibility and order"),
+    CONTENT("Content Manager", "Add-ons and Home catalogue order"),
     INTEGRATIONS("Integrations", "Metadata, ratings and tracking"),
     LOCAL_DATA("Local data", "Backup and restore"),
     ADVANCED("Advanced", "Developer and diagnostic controls"),
     ABOUT("About", "Version and update information"),
+}
+
+enum class TvContentManagerSection(val label: String) {
+    ADDONS("Add-ons"),
+    CATALOG_ORDER("Catalogue order"),
 }
 
 data class TvSettingsSnapshot(
@@ -49,6 +53,7 @@ data class TvSettingsCatalog(
 )
 
 sealed interface TvSettingsEditor {
+    data class Addon(val url: String = "", val message: String = "") : TvSettingsEditor
     data class Tmdb(val credential: String) : TvSettingsEditor
     data class MdbList(val apiKey: String) : TvSettingsEditor
     data class Trakt(val clientId: String, val clientSecret: String) : TvSettingsEditor
