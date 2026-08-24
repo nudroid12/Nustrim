@@ -1,6 +1,6 @@
 generation=cleanroom-v1
 reference=nuvio-tv-0.8.6-beta
-subsystem=12.5-player-final-polish
+subsystem=12.6-updater-focus
 status=release-candidate
 baseline=0.51.4-tv-cleanroom-s6.2-rollback
 preserve=source-provider-engine,stream-resolver,playback-engine,mobile-ui
@@ -48,6 +48,8 @@ settings-content-sources=enable-disable
 settings-update-check=enabled
 settings-update-download=sha256-verified
 settings-update-install=permission-aware
+settings-update-focus=retained-during-check-and-download
+settings-update-busy-action=idempotent
 settings-focus=category-and-detail-restoration
 global-polish=cleanroom-s10
 tv-theme=shared-colour,typography,spacing,motion

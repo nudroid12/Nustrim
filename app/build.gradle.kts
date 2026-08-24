@@ -16,8 +16,8 @@ android {
         applicationId = "app.nudroidlabs.nustrim"
         minSdk = 23
         targetSdk = 37
-        versionCode = 127
-        versionName = "0.57.4-tv-cleanroom-s12.5-player-final-polish"
+        versionCode = 128
+        versionName = "0.57.5-tv-cleanroom-s12.6-updater-focus"
     }
 
     val persistentUpdateSigning = if (

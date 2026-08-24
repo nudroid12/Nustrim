@@ -498,8 +498,7 @@ private fun SettingsDetailPane(
                             title = updateTitle(updateState),
                             subtitle = updateSubtitle(updateState),
                             value = updateValue(updateState),
-                            enabled = updateState !is TvSettingsUpdateState.Checking &&
-                                updateState !is TvSettingsUpdateState.Downloading,
+                            enabled = true,
                             loading = updateState is TvSettingsUpdateState.Checking ||
                                 updateState is TvSettingsUpdateState.Downloading,
                             anchorKey = settingsFirstDetailAnchorKey(category),
