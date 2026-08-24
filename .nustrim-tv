@@ -1,6 +1,6 @@
 generation=cleanroom-v1
 reference=nuvio-tv-0.8.6-beta
-subsystem=12.13-content-manager
+subsystem=12.14-sidebar-flicker
 status=release-candidate
 baseline=0.51.4-tv-cleanroom-s6.2-rollback
 preserve=source-provider-engine,stream-resolver,playback-engine,mobile-ui
@@ -16,6 +16,9 @@ home-continue-watching-card=landscape-progress
 home-continue-watching-action=details-backed-sources-resume
 home-poster-long-press=release-gated-title-actions
 home-poster-long-press-repeat=consumed-before-dialog
+sidebar-animation=single-transition
+sidebar-labels=alpha-offset-persistent-composition
+sidebar-focus-scale=synchronized-with-transition
 episode-domain=cleanroom-s3-accepted
 details=cleanroom-s12.2-episode-focus
 details-focus-restore=exact-season-and-episode

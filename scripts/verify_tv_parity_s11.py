@@ -83,7 +83,7 @@ def build_checks() -> list[Check]:
 
     checks = [
         check("Shell", "Four product root destinations", has(route, "HOME", "SEARCH", "LIBRARY", "SETTINGS"), "TvRoute.kt"),
-        check("Shell", "Collapsed and expanded sidebar", has(sidebar, "SidebarCollapsedWidth", "SidebarExpandedWidth", "expanded"), "TvSidebar.kt"),
+        check("Shell", "Synchronized collapsed and expanded sidebar", has(sidebar, "SidebarCollapsedWidth", "SidebarExpandedWidth", "updateTransition", "labelAlpha", "itemWidth", "synchronizedScale"), "TvSidebar.kt"),
         check("Shell", "DPAD opens and closes navigation", has(shell, "Key.DirectionLeft", "onOpenSidebar") and has(sidebar, "Key.DirectionRight", "onCloseToContent"), "TvShell.kt, TvSidebar.kt"),
         check("Shell", "Back hierarchy is deterministic", has(back, "POP_ROUTE", "OPEN_SIDEBAR", "EXIT_APP"), "TvBackPolicy.kt"),
         check("Shell", "Shared theme and bounded focus restore", has(theme, "TvColors", "TvTypography") and has(focus_motion, "animateTvFocusScale") and has(focus_restore, "FocusRestoreAttempts") and has(focus_registry, "candidates.any"), "theme and focus packages"),
