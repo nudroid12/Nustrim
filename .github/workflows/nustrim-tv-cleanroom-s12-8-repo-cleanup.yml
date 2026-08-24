@@ -1,0 +1,371 @@
+name: Nustrim TV Cleanroom S12.8 Repository Cleanup Auto Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nustrim-tv-cleanroom-s12-8-repo-cleanup
+  cancel-in-progress: false
+
+env:
+  LOCKED_CERT_SHA256: "30C625B9112CD04D43B631D6020D0D52E61695111B8E2125F29AD19651EB165D"
+  TARGET_VERSION_NAME: "0.57.7-tv-cleanroom-s12.8-repo-cleanup"
+  TARGET_VERSION_CODE: "130"
+
+jobs:
+  build-test-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Guard accepted S12.7 baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          current_build="$(sed -n -E 's/.*versionName[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' app/build.gradle.kts | head -1)"
+          current_marker="$(cat .nustrim-version 2>/dev/null || true)"
+          case "$current_build" in
+            "0.57.6-tv-cleanroom-s12.7-home-poster-scale"|"$TARGET_VERSION_NAME") ;;
+            *)
+              echo "::error::Unexpected baseline: $current_build"
+              exit 20
+              ;;
+          esac
+          test "$current_marker" = "$current_build" || {
+            echo "::error::Build version and .nustrim-version differ."
+            exit 21
+          }
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Gradle 9.5.0
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "9.5.0"
+
+      - name: Prepare permanent signing
+        shell: bash
+        env:
+          KEYSTORE_B64: ${{ secrets.NUSTRIM_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.NUSTRIM_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.NUSTRIM_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.NUSTRIM_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for name in KEYSTORE_B64 KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::Signing secret $name is missing."
+              exit 30
+            fi
+          done
+          KS="$RUNNER_TEMP/nustrim-release.jks"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$KS"
+          chmod 600 "$KS"
+          keytool -list -keystore "$KS" -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" >/dev/null
+          CERT="$(
+            keytool -exportcert -rfc -keystore "$KS" -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" |
+            openssl x509 -noout -fingerprint -sha256 |
+            cut -d= -f2 | tr -d ':' | tr '[:lower:]' '[:upper:]'
+          )"
+          test "$CERT" = "$LOCKED_CERT_SHA256" || {
+            echo "::error::Keystore certificate is not the locked Nustrim certificate."
+            exit 31
+          }
+          echo "NUSTRIM_KEYSTORE_PATH=$KS" >> "$GITHUB_ENV"
+          echo "NUSTRIM_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "NUSTRIM_KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
+          echo "NUSTRIM_KEY_PASSWORD=$KEY_PASSWORD" >> "$GITHUB_ENV"
+
+      - name: Apply exact S12.8 source
+        shell: bash
+        env:
+          SOURCE_PATCH_B64: "ZGlmZiAtLWdpdCBhLy5udXN0cmltLXR2IGIvLm51c3RyaW0tdHYKaW5kZXggZjI2MDgxMC4uMzY2NjcwNyAxMDA2NDQKLS0tIGEvLm51c3RyaW0tdHYKKysrIGIvLm51c3RyaW0tdHYKQEAgLTEsNiArMSw2IEBACiBnZW5lcmF0aW9uPWNsZWFucm9vbS12MQogcmVmZXJlbmNlPW51dmlvLXR2LTAuOC42LWJldGEKLXN1YnN5c3RlbT0xMi43LWhvbWUtcG9zdGVyLXNjYWxlCitzdWJzeXN0ZW09MTIuOC1yZXBvLWNsZWFudXAKIHN0YXR1cz1yZWxlYXNlLWNhbmRpZGF0ZQogYmFzZWxpbmU9MC41MS40LXR2LWNsZWFucm9vbS1zNi4yLXJvbGxiYWNrCiBwcmVzZXJ2ZT1zb3VyY2UtcHJvdmlkZXItZW5naW5lLHN0cmVhbS1yZXNvbHZlcixwbGF5YmFjay1lbmdpbmUsbW9iaWxlLXVpCkBAIC03MSw0ICs3MSw2IEBAIHN1YnRpdGxlLXByb3ZpZGVyLWxhYmVsPWVuYWJsZWQKIHN1YnRpdGxlLXN0eWxlPWZvbnQtc2l6ZS1hbmQtYm9sZC1wZXJzaXN0ZW50CiBiYWNrbG9nPWRldmljZS1wYXJpdHktYWNjZXB0YW5jZQogYXV0by1yZWxlYXNlPXBlcm1hbmVudC1zaWduZWQKLWxlZ2FjeS1lcGlzb2RlLWVuZ2luZT11bnVzZWQtYnktY2xlYW5yb29tLXR2CityZXBvLWNsZWFudXA9b2Jzb2xldGUtd29ya2Zsb3dzLHN0YWdlLXZlcmlmaWVycyx1bnJlZmVyZW5jZWQtY29yZQorcmVwby1jbGVhbnVwLXJlbW92ZWQtZmlsZXM9NDkKK2xlZ2FjeS1lcGlzb2RlLWVuZ2luZT1yZW1vdmVkCmRpZmYgLS1naXQgYS8ubnVzdHJpbS12ZXJzaW9uIGIvLm51c3RyaW0tdmVyc2lvbgppbmRleCA4NDJlOTJlLi43ZmRmYzMyIDEwMDY0NAotLS0gYS8ubnVzdHJpbS12ZXJzaW9uCisrKyBiLy5udXN0cmltLXZlcnNpb24KQEAgLTEgKzEgQEAKLTAuNTcuNi10di1jbGVhbnJvb20tczEyLjctaG9tZS1wb3N0ZXItc2NhbGUKKzAuNTcuNy10di1jbGVhbnJvb20tczEyLjgtcmVwby1jbGVhbnVwCmRpZmYgLS1naXQgYS9hcHAvYnVpbGQuZ3JhZGxlLmt0cyBiL2FwcC9idWlsZC5ncmFkbGUua3RzCmluZGV4IDc4ODA3NjIuLjUzNWJhNWEgMTAwNjQ0Ci0tLSBhL2FwcC9idWlsZC5ncmFkbGUua3RzCisrKyBiL2FwcC9idWlsZC5ncmFkbGUua3RzCkBAIC0xNiw4ICsxNiw4IEBAIGFuZHJvaWQgewogICAgICAgICBhcHBsaWNhdGlvbklkID0gImFwcC5udWRyb2lkbGFicy5udXN0cmltIgogICAgICAgICBtaW5TZGsgPSAyMwogICAgICAgICB0YXJnZXRTZGsgPSAzNwotICAgICAgICB2ZXJzaW9uQ29kZSA9IDEyOQotICAgICAgICB2ZXJzaW9uTmFtZSA9ICIwLjU3LjYtdHYtY2xlYW5yb29tLXMxMi43LWhvbWUtcG9zdGVyLXNjYWxlIgorICAgICAgICB2ZXJzaW9uQ29kZSA9IDEzMAorICAgICAgICB2ZXJzaW9uTmFtZSA9ICIwLjU3LjctdHYtY2xlYW5yb29tLXMxMi44LXJlcG8tY2xlYW51cCIKICAgICB9CiAKICAgICB2YWwgcGVyc2lzdGVudFVwZGF0ZVNpZ25pbmcgPSBpZiAoCmRpZmYgLS1naXQgYS9zY3JpcHRzL3ZlcmlmeV9yZXBvX2NsZWFudXBfczEyXzgucHkgYi9zY3JpcHRzL3ZlcmlmeV9yZXBvX2NsZWFudXBfczEyXzgucHkKbmV3IGZpbGUgbW9kZSAxMDA2NDQKaW5kZXggMDAwMDAwMC4uOTRjODQwNgotLS0gL2Rldi9udWxsCisrKyBiL3NjcmlwdHMvdmVyaWZ5X3JlcG9fY2xlYW51cF9zMTJfOC5weQpAQCAtMCwwICsxLDEyMiBAQAorIyEvdXNyL2Jpbi9lbnYgcHl0aG9uMworIiIiU3RhdGljIGNvbnRyYWN0cyBmb3IgdGhlIFMxMi44IHJlcG9zaXRvcnkgY2xlYW51cC4iIiIKKworZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCisKKworUk9PVCA9IFBhdGgoX19maWxlX18pLnJlc29sdmUoKS5wYXJlbnRzWzFdCisKK09CU09MRVRFX1dPUktGTE9XUyA9IHsKKyAgICAibnVzdHJpbS1jbGVhbi1ib290c3RyYXAtcmMyNy55bWwiLAorICAgICJudXN0cmltLXR2LWNsZWFucm9vbS1zMS12My55bWwiLAorICAgICJudXN0cmltLXR2LWNsZWFucm9vbS1zMTAtZ2xvYmFsLXBvbGlzaC55bWwiLAorICAgICJudXN0cmltLXR2LWNsZWFucm9vbS1zMTEtMS1zdWJ0aXRsZS1zeXN0ZW0tZml4ZWQtdjIueW1sIiwKKyAgICAibnVzdHJpbS10di1jbGVhbnJvb20tczExLTEtc3VidGl0bGUtc3lzdGVtLWZpeGVkLnltbCIsCisgICAgIm51c3RyaW0tdHYtY2xlYW5yb29tLXMxMS0xLXN1YnRpdGxlLXN5c3RlbS55bWwiLAorICAgICJudXN0cmltLXR2LWNsZWFucm9vbS1zMTEtcGFyaXR5LXFhLnltbCIsCisgICAgIm51c3RyaW0tdHYtY2xlYW5yb29tLXMxMi0xLXNvdXJjZXMtcHJvZ3Jlc3NpdmUueW1sIiwKKyAgICAibnVzdHJpbS10di1jbGVhbnJvb20tczEyLTItZGV0YWlscy1lcGlzb2RlLWZvY3VzLnltbCIsCisgICAgIm51c3RyaW0tdHYtY2xlYW5yb29tLXMxMi0zLXBsYXllci1wb3N0cGxheS55bWwiLAorICAgICJudXN0cmltLXR2LWNsZWFucm9vbS1zMTItNC1zdWJ0aXRsZS11cGRhdGVyLnltbCIsCisgICAgIm51c3RyaW0tdHYtY2xlYW5yb29tLXMxMi01LXBsYXllci1maW5hbC1wb2xpc2gueW1sIiwKKyAgICAibnVzdHJpbS10di1jbGVhbnJvb20tczEyLTYtdXBkYXRlci1mb2N1cy55bWwiLAorICAgICJudXN0cmltLXR2LWNsZWFucm9vbS1zMTItNy1ob21lLXBvc3Rlci1zY2FsZS55bWwiLAorICAgICJudXN0cmltLXR2LWNsZWFucm9vbS1zMi1ob21lLXYyLnltbCIsCisgICAgIm51c3RyaW0tdHYtY2xlYW5yb29tLXMyLWhvbWUueW1sIiwKKyAgICAibnVzdHJpbS10di1jbGVhbnJvb20tczMtZXBpc29kZXMtdjIueW1sIiwKKyAgICAibnVzdHJpbS10di1jbGVhbnJvb20tczMtZXBpc29kZXMueW1sIiwKKyAgICAibnVzdHJpbS10di1jbGVhbnJvb20tczQtZGV0YWlscy55bWwiLAorICAgICJudXN0cmltLXR2LWNsZWFucm9vbS1zNC4xLWVwaXNvZGUtdGl0bGUtZml4LXYyLnltbCIsCisgICAgIm51c3RyaW0tdHYtY2xlYW5yb29tLXM0LjEtZXBpc29kZS10aXRsZS1maXgueW1sIiwKKyAgICAibnVzdHJpbS10di1jbGVhbnJvb20tczQuMi1zZWFzb24tZm9jdXMueW1sIiwKKyAgICAibnVzdHJpbS10di1jbGVhbnJvb20tczQuMy1leGFjdC1lcGlzb2RlLXJldHVybi55bWwiLAorICAgICJudXN0cmltLXR2LWNsZWFucm9vbS1zNS1zb3VyY2VzLXYyLnltbCIsCisgICAgIm51c3RyaW0tdHYtY2xlYW5yb29tLXM1LXNvdXJjZXMueW1sIiwKKyAgICAibnVzdHJpbS10di1jbGVhbnJvb20tczUuMS1zdHJlYW0tcmVzb2x1dGlvbi12Mi55bWwiLAorICAgICJudXN0cmltLXR2LWNsZWFucm9vbS1zNS4xLXN0cmVhbS1yZXNvbHV0aW9uLnltbCIsCisgICAgIm51c3RyaW0tdHYtY2xlYW5yb29tLXM2LXBsYXllci12Mi55bWwiLAorICAgICJudXN0cmltLXR2LWNsZWFucm9vbS1zNi1wbGF5ZXIueW1sIiwKKyAgICAibnVzdHJpbS10di1jbGVhbnJvb20tczYuMS1wbGF5ZXItcGFyaXR5LnltbCIsCisgICAgIm51c3RyaW0tdHYtY2xlYW5yb29tLXM2LjItcGxheWVyLWZpbmFsLXBvbGlzaC55bWwiLAorICAgICJudXN0cmltLXR2LWNsZWFucm9vbS1zNi4zLXBsYXllci1xYS55bWwiLAorICAgICJudXN0cmltLXR2LWNsZWFucm9vbS1zNi4zLXJvbGxiYWNrLXRvLXM2LjIueW1sIiwKKyAgICAibnVzdHJpbS10di1jbGVhbnJvb20tczctc2VhcmNoLnltbCIsCisgICAgIm51c3RyaW0tdHYtY2xlYW5yb29tLXM4LWxpYnJhcnkueW1sIiwKKyAgICAibnVzdHJpbS10di1jbGVhbnJvb20tczktc2V0dGluZ3MueW1sIiwKK30KKworT0JTT0xFVEVfU0NSSVBUUyA9IHsKKyAgICAidmVyaWZ5X3R2X2RldGFpbHNfZXBpc29kZV9mb2N1c19zMTJfMi5weSIsCisgICAgInZlcmlmeV90dl9ob21lX3Bvc3Rlcl9zY2FsZV9zMTJfNy5weSIsCisgICAgInZlcmlmeV90dl9wbGF5ZXJfZmluYWxfcG9saXNoX3MxMl81LnB5IiwKKyAgICAidmVyaWZ5X3R2X3BsYXllcl9wb3N0cGxheV9zMTJfMy5weSIsCisgICAgInZlcmlmeV90dl9zb3VyY2VzX3Byb2dyZXNzaXZlX3MxMl8xLnB5IiwKKyAgICAidmVyaWZ5X3R2X3N1YnRpdGxlX3VwZGF0ZXJfczEyXzQucHkiLAorICAgICJ2ZXJpZnlfdHZfdXBkYXRlcl9mb2N1c19zMTJfNi5weSIsCit9CisKK09CU09MRVRFX0tPVExJTiA9IHsKKyAgICAiYXBwL3NyYy9tYWluL2phdmEvYXBwL251ZHJvaWRsYWJzL251c3RyaW0vY29yZS9tb2RlbC9FcGlzb2RlRW5naW5lLmt0IiwKKyAgICAiYXBwL3NyYy9tYWluL2phdmEvYXBwL251ZHJvaWRsYWJzL251c3RyaW0vY29yZS9wcm92aWRlci9NZWRpYVByb3ZpZGVyLmt0IiwKKyAgICAiYXBwL3NyYy9tYWluL2phdmEvYXBwL251ZHJvaWRsYWJzL251c3RyaW0vY29yZS9yZWNvbW1lbmRhdGlvbi9Nb3JlTGlrZVRoaXNSZXBvc2l0b3J5Lmt0IiwKKyAgICAiYXBwL3NyYy9tYWluL2phdmEvYXBwL251ZHJvaWRsYWJzL251c3RyaW0vY29yZS9yZXBvc2l0b3J5L0pzb25SZXBvc2l0b3J5UHJvdmlkZXIua3QiLAorICAgICJhcHAvc3JjL21haW4vamF2YS9hcHAvbnVkcm9pZGxhYnMvbnVzdHJpbS9jb3JlL3NvdXJjZS9TdHJlYW1Tb3VyY2VBZ2dyZWdhdG9yLmt0IiwKKyAgICAiYXBwL3NyYy9tYWluL2phdmEvYXBwL251ZHJvaWRsYWJzL251c3RyaW0vY29yZS9zb3VyY2UvU3VidGl0bGVTb3VyY2VBZ2dyZWdhdG9yLmt0IiwKK30KKworUkVNT1ZFRF9TWU1CT0xTID0geworICAgICJFcGlzb2RlRW5naW5lIiwKKyAgICAiTWVkaWFQcm92aWRlciIsCisgICAgIk1vcmVMaWtlVGhpc0VuZ2luZSIsCisgICAgIk1vcmVMaWtlVGhpc1JlcG9zaXRvcnkiLAorICAgICJKc29uUmVwb3NpdG9yeVByb3ZpZGVyIiwKKyAgICAiU3RyZWFtU291cmNlQWdncmVnYXRvciIsCisgICAgIlN1YnRpdGxlU291cmNlQWdncmVnYXRvciIsCit9CisKK3dvcmtmbG93X2RpciA9IFJPT1QgLyAiLmdpdGh1Yi93b3JrZmxvd3MiCitzY3JpcHRfZGlyID0gUk9PVCAvICJzY3JpcHRzIgorYXBwX2RpciA9IFJPT1QgLyAiYXBwIgorYnVpbGQgPSAoUk9PVCAvICJhcHAvYnVpbGQuZ3JhZGxlLmt0cyIpLnJlYWRfdGV4dChlbmNvZGluZz0idXRmLTgiKQorbWFya2VyID0gKFJPT1QgLyAiLm51c3RyaW0tdHYiKS5yZWFkX3RleHQoZW5jb2Rpbmc9InV0Zi04IikKK2FwcF90ZXh0ID0gIlxuIi5qb2luKAorICAgIHBhdGgucmVhZF90ZXh0KGVuY29kaW5nPSJ1dGYtOCIpCisgICAgZm9yIHBhdGggaW4gYXBwX2Rpci5yZ2xvYigiKi5rdCIpCispCisKK2V4aXN0aW5nX3dvcmtmbG93cyA9IHtwYXRoLm5hbWUgZm9yIHBhdGggaW4gd29ya2Zsb3dfZGlyLmdsb2IoIioueW1sIil9CitleGlzdGluZ19zY3JpcHRzID0ge3BhdGgubmFtZSBmb3IgcGF0aCBpbiBzY3JpcHRfZGlyLmdsb2IoIioucHkiKX0KKworY2hlY2tzID0geworICAgICIzNiBvYnNvbGV0ZSB3b3JrZmxvd3MgcmVtb3ZlZCI6IG5vdCAoT0JTT0xFVEVfV09SS0ZMT1dTICYgZXhpc3Rpbmdfd29ya2Zsb3dzKSwKKyAgICAicHJpbWFyeSBidWlsZCB3b3JrZmxvdyByZXRhaW5lZCI6ICh3b3JrZmxvd19kaXIgLyAiYnVpbGQueW1sIikuaXNfZmlsZSgpLAorICAgICJvbmx5IGN1cnJlbnQgYW5kIHByaW1hcnkgd29ya2Zsb3dzIHJlbWFpbiI6IGV4aXN0aW5nX3dvcmtmbG93cyA8PSB7CisgICAgICAgICJidWlsZC55bWwiLAorICAgICAgICAibnVzdHJpbS10di1jbGVhbnJvb20tczEyLTgtcmVwby1jbGVhbnVwLnltbCIsCisgICAgfSwKKyAgICAiNyBzdXBlcnNlZGVkIHN0YWdlIHZlcmlmaWVycyByZW1vdmVkIjogbm90IChPQlNPTEVURV9TQ1JJUFRTICYgZXhpc3Rpbmdfc2NyaXB0cyksCisgICAgInBhcml0eSByZWdyZXNzaW9uIHZlcmlmaWVyIHJldGFpbmVkIjogKHNjcmlwdF9kaXIgLyAidmVyaWZ5X3R2X3Bhcml0eV9zMTEucHkiKS5pc19maWxlKCksCisgICAgIjYgdW5yZWZlcmVuY2VkIEtvdGxpbiBmaWxlcyByZW1vdmVkIjogYWxsKAorICAgICAgICBub3QgKFJPT1QgLyByZWxhdGl2ZSkuZXhpc3RzKCkgZm9yIHJlbGF0aXZlIGluIE9CU09MRVRFX0tPVExJTgorICAgICksCisgICAgInJlbW92ZWQgS290bGluIHN5bWJvbHMgaGF2ZSBubyBsaXZlIHNvdXJjZSByZWZlcmVuY2VzIjogYWxsKAorICAgICAgICBzeW1ib2wgbm90IGluIGFwcF90ZXh0IGZvciBzeW1ib2wgaW4gUkVNT1ZFRF9TWU1CT0xTCisgICAgKSwKKyAgICAiY3VycmVudCBTb3VyY2VFbmdpbmUgcmV0YWluZWQiOiAiY2xhc3MgU291cmNlRW5naW5lIiBpbiBhcHBfdGV4dCwKKyAgICAiY3VycmVudCBOdXN0cmltIEpTT04gc2Vzc2lvbiByZXRhaW5lZCI6ICJjbGFzcyBOdXN0cmltSnNvblNlc3Npb24iIGluIGFwcF90ZXh0LAorICAgICJjdXJyZW50IHByb2dyZXNzaXZlIFRWIFNvdXJjZXMgcmV0YWluZWQiOiAiY2xhc3MgVHZTb3VyY2VzUmVwb3NpdG9yeSIgaW4gYXBwX3RleHQsCisgICAgImN1cnJlbnQgc3VidGl0bGUgcmVwb3NpdG9yeSByZXRhaW5lZCI6ICJjbGFzcyBUdlN1YnRpdGxlUmVwb3NpdG9yeSIgaW4gYXBwX3RleHQsCisgICAgInRhcmdldCB2ZXJzaW9uIG5hbWUiOiAoCisgICAgICAgICd2ZXJzaW9uTmFtZSA9ICIwLjU3LjctdHYtY2xlYW5yb29tLXMxMi44LXJlcG8tY2xlYW51cCInIGluIGJ1aWxkCisgICAgKSwKKyAgICAidGFyZ2V0IHZlcnNpb24gY29kZSI6ICJ2ZXJzaW9uQ29kZSA9IDEzMCIgaW4gYnVpbGQsCisgICAgImNsZWFudXAgc3RhZ2UgbWFya2VyIjogInN1YnN5c3RlbT0xMi44LXJlcG8tY2xlYW51cCIgaW4gbWFya2VyLAorICAgICJyZW1vdmVkIGZpbGUgY291bnQgbWFya2VyIjogInJlcG8tY2xlYW51cC1yZW1vdmVkLWZpbGVzPTQ5IiBpbiBtYXJrZXIsCisgICAgImRldmljZSBhY2NlcHRhbmNlIGJhY2tsb2cgcmV0YWluZWQiOiAiYmFja2xvZz1kZXZpY2UtcGFyaXR5LWFjY2VwdGFuY2UiIGluIG1hcmtlciwKK30KKworZmFpbGVkID0gW25hbWUgZm9yIG5hbWUsIHBhc3NlZCBpbiBjaGVja3MuaXRlbXMoKSBpZiBub3QgcGFzc2VkXQoraWYgZmFpbGVkOgorICAgIHJhaXNlIFN5c3RlbUV4aXQoIlMxMi44IHJlcG9zaXRvcnkgY2xlYW51cCBpbnZhcmlhbnQgZmFpbGVkOiAiICsgIiwgIi5qb2luKGZhaWxlZCkpCisKK3ByaW50KGYiUzEyLjggcmVwb3NpdG9yeSBjbGVhbnVwIGludmFyaWFudHMgcGFzc2VkOiB7bGVuKGNoZWNrcyl9L3tsZW4oY2hlY2tzKX0iKQo="
+          OBSOLETE_PATHS_B64: "LmdpdGh1Yi93b3JrZmxvd3MvbnVzdHJpbS1jbGVhbi1ib290c3RyYXAtcmMyNy55bWwKLmdpdGh1Yi93b3JrZmxvd3MvbnVzdHJpbS10di1jbGVhbnJvb20tczEtdjMueW1sCi5naXRodWIvd29ya2Zsb3dzL251c3RyaW0tdHYtY2xlYW5yb29tLXMxMC1nbG9iYWwtcG9saXNoLnltbAouZ2l0aHViL3dvcmtmbG93cy9udXN0cmltLXR2LWNsZWFucm9vbS1zMTEtMS1zdWJ0aXRsZS1zeXN0ZW0tZml4ZWQtdjIueW1sCi5naXRodWIvd29ya2Zsb3dzL251c3RyaW0tdHYtY2xlYW5yb29tLXMxMS0xLXN1YnRpdGxlLXN5c3RlbS1maXhlZC55bWwKLmdpdGh1Yi93b3JrZmxvd3MvbnVzdHJpbS10di1jbGVhbnJvb20tczExLTEtc3VidGl0bGUtc3lzdGVtLnltbAouZ2l0aHViL3dvcmtmbG93cy9udXN0cmltLXR2LWNsZWFucm9vbS1zMTEtcGFyaXR5LXFhLnltbAouZ2l0aHViL3dvcmtmbG93cy9udXN0cmltLXR2LWNsZWFucm9vbS1zMTItMS1zb3VyY2VzLXByb2dyZXNzaXZlLnltbAouZ2l0aHViL3dvcmtmbG93cy9udXN0cmltLXR2LWNsZWFucm9vbS1zMTItMi1kZXRhaWxzLWVwaXNvZGUtZm9jdXMueW1sCi5naXRodWIvd29ya2Zsb3dzL251c3RyaW0tdHYtY2xlYW5yb29tLXMxMi0zLXBsYXllci1wb3N0cGxheS55bWwKLmdpdGh1Yi93b3JrZmxvd3MvbnVzdHJpbS10di1jbGVhbnJvb20tczEyLTQtc3VidGl0bGUtdXBkYXRlci55bWwKLmdpdGh1Yi93b3JrZmxvd3MvbnVzdHJpbS10di1jbGVhbnJvb20tczEyLTUtcGxheWVyLWZpbmFsLXBvbGlzaC55bWwKLmdpdGh1Yi93b3JrZmxvd3MvbnVzdHJpbS10di1jbGVhbnJvb20tczEyLTYtdXBkYXRlci1mb2N1cy55bWwKLmdpdGh1Yi93b3JrZmxvd3MvbnVzdHJpbS10di1jbGVhbnJvb20tczEyLTctaG9tZS1wb3N0ZXItc2NhbGUueW1sCi5naXRodWIvd29ya2Zsb3dzL251c3RyaW0tdHYtY2xlYW5yb29tLXMyLWhvbWUtdjIueW1sCi5naXRodWIvd29ya2Zsb3dzL251c3RyaW0tdHYtY2xlYW5yb29tLXMyLWhvbWUueW1sCi5naXRodWIvd29ya2Zsb3dzL251c3RyaW0tdHYtY2xlYW5yb29tLXMzLWVwaXNvZGVzLXYyLnltbAouZ2l0aHViL3dvcmtmbG93cy9udXN0cmltLXR2LWNsZWFucm9vbS1zMy1lcGlzb2Rlcy55bWwKLmdpdGh1Yi93b3JrZmxvd3MvbnVzdHJpbS10di1jbGVhbnJvb20tczQtZGV0YWlscy55bWwKLmdpdGh1Yi93b3JrZmxvd3MvbnVzdHJpbS10di1jbGVhbnJvb20tczQuMS1lcGlzb2RlLXRpdGxlLWZpeC12Mi55bWwKLmdpdGh1Yi93b3JrZmxvd3MvbnVzdHJpbS10di1jbGVhbnJvb20tczQuMS1lcGlzb2RlLXRpdGxlLWZpeC55bWwKLmdpdGh1Yi93b3JrZmxvd3MvbnVzdHJpbS10di1jbGVhbnJvb20tczQuMi1zZWFzb24tZm9jdXMueW1sCi5naXRodWIvd29ya2Zsb3dzL251c3RyaW0tdHYtY2xlYW5yb29tLXM0LjMtZXhhY3QtZXBpc29kZS1yZXR1cm4ueW1sCi5naXRodWIvd29ya2Zsb3dzL251c3RyaW0tdHYtY2xlYW5yb29tLXM1LXNvdXJjZXMtdjIueW1sCi5naXRodWIvd29ya2Zsb3dzL251c3RyaW0tdHYtY2xlYW5yb29tLXM1LXNvdXJjZXMueW1sCi5naXRodWIvd29ya2Zsb3dzL251c3RyaW0tdHYtY2xlYW5yb29tLXM1LjEtc3RyZWFtLXJlc29sdXRpb24tdjIueW1sCi5naXRodWIvd29ya2Zsb3dzL251c3RyaW0tdHYtY2xlYW5yb29tLXM1LjEtc3RyZWFtLXJlc29sdXRpb24ueW1sCi5naXRodWIvd29ya2Zsb3dzL251c3RyaW0tdHYtY2xlYW5yb29tLXM2LXBsYXllci12Mi55bWwKLmdpdGh1Yi93b3JrZmxvd3MvbnVzdHJpbS10di1jbGVhbnJvb20tczYtcGxheWVyLnltbAouZ2l0aHViL3dvcmtmbG93cy9udXN0cmltLXR2LWNsZWFucm9vbS1zNi4xLXBsYXllci1wYXJpdHkueW1sCi5naXRodWIvd29ya2Zsb3dzL251c3RyaW0tdHYtY2xlYW5yb29tLXM2LjItcGxheWVyLWZpbmFsLXBvbGlzaC55bWwKLmdpdGh1Yi93b3JrZmxvd3MvbnVzdHJpbS10di1jbGVhbnJvb20tczYuMy1wbGF5ZXItcWEueW1sCi5naXRodWIvd29ya2Zsb3dzL251c3RyaW0tdHYtY2xlYW5yb29tLXM2LjMtcm9sbGJhY2stdG8tczYuMi55bWwKLmdpdGh1Yi93b3JrZmxvd3MvbnVzdHJpbS10di1jbGVhbnJvb20tczctc2VhcmNoLnltbAouZ2l0aHViL3dvcmtmbG93cy9udXN0cmltLXR2LWNsZWFucm9vbS1zOC1saWJyYXJ5LnltbAouZ2l0aHViL3dvcmtmbG93cy9udXN0cmltLXR2LWNsZWFucm9vbS1zOS1zZXR0aW5ncy55bWwKYXBwL3NyYy9tYWluL2phdmEvYXBwL251ZHJvaWRsYWJzL251c3RyaW0vY29yZS9tb2RlbC9FcGlzb2RlRW5naW5lLmt0CmFwcC9zcmMvbWFpbi9qYXZhL2FwcC9udWRyb2lkbGFicy9udXN0cmltL2NvcmUvcHJvdmlkZXIvTWVkaWFQcm92aWRlci5rdAphcHAvc3JjL21haW4vamF2YS9hcHAvbnVkcm9pZGxhYnMvbnVzdHJpbS9jb3JlL3JlY29tbWVuZGF0aW9uL01vcmVMaWtlVGhpc1JlcG9zaXRvcnkua3QKYXBwL3NyYy9tYWluL2phdmEvYXBwL251ZHJvaWRsYWJzL251c3RyaW0vY29yZS9yZXBvc2l0b3J5L0pzb25SZXBvc2l0b3J5UHJvdmlkZXIua3QKYXBwL3NyYy9tYWluL2phdmEvYXBwL251ZHJvaWRsYWJzL251c3RyaW0vY29yZS9zb3VyY2UvU3RyZWFtU291cmNlQWdncmVnYXRvci5rdAphcHAvc3JjL21haW4vamF2YS9hcHAvbnVkcm9pZGxhYnMvbnVzdHJpbS9jb3JlL3NvdXJjZS9TdWJ0aXRsZVNvdXJjZUFnZ3JlZ2F0b3Iua3QKc2NyaXB0cy92ZXJpZnlfdHZfZGV0YWlsc19lcGlzb2RlX2ZvY3VzX3MxMl8yLnB5CnNjcmlwdHMvdmVyaWZ5X3R2X2hvbWVfcG9zdGVyX3NjYWxlX3MxMl83LnB5CnNjcmlwdHMvdmVyaWZ5X3R2X3BsYXllcl9maW5hbF9wb2xpc2hfczEyXzUucHkKc2NyaXB0cy92ZXJpZnlfdHZfcGxheWVyX3Bvc3RwbGF5X3MxMl8zLnB5CnNjcmlwdHMvdmVyaWZ5X3R2X3NvdXJjZXNfcHJvZ3Jlc3NpdmVfczEyXzEucHkKc2NyaXB0cy92ZXJpZnlfdHZfc3VidGl0bGVfdXBkYXRlcl9zMTJfNC5weQpzY3JpcHRzL3ZlcmlmeV90dl91cGRhdGVyX2ZvY3VzX3MxMl82LnB5Cg=="
+        run: |
+          set -euo pipefail
+          if ! grep -qx 'subsystem=12.8-repo-cleanup' .nustrim-tv; then
+            PATCH_FILE="$RUNNER_TEMP/s12-8-repo-cleanup.patch"
+            OBSOLETE_FILE="$RUNNER_TEMP/s12-8-obsolete-paths.txt"
+            printf '%s' "$SOURCE_PATCH_B64" | base64 --decode > "$PATCH_FILE"
+            printf '%s' "$OBSOLETE_PATHS_B64" | base64 --decode > "$OBSOLETE_FILE"
+            git apply --check "$PATCH_FILE"
+            git apply "$PATCH_FILE"
+            test "$(wc -l < "$OBSOLETE_FILE")" -eq 49
+            while IFS= read -r path; do
+              test -n "$path"
+              test -f "$path"
+              git rm -- "$path"
+            done < "$OBSOLETE_FILE"
+          fi
+
+      - name: Verify S12.8 boundary and invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff HEAD --check
+          changed="$({ git diff HEAD --name-only; git ls-files --others --exclude-standard; } | sort -u)"
+          obsolete="$(git diff HEAD --diff-filter=D --name-only | sort)"
+          rerun=false
+          if [ -z "$changed" ]; then
+            rerun=true
+          else
+            test "$(printf '%s\n' "$obsolete" | sed '/^$/d' | wc -l)" -eq 49
+            test "$(printf '%s\n' "$obsolete" | sha256sum | cut -d' ' -f1)" = \
+              "b9df72c0c912a1fd129d413d77ad8a5cfcc870be37fff76e3861392ab540fce8"
+          fi
+          printf '%s\n' "$changed"
+          export CHANGED="$changed"
+          export OBSOLETE_PATHS="$obsolete"
+          export RERUN="$rerun"
+          python3 <<'PY'
+          from pathlib import Path
+          import hashlib
+          import os
+
+          changed = [line for line in os.environ.get("CHANGED", "").splitlines() if line]
+          rerun = os.environ.get("RERUN") == "true"
+          obsolete = set(os.environ["OBSOLETE_PATHS"].splitlines())
+          allowed = obsolete | {
+              ".nustrim-tv",
+              ".nustrim-version",
+              "app/build.gradle.kts",
+              "scripts/verify_repo_cleanup_s12_8.py",
+          }
+          unexpected = [path for path in changed if path not in allowed]
+          if unexpected:
+              raise SystemExit("S12.8 changed files outside locked cleanup boundary: " + ", ".join(unexpected))
+          if rerun:
+              if changed:
+                  raise SystemExit("S12.8 rerun unexpectedly changed files")
+          else:
+              missing = sorted(allowed - set(changed))
+              if missing:
+                  raise SystemExit("S12.8 expected changes are missing: " + ", ".join(missing))
+          expected_hashes = {
+              ".nustrim-tv": "333510d25b7e18a49b8d0b23dbac5e186944683c6f366e37562240e0c7179996",
+              ".nustrim-version": "3a1c79cc25932d7028b629d328c9644d768970b13dc7d32f7b5607e96f5d500f",
+              "app/build.gradle.kts": "8ab6db96d1fa08324a0a16308f94187aefad5c9ed13263c3f7822f1668a45324",
+              "scripts/verify_repo_cleanup_s12_8.py": "21b0a6e282c7ca22e7fff570773c3e1dca5e2cb03d529a8f9cdf16352808f630",
+          }
+          mismatch = []
+          for relative, expected in expected_hashes.items():
+              path = Path(relative)
+              actual = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else "missing"
+              if actual != expected:
+                  mismatch.append(relative)
+          if mismatch:
+              raise SystemExit("Exact S12.8 payload mismatch: " + ", ".join(mismatch))
+          PY
+          python3 scripts/verify_repo_cleanup_s12_8.py
+          python3 scripts/verify_tv_parity_s11.py
+
+      - name: Build permanent signed release APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle --no-daemon --build-cache \
+            :app:lintRelease \
+            :app:testDebugUnitTest \
+            :app:assembleRelease \
+            --stacktrace --console=plain \
+            2>&1 | tee "$RUNNER_TEMP/nustrim-s12-8-build.log"
+          test -s app/build/outputs/apk/release/app-release.apk
+
+      - name: Verify APK identity and certificate
+        id: verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/release/app-release.apk"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)"
+          AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -1)"
+          test -x "$APKSIGNER"
+          test -x "$AAPT"
+          "$APKSIGNER" verify --verbose --print-certs "$APK" | tee "$RUNNER_TEMP/nustrim-s12-8-signature.txt"
+          CERT="$(sed -n -E 's/^.*certificate SHA-256 digest:[[:space:]]*//p' "$RUNNER_TEMP/nustrim-s12-8-signature.txt" | head -1 | tr -d ':' | tr '[:lower:]' '[:upper:]')"
+          test "$CERT" = "$LOCKED_CERT_SHA256"
+          BADGING="$("$AAPT" dump badging "$APK" | head -1)"
+          PACKAGE="$(printf '%s\n' "$BADGING" | sed -n -E "s/^package: name='([^']+)'.*/\1/p")"
+          APK_CODE="$(printf '%s\n' "$BADGING" | sed -n -E "s/^.*versionCode='([^']+)'.*/\1/p")"
+          APK_NAME="$(printf '%s\n' "$BADGING" | sed -n -E "s/^.*versionName='([^']+)'.*/\1/p")"
+          test "$PACKAGE" = "app.nudroidlabs.nustrim"
+          test "$APK_CODE" = "$TARGET_VERSION_CODE"
+          test "$APK_NAME" = "$TARGET_VERSION_NAME"
+          echo "cert_sha=$CERT" >> "$GITHUB_OUTPUT"
+          echo "version_code=$APK_CODE" >> "$GITHUB_OUTPUT"
+          echo "version_name=$APK_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare updater manifest and S12.8 report
+        id: assets
+        shell: bash
+        env:
+          CERT_SHA: ${{ steps.verify.outputs.cert_sha }}
+          VERSION_CODE: ${{ steps.verify.outputs.version_code }}
+          VERSION_NAME: ${{ steps.verify.outputs.version_name }}
+        run: |
+          set -euo pipefail
+          export CERT_SHA VERSION_CODE VERSION_NAME
+          python3 <<'PY'
+          from pathlib import Path
+          import hashlib
+          import json
+          import os
+
+          code = int(os.environ["VERSION_CODE"])
+          name = os.environ["VERSION_NAME"]
+          cert = os.environ["CERT_SHA"]
+          repo = os.environ["GITHUB_REPOSITORY"]
+          src = Path("app/build/outputs/apk/release/app-release.apk")
+          apk = Path(f"Nustrim-{name}.apk")
+          apk.write_bytes(src.read_bytes())
+          sha = hashlib.sha256(apk.read_bytes()).hexdigest()
+          size = apk.stat().st_size
+          tag = f"v{name}"
+          manifest = {
+              "versionCode": code,
+              "versionName": name,
+              "apkUrl": f"https://github.com/{repo}/releases/download/{tag}/{apk.name}",
+              "sha256": sha,
+              "changelog": "S12.8 removes 49 obsolete stage files and 17,394 lines while retaining the primary build, current provider engines and all TV parity contracts.",
+              "sizeBytes": size,
+              "signingMode": "permanent",
+              "signingCertSha256": cert,
+          }
+          report = {
+              "stage": "S12.8 Repository Cleanup",
+              "issue": "S12-REPO-CLEANUP-01",
+              "status": "build-verified",
+              "staticContracts": "16/16",
+              "parityContracts": "40/40",
+              "removedFiles": 49,
+              "removedLines": 17394,
+              "removedGroups": {"obsoleteWorkflows": 36, "stageVerifiers": 7, "unreferencedKotlin": 6},
+              "preserved": ["build.yml", "parity verifier", "SourceEngine", "active provider sessions", "TV Sources", "TV subtitles", "Mobile UI"],
+              "deviceAcceptance": "pending",
+              "requiredDeviceChecks": [
+                  "keep version code 129 installed",
+                  "use the TV updater to download and install version code 130",
+                  "open Home, Search, Library, Settings and Details",
+                  "resolve Sources and start playback",
+                  "open the subtitle panel and confirm active subtitle discovery still works",
+              ],
+              "nextBacklog": "Final device parity acceptance and measured visual audit",
+          }
+          Path("update.json").write_text(json.dumps(manifest, indent=2) + "\n")
+          Path("tv-repo-cleanup-s12-8-report.json").write_text(json.dumps(report, indent=2) + "\n")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"tag={tag}\n")
+              fh.write(f"apk={apk.name}\n")
+              fh.write(f"sha256={sha}\n")
+          PY
+
+      - name: Commit S12.8 only after verified build
+        id: commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "S12.8 source is already committed."
+          else
+            git commit -m "Clean obsolete repository files S12.8 [skip ci]"
+            git push origin HEAD:main
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Create or update GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.assets.outputs.tag }}
+          VERSION: ${{ steps.verify.outputs.version_name }}
+          TARGET_SHA: ${{ steps.commit.outputs.sha }}
+        run: |
+          set -euo pipefail
+          NOTES="$RUNNER_TEMP/s12-8-release-notes.md"
+          printf '%s\n' \
+            "Nustrim $VERSION" "" \
+            "S12.8 removes 49 obsolete workflow, verifier, and unreferenced Kotlin files." "" \
+            "The primary build, parity verifier, current provider engines, TV Sources, subtitles, and Mobile UI are preserved." "" \
+            "Device acceptance remains required before the final parity score can be claimed." "" \
+            "Permanent signing certificate SHA-256: $LOCKED_CERT_SHA256" > "$NOTES"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "Nustrim $VERSION" --notes-file "$NOTES" --target "$TARGET_SHA" --latest
+          else
+            gh release create "$TAG" --title "Nustrim $VERSION" --notes-file "$NOTES" --target "$TARGET_SHA" --latest
+          fi
+
+      - name: Upload and verify release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.assets.outputs.tag }}
+          APK: ${{ steps.assets.outputs.apk }}
+          EXPECTED_SHA: ${{ steps.assets.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" "$APK" update.json tv-repo-cleanup-s12-8-report.json --clobber
+          LIVE="$RUNNER_TEMP/s12-8-live"
+          mkdir -p "$LIVE"
+          gh release download "$TAG" --pattern "$APK" --pattern update.json --pattern tv-repo-cleanup-s12-8-report.json --dir "$LIVE" --clobber
+          test "$(sha256sum "$LIVE/$APK" | cut -d' ' -f1)" = "$EXPECTED_SHA"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)" = "$TAG"
+          python3 - "$LIVE" <<'PY'
+          from pathlib import Path
+          import json
+          import sys
+          root = Path(sys.argv[1])
+          report = json.loads((root / "tv-repo-cleanup-s12-8-report.json").read_text())
+          if report.get("issue") != "S12-REPO-CLEANUP-01" or report.get("removedFiles") != 49:
+              raise SystemExit("Published S12.8 report is invalid")
+          PY
+
+      - name: Upload verified artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nustrim-tv-cleanroom-s12-8-repo-cleanup-release
+          path: |
+            Nustrim-${{ steps.verify.outputs.version_name }}.apk
+            update.json
+            tv-repo-cleanup-s12-8-report.json
+            ${{ runner.temp }}/nustrim-s12-8-signature.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Collect diagnose on failure
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          D="$RUNNER_TEMP/nustrim-s12-8-diagnose"
+          mkdir -p "$D"
+          cp "$RUNNER_TEMP/nustrim-s12-8-build.log" "$D/" 2>/dev/null
+          cp "$RUNNER_TEMP/nustrim-s12-8-signature.txt" "$D/" 2>/dev/null
+          cp app/build.gradle.kts .nustrim-version .nustrim-tv "$D/" 2>/dev/null
+          cp update.json tv-repo-cleanup-s12-8-report.json "$D/" 2>/dev/null
+          git status --short > "$D/git-status.txt" 2>&1
+          git diff > "$D/git-diff.txt" 2>&1
+
+      - name: Upload diagnose on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nustrim-tv-cleanroom-s12-8-repo-cleanup-diagnose
+          path: ${{ runner.temp }}/nustrim-s12-8-diagnose
+          if-no-files-found: warn
+          retention-days: 7
