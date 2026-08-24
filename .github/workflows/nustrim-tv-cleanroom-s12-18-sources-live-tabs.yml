@@ -1,0 +1,350 @@
+name: Nustrim TV Cleanroom S12.18 Sources Live Tabs Auto Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nustrim-tv-cleanroom-s12-18-sources-live-tabs
+  cancel-in-progress: false
+
+env:
+  LOCKED_CERT_SHA256: "30C625B9112CD04D43B631D6020D0D52E61695111B8E2125F29AD19651EB165D"
+  TARGET_VERSION_NAME: "0.57.17-tv-cleanroom-s12.18-sources-live-tabs"
+  TARGET_VERSION_CODE: "140"
+
+jobs:
+  build-test-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Guard accepted S12.17 baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          current_build="$(sed -n -E 's/.*versionName[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' app/build.gradle.kts | head -1)"
+          current_marker="$(cat .nustrim-version 2>/dev/null || true)"
+          case "$current_build" in
+            "0.57.16-tv-cleanroom-s12.17-episode-titles"|"$TARGET_VERSION_NAME") ;;
+            *)
+              echo "::error::Unexpected baseline: $current_build"
+              exit 20
+              ;;
+          esac
+          test "$current_marker" = "$current_build" || {
+            echo "::error::Build version and .nustrim-version differ."
+            exit 21
+          }
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Gradle 9.5.0
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "9.5.0"
+
+      - name: Prepare permanent signing
+        shell: bash
+        env:
+          KEYSTORE_B64: ${{ secrets.NUSTRIM_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.NUSTRIM_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.NUSTRIM_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.NUSTRIM_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for name in KEYSTORE_B64 KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::Signing secret $name is missing."
+              exit 30
+            fi
+          done
+          KS="$RUNNER_TEMP/nustrim-release.jks"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$KS"
+          chmod 600 "$KS"
+          keytool -list -keystore "$KS" -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" >/dev/null
+          CERT="$(
+            keytool -exportcert -rfc -keystore "$KS" -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" |
+            openssl x509 -noout -fingerprint -sha256 |
+            cut -d= -f2 | tr -d ':' | tr '[:lower:]' '[:upper:]'
+          )"
+          test "$CERT" = "$LOCKED_CERT_SHA256" || {
+            echo "::error::Keystore certificate is not the locked Nustrim certificate."
+            exit 31
+          }
+          echo "NUSTRIM_KEYSTORE_PATH=$KS" >> "$GITHUB_ENV"
+          echo "NUSTRIM_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "NUSTRIM_KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
+          echo "NUSTRIM_KEY_PASSWORD=$KEY_PASSWORD" >> "$GITHUB_ENV"
+
+      - name: Apply exact S12.18 source
+        shell: bash
+        env:
+          SOURCE_PATCH_B64: "H4sIAAAAAAACA80Z2W7jyPFdX9HLACsREilrZnyMEe2M1+sEBjwHLM8CiTMRWmTL7jXF5nY3tSMYBvIX+YP8SP4kX5KqPkRS12gSB4gNyHKzrq67ilEUEdqP81JpyWeRnre63S6ZNE7eviXRoHdEuvjx9m2L3LGcSaq5yIdJxmguhZhF80GLSDZlkuUJG+blnAtAjg7ik/gomjBNW5EqJ2qhNJsNBy/iwXHECq5EyiLNdcZUq9t8fhIpUcqEqSjjcwCiE9UiSlNdqqFkwFexKKF5ylOqWYtM4P+M52x4EB8O4lfIuxJOHcUvIimybEKThxYpJFNMztnQcogKKeY8ZTJi+R2Q6MHVGZ1FACWyOZO9IqMLxPTPZ2LCMxaV3OjmxeveMenC52ujHS/1kqhK7llagmx3w4JKmmUsi9ivJc0AhAvJ9aJCApZlpqOinGQ8sSougMSSViJmRcbwvMJhs0IvjH5ALzMxZ2lEp7oJvNQlk1JID6wp3CaNpnCScnqXC6V5gobYBLyF8hIYzmc8h1sZeFQZnYCS4N4PKhJ5tqhAM0FTUIeFBHsXQlK5iMpc82xJp7ogLbVAetGUS6WHxdLNQI48Z4lmKdgUAJisOaQCJzoEFBSpEBlX9x4oAjOA1oer/sGUFhLvmKcOO8mEAuJRM0rAJZS5ejNU/LGJF4gW9Abw/8PjeHC04o6b/d/CHm+A3RQLVihaFP1JybM0vpM0zVj8oJUTbOMjI9xR7wTkw090WP8D8N7pLlMyJAEcwOVSKXiaAUd/0aBCAUON0geAffGyOtRU3jFtz18etyJ/7vRzDleGJ4OXr9cevaczfBTsr7Sg1d1C/tXB2qMm+T317G771CL2y5xmpEB6kKhy/anA7DPidzn4M9DmU9KpWUbJpD+DIOv/Quf2pKbPvtNnX8/7jm3/Zj6y3y5yLRdgsZotn4EYWv/lEaYr81m3vizzc6qTe7zHY3VsHrFCKA6xsYgxcj9KcQexokBD2aIjRalZj0AOSdg1m8KDe9ADJGiAvBEPLCc/kIMwTiD5QqSSR6JyWqh7oUn0Q5MN/vx2DwiPlWPUfzxibNOzirl6L/QFZr9OCNRMcUADL+/9iY/wKL5mNF10PH5YOcZG8j51jf5bNmQnG5cEP7rUfi4g/aGudrK4skh7M6Ea06teucT3329G24wKFQvMxlHvWHzJsJLrzMKMzIP44vr6wzV5wgs8PksQvINYztRzRUFFDcPg8Lg3eEm6+OfQBELo3R4jfJNxTsklWGhIlopJjMn2Us3Vh7OfLt//0aSRyDOxEl7RCYh1Sq4go/wefA7Y/gBcnJNbXzVJp+mWDsGzs6c1xHjKMyilVjyPC/y7FcWd/FfYVQ4Tz2jhLl3h48WWAHXOxu9+zGj+AH5XB0qBHc8T3Ql9Zp2WObGoLO3UaJ8SK9WbcNudq3yB+bcuFhgkL7Ms9FohcFW2UUUrWM27db9Kf0Vdls9qJtmbny03itGMpYTngDSlCVtLB88UZqNEMpY/V5hV1Ey1OTkw5cb8qdcb05mgOVerjU9Ab+oqUrGQLnvFUGouaHKPagRrcE2+4znR91yFhKYpHDQczXQ2LmLX60rTJDaIv9ua3959vPlT3Rt2UdknFazR+VpofVOIVcD7KMwa67U11ms36flM4RT448L5K9T3GZtNmOx41YZ1My4z5B10B8WPiw13wqv+TLOSKXjYGfeQDfwTrnUF9jw2rf8H+b7ctxiNPp2fX4xGcLM1o785/Y+puhK3ruQVmp1aYX7yHSSq+NUL0369enFYU3Htrl53VZ1xSr/N8PPzOoIqp1P+BeBN7+QN8sZdJVwNL/zZ7ZhQvgNC/vW3fwTrqtulFYv3z78H6wxNNsTnK89WFGlpn9/zwjfRKpEcHKkPHTyfLsZ6Pnb9/9j2/2No28eD47hYuNz1DQhmdj+Gqb1rPtEYblAwDk7TTrA62wUhNp8gHpjXDlVL0E3TVoC1LYLxP3noBCMzv5AZlQ9MBj0S7F6HBJD3HXC4SsNL06sE/rapaRtFHJ5QtLVRzUhjLwbtcxN3ysAJJFtuVVKk0GDopqohDJc0E3fRjGkKcxO1A30v4TnDo8g/n1K7qWnooMH1ZKcO9h3tthHdooZXBw01EI8L1X3GBXHSk4JKBWkNG0dBzP2BVtt8ASrmOBYYO9jUdAIL0UbKylIaGwqy4nDuKHu9YfqF2qyI0R+hpb43eySUmYNDxU77MLKLnHVOT3PGUuWo3CC/0NwkxQ1QpmqMnCUIV8vrLI0BxC9zyCowyKW+AROSxeeX7y/eXdycjT9dXzXJbothxTT0fndqbBcxNiYHu4J4O4apWwOMYvgcHJgwluzXkkvWsdklsAuJpZ/kdAYWsc/aG1cDhxv85wjXl9abC5ozv1OyhrMuYdOlkFuo7hWZNXI922g8G72vkNs3aBoSEjCy1/aqnpMtyeSkFkUozteyzf+U/iaAtTiHVvtOyMV4kokEt1ozO0mqIuO6E7C8nJEko0pheXSOeu5wQMBBeDv47IGf7MHB58pLA8XmULlvfvaMONitRzKWdyC6pjxPIeQ6sv1XNN/tWfTn8efuXzpBu7ciWA8oxu8+Xd1cXkFEhiEmxOOwFg1bw9HaeIw2HqONbXid7AzIHTgYkge9A3xhcGgCsvu77/qlkv0JzBMsn5NiAQkrf9nqTqWYQb7U9xmfEI57YE0+wr84pba61x8+3IC28aAzHkPLy8bjMHZbeRgEIBewXCvQroVP2dQWY8kyqkGwU8yobmcjT63/SwbFCvokQ7xPPCjSpelYsy+6w3JwLVzXB6WeRidYJvDX5EgYlCHs9a0ui4zdAtkemQiRff4Mgt7W5LAJFVONEQJsJfKU42711CAYqd5DdnZiWeIxdBEsTzsGsYYTOhGs4zV6jmfYh+AFlZnanonycgREygyXj89E2C8yka7tC9ZbNT3Hp9/QyXX36+S6q83Ctk5uU9L8v25kPO5HvyXyyxKIL8K+4FsBrg2Z9TWUvZl1S5qnoIud66caeE1mcx9iBhzoOwRUJZsYPJp5h+QF+Jat1UZ2ZzDsOelsMlArnAi+rTK91J7bno1szDbYJ19QTpOJcZt9Ns6GtomhirTbAhO0vesFyfI1mm0C911DGPI2+Cv6hjXxL+IsG/QF+AuSNBns3pYEJBd6Iwt8tbiLRXuvUbO9jf6oTCBE1LQEj3VLXMsEvkDYWAdzvlq3xbat00Y9XduXokQxfLeBoesdSgsCbmYIm2e+YzarF8h6PDP2toFco+1iqIljvW6LBPaNix8IlqRRgzgKdB4YJt9AWsAgbG8igyEB2vk6GehEtpDwycO86q3nxn1fD2/Mkc5NrGgCw3+d8h5vqZu0oe+A6zF8x3mLhRZfXhFbcQvo4szK1RVk3Jihh9lzqO/bQV0hLyAV6c40eGx/PBuN2kjAQZolSPsPZ5dX7adT8ohUnmxdARgrke9RKAfQkSkpF1+4IYftoAUKn4iYEnNgOcOBk9ZRIY/QHLbjXwSvcCwnL50rE84Bia8k2HFoSRMNmbXBoN9kZ28U7Jjw3Kw0NrOS7Q2PdvaT2xDcfHdUn+/cHNOptkfPNCFVG0wMw11zgzVUuJypOtVW+NnGq4rkJnEaRdxKHpqBrDZY0CkUc6dZYjRLfuOpvsewNl+A0MnRQZwWhq2BsHV8+XgwPnhlAVymtUBh69+SmOK5OyQAAA=="
+        run: |
+          set -euo pipefail
+          if ! grep -qx 'subsystem=12.18-sources-live-tabs' .nustrim-tv; then
+            PATCH_FILE="$RUNNER_TEMP/s12-18-sources-live-tabs.patch"
+            printf '%s' "$SOURCE_PATCH_B64" | base64 --decode | gzip -d > "$PATCH_FILE"
+            git apply --check "$PATCH_FILE"
+            git apply "$PATCH_FILE"
+          fi
+
+      - name: Verify boundary, payload and contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          changed="$({ git diff --name-only; git ls-files --others --exclude-standard; } | sort -u)"
+          printf '%s\n' "$changed"
+          export CHANGED="$changed"
+          python3 <<'PY'
+          from pathlib import Path
+          import hashlib
+          import os
+
+          changed = [line for line in os.environ.get("CHANGED", "").splitlines() if line]
+          allowed = {
+              ".nustrim-tv",
+              ".nustrim-version",
+              "app/build.gradle.kts",
+              "app/src/main/java/app/nudroidlabs/nustrim/tv/sources/TvSourcesEntry.kt",
+              "app/src/main/java/app/nudroidlabs/nustrim/tv/sources/TvSourcesModels.kt",
+              "app/src/main/java/app/nudroidlabs/nustrim/tv/sources/TvSourcesScreen.kt",
+              "scripts/verify_tv_episode_titles_s12_17.py",
+              "scripts/verify_tv_settings_parity_s12_11.py",
+              "scripts/verify_tv_sources_live_tabs_s12_18.py",
+              "scripts/verify_tv_subtitle_panel_s12_16.py",
+          }
+          unexpected = [path for path in changed if path not in allowed]
+          if unexpected:
+              raise SystemExit("S12.18 changed files outside Sources live-tab boundary: " + ", ".join(unexpected))
+
+          expected_hashes = {
+              ".nustrim-tv": "e8d73521b04ba731edc84ca26285087e3174d9286ef852fa981d230fd1324f7a",
+              ".nustrim-version": "6dc40c548ff0c10ef6798ea704346bc52e90ea655cec70cd872a1a6f4e0aa430",
+              "app/build.gradle.kts": "4962236885fbaf2f857947b5a9c5f9baf3637f850d5213ac585c4a8f5efa4307",
+              "app/src/main/java/app/nudroidlabs/nustrim/tv/sources/TvSourcesEntry.kt": "2cf31938e8a2e4981325eff2e76a6eea8e59a2bf3c48d2a3ae9dc7a79e425010",
+              "app/src/main/java/app/nudroidlabs/nustrim/tv/sources/TvSourcesModels.kt": "4c1da19acdd73f439504dd4f61efef86de134dabd3d43193fc55fe8007873937",
+              "app/src/main/java/app/nudroidlabs/nustrim/tv/sources/TvSourcesScreen.kt": "9b1dc05d89d897e73b1c2c5882fe106f070ea3a990708c83a1b0ca06fffce27f",
+              "scripts/verify_tv_episode_titles_s12_17.py": "a60123ad253b9f4028c1d0351a54170b0c7fe19eed7ab3877739d97bedffbf24",
+              "scripts/verify_tv_settings_parity_s12_11.py": "f732097119db3b43bc714f31114a56096c77761eaa855e75bdfd0d1b0093bb56",
+              "scripts/verify_tv_sources_live_tabs_s12_18.py": "bfd85e08bf36e31fa073f4652f1bc690cc9e6e612bfb3b4747a0a3e9a508664c",
+              "scripts/verify_tv_subtitle_panel_s12_16.py": "9f310def18d46e7036f00747d5f47c8d9926dd370925a1dfa2bcb325d235a223",
+          }
+          mismatch = []
+          for relative, expected in expected_hashes.items():
+              path = Path(relative)
+              actual = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else "missing"
+              if actual != expected:
+                  mismatch.append(relative)
+          if mismatch:
+              raise SystemExit("Exact S12.18 payload mismatch: " + ", ".join(mismatch))
+          PY
+          python3 scripts/verify_tv_sources_live_tabs_s12_18.py
+          python3 scripts/verify_tv_episode_titles_s12_17.py
+          python3 scripts/verify_tv_subtitle_panel_s12_16.py
+          python3 scripts/verify_tv_settings_parity_s12_11.py
+          python3 scripts/verify_tv_parity_s11.py
+
+      - name: Build permanent signed release APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle --no-daemon --build-cache \
+            :app:lintRelease \
+            :app:testDebugUnitTest \
+            :app:assembleRelease \
+            --stacktrace --console=plain \
+            2>&1 | tee "$RUNNER_TEMP/nustrim-s12-18-build.log"
+          test -s app/build/outputs/apk/release/app-release.apk
+
+      - name: Verify APK identity and certificate
+        id: verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/release/app-release.apk"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)"
+          AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -1)"
+          test -x "$APKSIGNER"
+          test -x "$AAPT"
+          "$APKSIGNER" verify --verbose --print-certs "$APK" | tee "$RUNNER_TEMP/nustrim-s12-18-signature.txt"
+          CERT="$(sed -n -E 's/^.*certificate SHA-256 digest:[[:space:]]*//p' "$RUNNER_TEMP/nustrim-s12-18-signature.txt" | head -1 | tr -d ':' | tr '[:lower:]' '[:upper:]')"
+          test "$CERT" = "$LOCKED_CERT_SHA256"
+          BADGING="$("$AAPT" dump badging "$APK" | head -1)"
+          PACKAGE="$(printf '%s\n' "$BADGING" | sed -n -E "s/^package: name='([^']+)'.*/\1/p")"
+          APK_CODE="$(printf '%s\n' "$BADGING" | sed -n -E "s/^.*versionCode='([^']+)'.*/\1/p")"
+          APK_NAME="$(printf '%s\n' "$BADGING" | sed -n -E "s/^.*versionName='([^']+)'.*/\1/p")"
+          test "$PACKAGE" = "app.nudroidlabs.nustrim"
+          test "$APK_CODE" = "$TARGET_VERSION_CODE"
+          test "$APK_NAME" = "$TARGET_VERSION_NAME"
+          echo "cert_sha=$CERT" >> "$GITHUB_OUTPUT"
+          echo "version_code=$APK_CODE" >> "$GITHUB_OUTPUT"
+          echo "version_name=$APK_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare updater manifest and report
+        id: assets
+        shell: bash
+        env:
+          CERT_SHA: ${{ steps.verify.outputs.cert_sha }}
+          VERSION_CODE: ${{ steps.verify.outputs.version_code }}
+          VERSION_NAME: ${{ steps.verify.outputs.version_name }}
+        run: |
+          set -euo pipefail
+          export CERT_SHA VERSION_CODE VERSION_NAME
+          python3 <<'PY'
+          from pathlib import Path
+          import hashlib
+          import json
+          import os
+
+          code = int(os.environ["VERSION_CODE"])
+          name = os.environ["VERSION_NAME"]
+          cert = os.environ["CERT_SHA"]
+          repo = os.environ["GITHUB_REPOSITORY"]
+          src = Path("app/build/outputs/apk/release/app-release.apk")
+          apk = Path(f"Nustrim-{name}.apk")
+          apk.write_bytes(src.read_bytes())
+          sha = hashlib.sha256(apk.read_bytes()).hexdigest()
+          size = apk.stat().st_size
+          tag = f"v{name}"
+          manifest = {
+              "versionCode": code,
+              "versionName": name,
+              "apkUrl": f"https://github.com/{repo}/releases/download/{tag}/{apk.name}",
+              "sha256": sha,
+              "changelog": "S12.18 removes completed provider tabs that have no playable links and keeps loading tabs temporary.",
+              "sizeBytes": size,
+              "signingMode": "permanent",
+              "signingCertSha256": cert,
+          }
+          report = {
+              "stage": "S12.18 Sources Live Tabs",
+              "issue": "S12-SOURCES-TABS-01",
+              "status": "build-verified",
+              "changes": [
+                  "show provider tabs temporarily while they load",
+                  "remove empty and failed provider tabs at terminal state",
+                  "retain only providers with at least one playable URL",
+                  "return selection to All when the active provider tab disappears"
+              ],
+              "preserved": ["S12.17 catalog episode titles", "S12.16 subtitle panel", "S12.15 Content Manager", "SmartSubs", "source resolver", "Mobile UI", "signed updater"],
+              "deviceAcceptance": "pending"
+          }
+          Path("update.json").write_text(json.dumps(manifest, indent=2) + "\n")
+          Path("tv-sources-live-tabs-s12-18-report.json").write_text(json.dumps(report, indent=2) + "\n")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"tag={tag}\n")
+              fh.write(f"apk={apk.name}\n")
+              fh.write(f"sha256={sha}\n")
+          PY
+
+      - name: Commit S12.18 only after verified build
+        id: commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            .nustrim-version .nustrim-tv app/build.gradle.kts \
+            app/src/main/java/app/nudroidlabs/nustrim/tv/sources/TvSourcesEntry.kt \
+            app/src/main/java/app/nudroidlabs/nustrim/tv/sources/TvSourcesModels.kt \
+            app/src/main/java/app/nudroidlabs/nustrim/tv/sources/TvSourcesScreen.kt \
+            scripts/verify_tv_episode_titles_s12_17.py \
+            scripts/verify_tv_settings_parity_s12_11.py \
+            scripts/verify_tv_sources_live_tabs_s12_18.py \
+            scripts/verify_tv_subtitle_panel_s12_16.py
+          if git diff --cached --quiet; then
+            echo "S12.18 source is already committed."
+          else
+            git commit -m "Prune empty Sources provider tabs S12.18 [skip ci]"
+            git push origin HEAD:main
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Create or update GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.assets.outputs.tag }}
+          VERSION: ${{ steps.verify.outputs.version_name }}
+          TARGET_SHA: ${{ steps.commit.outputs.sha }}
+        run: |
+          set -euo pipefail
+          NOTES="$RUNNER_TEMP/s12-18-release-notes.md"
+          printf '%s\n' \
+            "Nustrim $VERSION" "" \
+            "S12.18 keeps provider tabs visible only while loading or when they contain at least one playable link." "" \
+            "Completed empty and failed providers disappear automatically, and focus returns safely to All." "" \
+            "S12.17 catalog episode titles, S12.16 subtitle panel, SmartSubs, source resolution and Mobile UI are preserved." "" \
+            "Permanent signing certificate SHA-256: $LOCKED_CERT_SHA256" > "$NOTES"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "Nustrim $VERSION" --notes-file "$NOTES" --target "$TARGET_SHA" --latest
+          else
+            gh release create "$TAG" --title "Nustrim $VERSION" --notes-file "$NOTES" --target "$TARGET_SHA" --latest
+          fi
+
+      - name: Upload and verify release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.assets.outputs.tag }}
+          APK: ${{ steps.assets.outputs.apk }}
+          EXPECTED_SHA: ${{ steps.assets.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" "$APK" update.json tv-sources-live-tabs-s12-18-report.json --clobber
+          LIVE="$RUNNER_TEMP/s12-18-live"
+          mkdir -p "$LIVE"
+          gh release download "$TAG" --pattern "$APK" --pattern update.json --pattern tv-sources-live-tabs-s12-18-report.json --dir "$LIVE" --clobber
+          test "$(sha256sum "$LIVE/$APK" | cut -d' ' -f1)" = "$EXPECTED_SHA"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)" = "$TAG"
+
+      - name: Upload verified artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nustrim-tv-cleanroom-s12-18-sources-live-tabs-release
+          path: |
+            Nustrim-${{ steps.verify.outputs.version_name }}.apk
+            update.json
+            tv-sources-live-tabs-s12-18-report.json
+            ${{ runner.temp }}/nustrim-s12-18-signature.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Collect diagnose on failure
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          D="$RUNNER_TEMP/nustrim-s12-18-diagnose"
+          mkdir -p "$D"
+          cp "$RUNNER_TEMP/nustrim-s12-18-build.log" "$D/" 2>/dev/null
+          cp "$RUNNER_TEMP/nustrim-s12-18-signature.txt" "$D/" 2>/dev/null
+          cp app/build.gradle.kts .nustrim-version .nustrim-tv "$D/" 2>/dev/null
+          cp update.json tv-sources-live-tabs-s12-18-report.json "$D/" 2>/dev/null
+          git status --short > "$D/git-status.txt" 2>&1
+          git diff > "$D/git-diff.txt" 2>&1
+
+      - name: Upload diagnose on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nustrim-tv-cleanroom-s12-18-sources-live-tabs-diagnose
+          path: ${{ runner.temp }}/nustrim-s12-18-diagnose
+          if-no-files-found: warn
+          retention-days: 7
