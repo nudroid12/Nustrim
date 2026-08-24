@@ -56,9 +56,20 @@ data class LocalMediaEntry(
     )
 
     fun toEpisode(): MediaEpisode? = episodeId.takeIf { it.isNotBlank() }?.let {
+        val storedTitle = episodeTitle.trim()
+        val genericNumber = Regex("(?i)^episode\\s+(\\d+)$")
+            .matchEntire(storedTitle)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.toIntOrNull()
+        val canonicalTitle = when {
+            storedTitle.isBlank() -> episode?.let { number -> "Episode $number" } ?: "Episode"
+            genericNumber != null && episode != null && genericNumber != episode -> "Episode $episode"
+            else -> storedTitle
+        }
         MediaEpisode(
             id = it,
-            title = episodeTitle.ifBlank { "Episode" },
+            title = canonicalTitle,
             season = season,
             episode = episode
         )

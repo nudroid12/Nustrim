@@ -1,6 +1,6 @@
 generation=cleanroom-v1
 reference=nuvio-tv-0.8.6-beta
-subsystem=12.16-subtitle-panel-polish
+subsystem=12.17-episode-titles
 status=release-candidate
 baseline=0.51.4-tv-cleanroom-s6.2-rollback
 preserve=source-provider-engine,stream-resolver,playback-engine,mobile-ui
@@ -45,6 +45,9 @@ player-subtitle-panel=compact-three-column-safe-area
 player-subtitle-style=single-size-control,bold-toggle
 player-subtitle-language-list=scrollable-all
 player-subtitle-rendering=hidden-while-panel-open
+episode-title-source=catalog-metadata-first,cinemeta-catalog-fallback
+episode-title-canonical-routing=details,sources,player,continue-watching,episode-panel
+episode-title-fallback=episode-number-only-when-real-title-unavailable
 search=cleanroom-s7
 search-min-query-length=2
 search-live-debounce-ms=350

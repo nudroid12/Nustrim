@@ -1,0 +1,59 @@
+#!/usr/bin/env python3
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def read(relative: str) -> str:
+    return (ROOT / relative).read_text(encoding="utf-8")
+
+
+checks: list[tuple[str, bool]] = []
+
+
+def check(name: str, condition: bool) -> None:
+    checks.append((name, condition))
+
+
+details = read("app/src/main/java/app/nudroidlabs/nustrim/tv/details/TvDetailsRepository.kt")
+stremio_parser = read("app/src/main/java/app/nudroidlabs/nustrim/core/source/stremio/StremioParser.kt")
+builder = read("app/src/main/java/app/nudroidlabs/nustrim/tv/episode/TvEpisodeCatalogueBuilder.kt")
+local_store = read("app/src/main/java/app/nudroidlabs/nustrim/core/library/LocalMediaStore.kt")
+shell = read("app/src/main/java/app/nudroidlabs/nustrim/tv/shell/TvShell.kt")
+controls = read("app/src/main/java/app/nudroidlabs/nustrim/tv/player/TvPlayerControls.kt")
+player = read("app/src/main/java/app/nudroidlabs/nustrim/tv/player/TvPlayerScreen.kt")
+marker = read(".nustrim-tv")
+version = read(".nustrim-version").strip()
+gradle = read("app/build.gradle.kts")
+
+check("S12.17 marker", "subsystem=12.17-episode-titles" in marker)
+check("S12.17 version", version == "0.57.16-tv-cleanroom-s12.17-episode-titles")
+check("S12.17 versionCode", "versionCode = 139" in gradle)
+check("Stremio catalog parses video title", 'title = video.optString("title"' in stremio_parser)
+check("Catalog metadata remains first authority", "item.episodes.none(::needsCatalogTitle)" in details)
+check("Cinemeta is catalog fallback", "InstalledSourceStore.CINEMETA_URL" in details)
+check("Cinemeta direct IMDb identity", "directCinemetaSeed" in details and "IMDB_ID" in details)
+check("Cinemeta title search fallback", "findCinemetaMatch" in details and "searchable.search(" in details)
+check("Catalog metadata has bounded wait", "CATALOG_METADATA_TIMEOUT_MS = 8_000L" in details)
+check("Catalog episodes merge by coordinates", "catalogByCoordinate[season to number]" in details)
+check("Catalog title replaces generic title", "title = catalogEpisode.title.ifBlank" in details)
+check("TMDB is not used for episode titles", "TmdbClient" not in details and "tmdbEnrichmentEnabled" not in details)
+check("Canonical title reaches provider episode", "providerEpisode = canonicalProviderEpisode" in builder)
+check("Duplicate merge keeps canonical provider title", "providerEpisode = first.providerEpisode.copy(" in builder)
+check("Generic provider mismatch is corrected", "genericNumber != episodeNumber" in builder)
+check("Stored Continue Watching mismatch is corrected", "genericNumber != episode" in local_store)
+check("Details routes canonical episode to Sources", "episode = episode.providerEpisode" in shell)
+check("Player controls render routed episode title", "append(episode.title)" in controls)
+check("Pause overlay renders routed episode title", "episode?.title?.takeIf" in player)
+check("Canonical routing contract", "episode-title-canonical-routing=details,sources,player,continue-watching,episode-panel" in marker)
+check("Catalog-first marker", "episode-title-source=catalog-metadata-first,cinemeta-catalog-fallback" in marker)
+
+failed = [name for name, passed in checks if not passed]
+for name, passed in checks:
+    print(f"{'PASS' if passed else 'FAIL'}: {name}")
+
+if failed:
+    raise SystemExit(f"{len(failed)} of {len(checks)} checks failed: {', '.join(failed)}")
+
+print(f"S12.17 episode title contracts: {len(checks)}/{len(checks)} passed")

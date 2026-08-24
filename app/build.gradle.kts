@@ -16,8 +16,8 @@ android {
         applicationId = "app.nudroidlabs.nustrim"
         minSdk = 23
         targetSdk = 37
-        versionCode = 138
-        versionName = "0.57.15-tv-cleanroom-s12.16-subtitle-panel-polish"
+        versionCode = 139
+        versionName = "0.57.16-tv-cleanroom-s12.17-episode-titles"
     }
 
     val persistentUpdateSigning = if (

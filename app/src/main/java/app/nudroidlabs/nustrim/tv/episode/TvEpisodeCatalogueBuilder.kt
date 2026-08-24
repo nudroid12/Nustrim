@@ -38,6 +38,17 @@ object TvEpisodeCatalogueBuilder {
                 else -> TvEpisodeCoordinateKind.UNKNOWN
             }
 
+            val canonicalTitle = canonicalEpisodeTitle(
+                rawTitle = raw.title,
+                episodeNumber = cleanEpisode,
+                sourceIndex = index,
+            )
+            val canonicalProviderEpisode = raw.copy(
+                title = canonicalTitle,
+                season = cleanSeason,
+                episode = cleanEpisode,
+            )
+
             TvCanonicalEpisode(
                 identity = TvEpisodeIdentity(
                     parentKey = parentKey,
@@ -45,11 +56,7 @@ object TvEpisodeCatalogueBuilder {
                     sourceIndex = index,
                 ),
                 providerEpisodeId = raw.id.trim(),
-                title = canonicalEpisodeTitle(
-                    rawTitle = raw.title,
-                    episodeNumber = cleanEpisode,
-                    sourceIndex = index,
-                ),
+                title = canonicalTitle,
                 seasonNumber = cleanSeason,
                 episodeNumber = cleanEpisode,
                 displaySeasonNumber = cleanSeason,
@@ -58,7 +65,7 @@ object TvEpisodeCatalogueBuilder {
                 overview = raw.overview.trim(),
                 sourceIndex = index,
                 coordinateKind = coordinateKind,
-                providerEpisode = raw,
+                providerEpisode = canonicalProviderEpisode,
             )
         }
 
@@ -194,22 +201,34 @@ object TvEpisodeCatalogueBuilder {
     private fun mergeDuplicate(
         first: TvCanonicalEpisode,
         later: TvCanonicalEpisode,
-    ): TvCanonicalEpisode = first.copy(
-        title = mergeEpisodeTitle(first.title, later.title),
-        seasonNumber = first.seasonNumber ?: later.seasonNumber,
-        episodeNumber = first.episodeNumber ?: later.episodeNumber,
-        displaySeasonNumber = first.displaySeasonNumber ?: later.displaySeasonNumber,
-        displayEpisodeNumber = first.displayEpisodeNumber ?: later.displayEpisodeNumber,
-        thumbnailUrl = first.thumbnailUrl.ifBlank { later.thumbnailUrl },
-        overview = first.overview.ifBlank { later.overview },
-        coordinateKind = when {
-            (first.seasonNumber ?: later.seasonNumber) != null &&
-                (first.episodeNumber ?: later.episodeNumber) != null -> TvEpisodeCoordinateKind.PROVIDER
-            (first.seasonNumber ?: later.seasonNumber) != null ||
-                (first.episodeNumber ?: later.episodeNumber) != null -> TvEpisodeCoordinateKind.PARTIAL_PROVIDER
-            else -> TvEpisodeCoordinateKind.UNKNOWN
-        },
-    )
+    ): TvCanonicalEpisode {
+        val title = mergeEpisodeTitle(first.title, later.title)
+        val seasonNumber = first.seasonNumber ?: later.seasonNumber
+        val episodeNumber = first.episodeNumber ?: later.episodeNumber
+        val thumbnailUrl = first.thumbnailUrl.ifBlank { later.thumbnailUrl }
+        val overview = first.overview.ifBlank { later.overview }
+        return first.copy(
+            title = title,
+            seasonNumber = seasonNumber,
+            episodeNumber = episodeNumber,
+            displaySeasonNumber = first.displaySeasonNumber ?: later.displaySeasonNumber,
+            displayEpisodeNumber = first.displayEpisodeNumber ?: later.displayEpisodeNumber,
+            thumbnailUrl = thumbnailUrl,
+            overview = overview,
+            providerEpisode = first.providerEpisode.copy(
+                title = title,
+                season = seasonNumber,
+                episode = episodeNumber,
+                thumbnailUrl = thumbnailUrl,
+                overview = overview,
+            ),
+            coordinateKind = when {
+                seasonNumber != null && episodeNumber != null -> TvEpisodeCoordinateKind.PROVIDER
+                seasonNumber != null || episodeNumber != null -> TvEpisodeCoordinateKind.PARTIAL_PROVIDER
+                else -> TvEpisodeCoordinateKind.UNKNOWN
+            },
+        )
+    }
 
     private val episodeOrder = compareBy<TvCanonicalEpisode>(
         { it.episodeNumber ?: Int.MAX_VALUE },

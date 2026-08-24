@@ -28,8 +28,12 @@ app = read("app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt")
 metadata = read(".nustrim-tv")
 gradle = read("app/build.gradle.kts")
 
-require("target version name", 'versionName = "0.57.15-tv-cleanroom-s12.16-subtitle-panel-polish"' in gradle)
-require("target version code", "versionCode = 138" in gradle)
+require(
+    "target version name",
+    'versionName = "0.57.15-tv-cleanroom-s12.16-subtitle-panel-polish"' in gradle
+    or 'versionName = "0.57.16-tv-cleanroom-s12.17-episode-titles"' in gradle,
+)
+require("target version code", "versionCode = 138" in gradle or "versionCode = 139" in gradle)
 category_block = models.split("enum class TvSettingsCategory", 1)[1].split("}", 1)[0]
 require("seven TV categories", len(re.findall(r'^    [A-Z_]+\("', category_block, re.MULTILINE)) == 7)
 require(

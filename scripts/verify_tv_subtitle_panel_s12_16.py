@@ -24,8 +24,14 @@ metadata = read(".nustrim-tv")
 
 require(
     "target version",
-    'versionName = "0.57.15-tv-cleanroom-s12.16-subtitle-panel-polish"' in gradle
-    and "versionCode = 138" in gradle,
+    (
+        'versionName = "0.57.15-tv-cleanroom-s12.16-subtitle-panel-polish"' in gradle
+        and "versionCode = 138" in gradle
+    )
+    or (
+        'versionName = "0.57.16-tv-cleanroom-s12.17-episode-titles"' in gradle
+        and "versionCode = 139" in gradle
+    ),
 )
 require("safe subtitle panel width", 'width = 860.dp' in panels and 'width = 1_040.dp' not in panels)
 require("strong subtitle scrim", "strongScrim = true" in panels and "Color.Black.copy(alpha = 0.95f)" in panels)
