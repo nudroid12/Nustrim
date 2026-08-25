@@ -88,6 +88,7 @@ fun TvPlayerScreen(
     secondPreferredSubtitleLanguage: String,
     subtitleDisplayMode: SubtitleDisplayMode,
     episodeCatalogue: TvEpisodeCatalogue,
+    episodesLoading: Boolean,
     sourceSnapshot: TvSourcesSnapshot?,
     sourcesLoading: Boolean,
     sourcesError: String?,
@@ -413,7 +414,7 @@ fun TvPlayerScreen(
             playPauseFocusRequester = playPauseFocusRequester,
             progressFocusRequester = progressFocusRequester,
             seekStepMs = seekStepMs,
-            hasEpisodes = episodeCatalogue.episodes.isNotEmpty() && request.episode != null,
+            hasEpisodes = request.episode != null || episodeCatalogue.episodes.isNotEmpty(),
             hasNextEpisode = nextEpisode != null,
             aspectMode = aspectMode,
             showMoreActions = showMoreActions,
@@ -459,6 +460,7 @@ fun TvPlayerScreen(
             TvPlayerPanel.EPISODES -> TvPlayerEpisodesPanel(
                 catalogue = episodeCatalogue,
                 currentEpisodeId = request.episode?.id,
+                loading = episodesLoading,
                 onEpisodeSelected = onEpisodeSelected,
                 modifier = Modifier.fillMaxSize(),
             )

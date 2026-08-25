@@ -31,9 +31,10 @@ check(
     version in {
         "0.57.20-tv-cleanroom-s12.21-subtitle-language-split",
         "0.57.21-tv-cleanroom-s12.22-branding",
+        "0.57.22-tv-cleanroom-s12.23-player-episodes",
     },
 )
-check("S12.21 or later versionCode", "versionCode = 143" in gradle or "versionCode = 144" in gradle)
+check("S12.21 or later versionCode", any(f"versionCode = {code}" in gradle for code in (143, 144, 145)))
 check("Malay and Indonesian remain separate settings", '"ms" to "Malay"' in settings and '"id" to "Indonesian"' in settings)
 check("Malay ISO 639-1 maps to ms", '"ms", "msa", "may", "malay", "melayu" -> "ms"' in language)
 check("Indonesian ISO 639-1 maps to id", '"id", "in", "ind", "indonesian", "indonesia" -> "id"' in language)

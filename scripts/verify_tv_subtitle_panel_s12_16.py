@@ -51,6 +51,10 @@ require(
     or (
         'versionName = "0.57.21-tv-cleanroom-s12.22-branding"' in gradle
         and "versionCode = 144" in gradle
+    )
+    or (
+        'versionName = "0.57.22-tv-cleanroom-s12.23-player-episodes"' in gradle
+        and "versionCode = 145" in gradle
     ),
 )
 require("safe subtitle panel width", 'width = 860.dp' in panels and 'width = 1_040.dp' not in panels)

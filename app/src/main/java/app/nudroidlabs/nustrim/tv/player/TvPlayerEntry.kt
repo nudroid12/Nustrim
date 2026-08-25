@@ -18,6 +18,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import app.nudroidlabs.nustrim.core.library.LocalMediaStore
+import app.nudroidlabs.nustrim.tv.details.TvDetailsRepository
 import app.nudroidlabs.nustrim.tv.episode.TvCanonicalEpisode
 import app.nudroidlabs.nustrim.tv.episode.TvEpisodeCatalogueBuilder
 import app.nudroidlabs.nustrim.tv.navigation.TvRoute
@@ -43,6 +44,9 @@ fun TvPlayerEntry(
     }
     val subtitleRepository = remember(context.applicationContext) {
         TvSubtitleRepository(context.applicationContext)
+    }
+    val detailsRepository = remember(context.applicationContext) {
+        TvDetailsRepository(context.applicationContext)
     }
     val mediaStore = remember(context.applicationContext) {
         LocalMediaStore(context.applicationContext)
@@ -79,11 +83,54 @@ fun TvPlayerEntry(
     var refreshToken by remember(activeRequest.mediaKey, activeRequest.episode?.id) {
         mutableIntStateOf(0)
     }
+    var episodeMedia by remember(route.request.mediaKey) {
+        mutableStateOf(route.request.media)
+    }
+    var episodeMetadataLoading by remember(route.request.mediaKey) {
+        mutableStateOf(route.request.episode != null && route.request.media.episodes.isEmpty())
+    }
 
-    val episodeCatalogue = remember(activeRequest.mediaKey, activeRequest.media.episodes) {
+    LaunchedEffect(
+        activeRequest.mediaKey,
+        activeRequest.sourceUrl,
+        activeRequest.media.id,
+        activeRequest.episode?.id,
+    ) {
+        val currentMedia = activeRequest.media
+        if (currentMedia.episodes.isNotEmpty()) {
+            episodeMedia = currentMedia
+            episodeMetadataLoading = false
+            return@LaunchedEffect
+        }
+        if (activeRequest.episode == null) {
+            episodeMedia = currentMedia
+            episodeMetadataLoading = false
+            return@LaunchedEffect
+        }
+
+        episodeMetadataLoading = true
+        val detailedMedia = runCatching {
+            detailsRepository.load(
+                TvRoute.Details(
+                    contentKey = activeRequest.mediaKey,
+                    sourceUrl = activeRequest.sourceUrl,
+                    media = currentMedia,
+                ),
+            ).item
+        }.getOrNull()
+        if (!detailedMedia?.episodes.isNullOrEmpty()) {
+            episodeMedia = detailedMedia!!
+        }
+        episodeMetadataLoading = false
+    }
+
+    val episodeEntries = remember(episodeMedia.episodes, activeRequest.episode) {
+        episodeMedia.episodes.ifEmpty { listOfNotNull(activeRequest.episode) }
+    }
+    val episodeCatalogue = remember(activeRequest.mediaKey, episodeEntries) {
         TvEpisodeCatalogueBuilder.build(
             parentKey = activeRequest.mediaKey,
-            providerEpisodes = activeRequest.media.episodes,
+            providerEpisodes = episodeEntries,
         )
     }
     val nextEpisode = remember(episodeCatalogue, activeRequest.episode?.id) {
@@ -226,6 +273,7 @@ fun TvPlayerEntry(
                     secondPreferredSubtitleLanguage = preferences.subtitleSecondPreferredLanguage,
                     subtitleDisplayMode = preferences.subtitleDisplayMode,
                     episodeCatalogue = episodeCatalogue,
+                    episodesLoading = episodeMetadataLoading,
                     sourceSnapshot = sourceSnapshot,
                     sourcesLoading = sourcesLoading,
                     sourcesError = sourcesError,

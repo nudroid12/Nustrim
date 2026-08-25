@@ -67,6 +67,7 @@ import kotlinx.coroutines.delay
 fun TvPlayerEpisodesPanel(
     catalogue: TvEpisodeCatalogue,
     currentEpisodeId: String?,
+    loading: Boolean,
     onEpisodeSelected: (TvCanonicalEpisode) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -81,7 +82,8 @@ fun TvPlayerEpisodesPanel(
         season.episodes.any { it.providerEpisodeId == currentEpisodeId }
     }.takeIf { it >= 0 } ?: catalogue.firstRegularSeasonIndex
 
-    var selectedSeasonIndex by remember(catalogue.parentKey) {
+    val seasonKeys = remember(catalogue.seasons) { catalogue.seasons.map { it.stableKey } }
+    var selectedSeasonIndex by remember(catalogue.parentKey, seasonKeys) {
         mutableIntStateOf(currentSeasonIndex.coerceIn(catalogue.seasons.indices))
     }
     var pendingSeasonIndex by remember { mutableStateOf<Int?>(null) }
@@ -98,6 +100,24 @@ fun TvPlayerEpisodesPanel(
         title = "Episodes",
         modifier = modifier,
     ) {
+        if (loading) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                CircularProgressIndicator(
+                    color = Color.White,
+                    strokeWidth = 2.dp,
+                    modifier = Modifier.size(22.dp),
+                )
+                Text(
+                    text = "Loading full episode list...",
+                    color = Color.White.copy(alpha = 0.78f),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+            Spacer(Modifier.height(14.dp))
+        }
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),

@@ -1,6 +1,10 @@
 generation=cleanroom-v1
 reference=nuvio-tv-0.8.6-beta
-subsystem=12.22-branding
+subsystem=12.23-player-episodes
+player-episodes-tab=visible-for-episode-playback
+player-episodes-metadata=background-details-hydration
+player-episodes-continue-watching=full-catalogue-restored
+player-episodes-loading=current-episode-first
 branding-source=user-approved-blue-cyan-nustrim-logo
 branding-launcher=blue-cyan-n-mark-on-near-black
 branding-tv-banner=approved-lockup

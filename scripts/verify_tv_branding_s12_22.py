@@ -13,9 +13,17 @@ launch_background = read("app/src/main/res/drawable/nustrim_launch_background.xm
 
 
 checks = {
-    "target version": 'versionName = "0.57.21-tv-cleanroom-s12.22-branding"' in read("app/build.gradle.kts"),
-    "target version code": "versionCode = 144" in read("app/build.gradle.kts"),
-    "branding marker": "subsystem=12.22-branding" in read(".nustrim-tv"),
+    "S12.22 or later version": any(
+        name in read("app/build.gradle.kts")
+        for name in (
+            'versionName = "0.57.21-tv-cleanroom-s12.22-branding"',
+            'versionName = "0.57.22-tv-cleanroom-s12.23-player-episodes"',
+        )
+    ),
+    "S12.22 or later version code": any(
+        f"versionCode = {code}" in read("app/build.gradle.kts") for code in (144, 145)
+    ),
+    "branding marker": "branding-source=user-approved-blue-cyan-nustrim-logo" in read(".nustrim-tv"),
     "launcher resource": 'android:icon="@drawable/nustrim_app_icon"' in read("app/src/main/AndroidManifest.xml"),
     "launch background": "@drawable/nustrim_launch_background" in read("app/src/main/res/values/styles.xml"),
     "launch background colour shape": '<shape android:shape="rectangle">' in launch_background and '<solid android:color="#02030B"' in launch_background,
