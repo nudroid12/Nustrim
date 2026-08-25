@@ -15,7 +15,7 @@
     <application
         android:allowBackup="false"
         android:banner="@drawable/nustrim_tv_banner"
-        android:icon="@drawable/ic_nustrim"
+        android:icon="@drawable/nustrim_app_icon"
         android:label="Nustrim"
         android:usesCleartextTraffic="true"
         android:supportsRtl="true"

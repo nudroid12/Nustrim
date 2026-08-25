@@ -25,9 +25,15 @@ runtime = read("app/src/main/java/app/nudroidlabs/nustrim/tv/player/TvPlayerRunt
 panels = read("app/src/main/java/app/nudroidlabs/nustrim/tv/player/TvPlayerPanels.kt")
 settings = read("app/src/main/java/app/nudroidlabs/nustrim/tv/settings/TvSettingsModels.kt")
 
-check("S12.21 marker", "subsystem=12.21-subtitle-language-split" in marker)
-check("S12.21 version", version == "0.57.20-tv-cleanroom-s12.21-subtitle-language-split")
-check("S12.21 versionCode", "versionCode = 143" in gradle)
+check("S12.21 feature marker", "subtitle-language-panel=separate-malay-and-indonesian-rails" in marker)
+check(
+    "S12.21 or later version",
+    version in {
+        "0.57.20-tv-cleanroom-s12.21-subtitle-language-split",
+        "0.57.21-tv-cleanroom-s12.22-branding",
+    },
+)
+check("S12.21 or later versionCode", "versionCode = 143" in gradle or "versionCode = 144" in gradle)
 check("Malay and Indonesian remain separate settings", '"ms" to "Malay"' in settings and '"id" to "Indonesian"' in settings)
 check("Malay ISO 639-1 maps to ms", '"ms", "msa", "may", "malay", "melayu" -> "ms"' in language)
 check("Indonesian ISO 639-1 maps to id", '"id", "in", "ind", "indonesian", "indonesia" -> "id"' in language)

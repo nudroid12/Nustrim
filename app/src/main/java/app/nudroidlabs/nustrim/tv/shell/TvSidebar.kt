@@ -5,6 +5,7 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.updateTransition
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
@@ -44,6 +45,8 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -55,6 +58,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import app.nudroidlabs.nustrim.tv.navigation.TvRootDestination
+import app.nudroidlabs.nustrim.R
 import app.nudroidlabs.nustrim.tv.theme.TvColors
 import app.nudroidlabs.nustrim.tv.theme.TvTokens
 import app.nudroidlabs.nustrim.tv.theme.animateTvFocusScale
@@ -157,14 +161,23 @@ fun TvSidebar(
                 .focusGroup(),
             verticalArrangement = Arrangement.Center,
         ) {
-            Box(
-                modifier = Modifier.height(42.dp),
-                contentAlignment = Alignment.TopStart,
+            Row(
+                modifier = Modifier
+                    .width(itemWidth)
+                    .height(42.dp)
+                    .clipToBounds(),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
+                Image(
+                    painter = painterResource(R.drawable.nustrim_brand_mark),
+                    contentDescription = "Nustrim",
+                    modifier = Modifier.size(34.dp),
+                    contentScale = ContentScale.Fit,
+                )
+                Spacer(Modifier.width(8.dp))
                 Text(
                     text = "NUSTRIM",
                     modifier = Modifier
-                        .padding(start = 14.dp)
                         .alpha(labelAlpha)
                         .offset(x = labelOffset),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,

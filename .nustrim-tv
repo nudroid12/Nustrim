@@ -1,6 +1,12 @@
 generation=cleanroom-v1
 reference=nuvio-tv-0.8.6-beta
-subsystem=12.21-subtitle-language-split
+subsystem=12.22-branding
+branding-source=user-approved-blue-cyan-nustrim-logo
+branding-launcher=blue-cyan-n-mark-on-near-black
+branding-tv-banner=approved-lockup
+branding-launch-screen=approved-lockup
+branding-sidebar=transparent-n-mark
+branding-mobile-header=transparent-n-mark
 subtitle-language-malay=ms,msa,may,malay,melayu,bahasa-melayu
 subtitle-language-indonesian=id,in,ind,indonesian,indonesia,bahasa-indonesia,indo
 subtitle-language-label-override=explicit-label-corrects-provider-code

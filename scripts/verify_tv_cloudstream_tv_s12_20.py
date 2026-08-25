@@ -40,8 +40,9 @@ check("S12.20 feature marker", "cloudstream-tv-search=enabled-provider-rows" in 
 check("post-S12.20 version", version in {
     "0.57.19-tv-cleanroom-s12.20-cloudstream-tv",
     "0.57.20-tv-cleanroom-s12.21-subtitle-language-split",
+    "0.57.21-tv-cleanroom-s12.22-branding",
 })
-check("post-S12.20 versionCode", "versionCode = 142" in gradle or "versionCode = 143" in gradle)
+check("post-S12.20 versionCode", any(f"versionCode = {code}" in gradle for code in (142, 143, 144)))
 check("Media references carry provider locator", "val providerLocator: String = \"\"" in models)
 check("Provider locator is URL-safe", "Base64.URL_SAFE" in locator and "providerName" in locator)
 check("Provider locator persists in Library", "refProviderLocator" in local)

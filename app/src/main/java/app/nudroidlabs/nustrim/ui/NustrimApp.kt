@@ -26,6 +26,7 @@ import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -137,6 +138,7 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.res.painterResource
 import androidx.core.os.ConfigurationCompat
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalContext
@@ -163,6 +165,7 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
 import app.nudroidlabs.nustrim.BuildConfig
+import app.nudroidlabs.nustrim.R
 import app.nudroidlabs.nustrim.core.diagnostics.NustrimDiagnostics
 import app.nudroidlabs.nustrim.core.integrations.MdbListClient
 import app.nudroidlabs.nustrim.core.integrations.MdbListRating
@@ -1086,14 +1089,12 @@ private fun TvNavItem(
 }
 @Composable
 private fun NustrimMark(size: Int) {
-    Box(
-        modifier = Modifier
-            .size(size.dp)
-            .background(AppAccent, RoundedCornerShape((size / 4).dp)),
-        contentAlignment = Alignment.Center
-    ) {
-        Text("N", fontWeight = FontWeight.Black, fontSize = (size / 2).sp)
-    }
+    Image(
+        painter = painterResource(R.drawable.nustrim_brand_mark),
+        contentDescription = "Nustrim",
+        modifier = Modifier.size(size.dp),
+        contentScale = ContentScale.Fit,
+    )
 }
 
 @Composable
