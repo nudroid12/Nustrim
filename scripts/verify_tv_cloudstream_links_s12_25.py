@@ -35,11 +35,12 @@ check(
     version in {
         "0.57.24-tv-cleanroom-s12.25-cloudstream-links-fix",
         "0.57.25-tv-cleanroom-s12.26-tv-integrations",
+        "0.57.26-tv-cleanroom-s12.27-cloudstream-runtime-links",
     },
 )
 check(
     "S12.25 versionCode",
-    any(f"versionCode = {code}" in gradle for code in (147, 148)),
+    any(f"versionCode = {code}" in gradle for code in (147, 148, 149)),
 )
 check("provider data ID match", '"provider-data-id"' in repository)
 check("exact season and episode match", '"exact-season-episode"' in repository)

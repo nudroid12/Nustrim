@@ -26,9 +26,12 @@ screen = read("app/src/main/java/app/nudroidlabs/nustrim/tv/details/TvDetailsScr
 settings = read("app/src/main/java/app/nudroidlabs/nustrim/tv/settings/TvSettingsEntry.kt")
 clients = read("app/src/main/java/app/nudroidlabs/nustrim/core/integrations/IntegrationClients.kt")
 
-check("S12.26 marker", "subsystem=12.26-tv-integrations" in marker)
-check("S12.26 version", version == "0.57.25-tv-cleanroom-s12.26-tv-integrations")
-check("S12.26 versionCode", "versionCode = 148" in gradle)
+check("S12.26 marker", "integrations-tv-tmdb=progressive-details-enrichment" in marker)
+check("S12.26 version", version in {
+    "0.57.25-tv-cleanroom-s12.26-tv-integrations",
+    "0.57.26-tv-cleanroom-s12.27-cloudstream-runtime-links",
+})
+check("S12.26 versionCode", any(f"versionCode = {code}" in gradle for code in (148, 149)))
 check("TV snapshot carries TMDB metadata", "val tmdbMetadata: TmdbMetadata?" in models)
 check("TV snapshot carries MDBList ratings", "val mdbListRatings: List<MdbListRating>" in models)
 check("TV snapshot exposes progressive loading", "val integrationsLoading: Boolean" in models)

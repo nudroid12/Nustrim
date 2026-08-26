@@ -36,9 +36,10 @@ check(
         "0.57.23-tv-cleanroom-s12.24-sidebar-clean",
         "0.57.24-tv-cleanroom-s12.25-cloudstream-links-fix",
         "0.57.25-tv-cleanroom-s12.26-tv-integrations",
+        "0.57.26-tv-cleanroom-s12.27-cloudstream-runtime-links",
     },
 )
-check("post-S12.18 versionCode", any(f"versionCode = {code}" in gradle for code in (140, 141, 142, 143, 144, 145, 146, 147, 148)))
+check("post-S12.18 versionCode", any(f"versionCode = {code}" in gradle for code in (140, 141, 142, 143, 144, 145, 146, 147, 148, 149)))
 check("Playable streams are explicit", "val playableStreams" in models and "streams.filter { it.playable }" in models)
 check("Source labels come from playable links", "val sourceLabels: List<String> = playableStreams" in models)
 check("All filter returns playable links only", "if (sourceLabel == null) playableStreams" in models)

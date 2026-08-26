@@ -13,7 +13,9 @@ import app.nudroidlabs.nustrim.core.source.SearchableSourceSession
 import app.nudroidlabs.nustrim.core.source.SourceEngine
 import app.nudroidlabs.nustrim.core.source.SourceKind
 import app.nudroidlabs.nustrim.core.source.SourceSession
+import app.nudroidlabs.nustrim.core.source.cloudstream.CloudStreamProviderContainerSession
 import app.nudroidlabs.nustrim.core.source.cloudstream.CloudStreamProviderLocator
+import app.nudroidlabs.nustrim.core.source.cloudstream.CloudStreamProviderStore
 import app.nudroidlabs.nustrim.tv.cloudstream.TvCloudStreamBridge
 import app.nudroidlabs.nustrim.tv.navigation.TvRoute
 import kotlinx.coroutines.async
@@ -39,6 +41,7 @@ class TvSourcesRepository(context: Context) {
     private val sourceEngine = SourceEngine(appContext)
     private val sourceStore = InstalledSourceStore(appContext)
     private val cloudStreamBridge = TvCloudStreamBridge(appContext)
+    private val cloudStreamProviderStore = CloudStreamProviderStore(appContext)
     private val providerPerformance = TvCloudStreamPerformanceStore(appContext)
     private val cloudStreamProviderSlots = Semaphore(MAX_PARALLEL_CLOUDSTREAM_PROVIDERS)
 
@@ -454,6 +457,15 @@ class TvSourcesRepository(context: Context) {
         onProgress: suspend (SourceResolveResult) -> Unit,
     ): SourceResolveResult {
         val containerLabel = session.displayName.ifBlank { fallbackLabel }
+        if (session is CloudStreamProviderContainerSession) {
+            return resolveLoadedPluginContainer(
+                route = route,
+                sourceUrl = sourceUrl,
+                containerLabel = containerLabel,
+                container = session,
+                onProgress = onProgress,
+            )
+        }
         val catalog = runCatching { session.awaitCatalog() }.getOrElse { error ->
             return SourceResolveResult(
                 attempts = listOf(
@@ -466,38 +478,13 @@ class TvSourcesRepository(context: Context) {
             )
         }
 
-        val catalogItems = catalog.items
-        val isLoadedPluginContainer = session.id.startsWith("cloudstream-plugin:")
+        val catalogItems = if (session.id.startsWith("cloudstream:")) {
+            catalog.items.filter { cloudStreamProviderStore.isEnabled(session.id, it) }
+        } else {
+            catalog.items
+        }
         val exposesProviderCards = catalogItems.any {
             it.ref?.sourceKind == "cloudstream-loaded-provider"
-        }
-
-        if (isLoadedPluginContainer && !exposesProviderCards) {
-            return runCatching {
-                val directProvider = withTimeout(CHILD_OPEN_TIMEOUT_MS) {
-                    opener.awaitChild(catalogItems.firstOrNull() ?: route.media)
-                }
-                withTimeout(PROVIDER_TIMEOUT_MS) {
-                    resolveSession(
-                        route = route,
-                        sourceUrl = sourceUrl,
-                        fallbackLabel = containerLabel,
-                        session = directProvider,
-                        depth = depth + 1,
-                        onProgress = onProgress,
-                    )
-                }
-            }.getOrElse { error ->
-                SourceResolveResult(
-                    attempts = listOf(
-                        TvSourceAttempt(
-                            sourceLabel = containerLabel,
-                            status = TvSourceAttemptStatus.ERROR,
-                            message = error.message.orEmpty().ifBlank { error::class.java.simpleName },
-                        ),
-                    ),
-                )
-            }
         }
 
         val locatedProvider = CloudStreamProviderLocator.decode(
@@ -516,9 +503,16 @@ class TvSourcesRepository(context: Context) {
                     child.ref?.metaId == locatedProvider?.pluginUrl || child.title == locatedProvider?.providerName
                 }.thenByDescending { child ->
                     providerPerformance.score(sourceUrl, providerIdentity(child))
+                }.thenByDescending { child ->
+                    typeCompatible(route.media.type, child.type)
                 },
             )
             .take(MAX_CHILDREN_PER_CONTAINER)
+        NustrimDiagnostics.log(
+            "CLOUDSTREAM_REPOSITORY_PLAN",
+            "repository=${session.displayName} enabled=${catalogItems.size} " +
+                "selected=${children.size} cap=$MAX_CHILDREN_PER_CONTAINER",
+        )
         if (children.isEmpty()) {
             return SourceResolveResult(
                 attempts = listOf(
@@ -619,6 +613,81 @@ class TvSourcesRepository(context: Context) {
         return SourceResolveResult(
             attempts = childResults.flatMap { it.attempts },
             streams = childResults.flatMap { it.streams },
+            publishedIncrementally = true,
+        )
+    }
+
+    private suspend fun resolveLoadedPluginContainer(
+        route: TvRoute.Sources,
+        sourceUrl: String,
+        containerLabel: String,
+        container: CloudStreamProviderContainerSession,
+        onProgress: suspend (SourceResolveResult) -> Unit,
+    ): SourceResolveResult {
+        val providerNames = container.providerNames
+            .filter(String::isNotBlank)
+            .distinct()
+            .take(MAX_PROVIDERS_PER_PLUGIN)
+        if (providerNames.isEmpty()) {
+            return SourceResolveResult(
+                attempts = listOf(
+                    TvSourceAttempt(
+                        sourceLabel = containerLabel,
+                        status = TvSourceAttemptStatus.EMPTY,
+                        message = "Plugin registered no usable provider",
+                    ),
+                ),
+            )
+        }
+
+        onProgress(
+            SourceResolveResult(
+                attempts = providerNames.map { providerName ->
+                    TvSourceAttempt(
+                        sourceLabel = providerName,
+                        status = TvSourceAttemptStatus.LOADING,
+                    )
+                },
+                publishedIncrementally = true,
+            ),
+        )
+
+        val results = coroutineScope {
+            providerNames.map { providerName ->
+                async {
+                    val result = runCatching {
+                        val provider = withTimeout(CHILD_OPEN_TIMEOUT_MS) {
+                            container.awaitProvider(providerName)
+                        }
+                        withTimeout(PROVIDER_TIMEOUT_MS) {
+                            resolveSearchableProvider(
+                                route = route,
+                                sourceUrl = sourceUrl,
+                                session = provider,
+                                searchable = provider,
+                            )
+                        }
+                    }.getOrElse { error ->
+                        SourceResolveResult(
+                            attempts = listOf(
+                                TvSourceAttempt(
+                                    sourceLabel = providerName,
+                                    status = TvSourceAttemptStatus.ERROR,
+                                    message = error.message.orEmpty().ifBlank {
+                                        error::class.java.simpleName
+                                    },
+                                ),
+                            ),
+                        )
+                    }
+                    onProgress(result)
+                    result
+                }
+            }.awaitAll()
+        }
+        return SourceResolveResult(
+            attempts = results.flatMap { it.attempts },
+            streams = results.flatMap { it.streams },
             publishedIncrementally = true,
         )
     }
@@ -993,7 +1062,8 @@ class TvSourcesRepository(context: Context) {
         private const val PROVIDER_TIMEOUT_MS = 28_000L
         private const val CHILD_OPEN_TIMEOUT_MS = 18_000L
         private const val MAX_CHILD_DEPTH = 2
-        private const val MAX_CHILDREN_PER_CONTAINER = 18
+        private const val MAX_CHILDREN_PER_CONTAINER = 48
+        private const val MAX_PROVIDERS_PER_PLUGIN = 12
         private const val POSITIVE_CACHE_TTL_MS = 30L * 60L * 1_000L
         private const val NEGATIVE_CACHE_TTL_MS = 10L * 60L * 1_000L
         private const val NEGATIVE_PROVIDER_CACHE_TTL_MS = 10L * 60L * 1_000L
@@ -1064,6 +1134,17 @@ private suspend fun ChildSourceOpener.awaitChild(item: MediaItem): SourceSession
     suspendCancellableCoroutine { continuation ->
         openChild(
             item = item,
+            onSuccess = { if (continuation.isActive) continuation.resume(it) },
+            onError = { if (continuation.isActive) continuation.resumeWithException(it) },
+        )
+    }
+
+private suspend fun CloudStreamProviderContainerSession.awaitProvider(
+    providerName: String,
+): app.nudroidlabs.nustrim.core.source.cloudstream.CloudStreamProviderSession =
+    suspendCancellableCoroutine { continuation ->
+        openProvider(
+            providerName = providerName,
             onSuccess = { if (continuation.isActive) continuation.resume(it) },
             onError = { if (continuation.isActive) continuation.resumeWithException(it) },
         )

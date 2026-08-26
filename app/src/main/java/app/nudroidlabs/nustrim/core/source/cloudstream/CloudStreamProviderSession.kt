@@ -273,6 +273,19 @@ class CloudStreamProviderSession(
                 )
                 throw error
             }
+            if (accepted && links.isEmpty()) {
+                var waits = 0
+                while (links.isEmpty() && waits < LATE_CALLBACK_WAIT_STEPS) {
+                    delay(LATE_CALLBACK_WAIT_STEP_MS)
+                    waits += 1
+                }
+                if (links.isNotEmpty()) {
+                    NustrimDiagnostics.log(
+                        "CLOUDSTREAM_LOADLINKS_LATE_CALLBACK",
+                        "provider=${provider.name} waits=$waits links=${links.size}",
+                    )
+                }
+            }
             NustrimDiagnostics.log(
                 "CLOUDSTREAM_LOADLINKS_RESULT",
                 "provider=${provider.name} accepted=$accepted links=${links.size} subtitles=${subtitles.size}",
@@ -428,5 +441,10 @@ class CloudStreamProviderSession(
                 main.post { onError(t) }
             }
         }
+    }
+
+    private companion object {
+        const val LATE_CALLBACK_WAIT_STEPS = 6
+        const val LATE_CALLBACK_WAIT_STEP_MS = 250L
     }
 }

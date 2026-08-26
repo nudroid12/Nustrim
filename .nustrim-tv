@@ -1,6 +1,10 @@
 generation=cleanroom-v1
 reference=nuvio-tv-0.8.6-beta
-subsystem=12.26-tv-integrations
+subsystem=12.27-cloudstream-runtime-links
+cloudstream-provider-entry=search-without-main-page-preflight
+cloudstream-repository-selection=enabled-type-and-history-aware-up-to-48
+cloudstream-late-callback=bounded-1500ms
+cloudstream-empty-tabs=removed-after-terminal-result
 integrations-tv-tmdb=progressive-details-enrichment
 integrations-tv-tmdb-fields=title,overview,poster,backdrop,logo,year,genres,runtime,cast
 integrations-tv-mdblist=selected-provider-rating-chips
