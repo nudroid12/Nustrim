@@ -43,8 +43,9 @@ check("post-S12.20 version", version in {
     "0.57.21-tv-cleanroom-s12.22-branding",
     "0.57.22-tv-cleanroom-s12.23-player-episodes",
     "0.57.23-tv-cleanroom-s12.24-sidebar-clean",
+    "0.57.24-tv-cleanroom-s12.25-cloudstream-links-fix",
 })
-check("post-S12.20 versionCode", any(f"versionCode = {code}" in gradle for code in (142, 143, 144, 145, 146)))
+check("post-S12.20 versionCode", any(f"versionCode = {code}" in gradle for code in (142, 143, 144, 145, 146, 147)))
 check("Media references carry provider locator", "val providerLocator: String = \"\"" in models)
 check("Provider locator is URL-safe", "Base64.URL_SAFE" in locator and "providerName" in locator)
 check("Provider locator persists in Library", "refProviderLocator" in local)

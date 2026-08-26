@@ -1,6 +1,7 @@
 package app.nudroidlabs.nustrim.tv.sources
 
 import android.content.Context
+import app.nudroidlabs.nustrim.core.diagnostics.NustrimDiagnostics
 import app.nudroidlabs.nustrim.core.model.MediaCatalog
 import app.nudroidlabs.nustrim.core.model.MediaEpisode
 import app.nudroidlabs.nustrim.core.model.MediaItem
@@ -203,8 +204,8 @@ class TvSourcesRepository(context: Context) {
         if (installed.url == route.sourceUrl && locator != null) {
             return runCatching {
                 val (provider, detailed) = cloudStreamBridge.openLocated(route.media)
-                val streams = resolveProviderStreams(route, provider, detailed)
-                providerResult(provider.displayName, installed.url, streams)
+                val resolution = resolveProviderStreams(route, provider, detailed)
+                providerResult(provider.displayName, installed.url, resolution)
             }.getOrElse { error ->
                 SourceResolveResult(
                     attempts = listOf(
@@ -633,9 +634,9 @@ class TvSourcesRepository(context: Context) {
         if (locator?.providerName == session.displayName) {
             val directDetails = runCatching { session.awaitDetails(route.media) }.getOrNull()
             if (directDetails != null) {
-                val directStreams = resolveProviderStreams(route, session, directDetails)
-                if (directStreams.isNotEmpty()) {
-                    return providerResult(label, sourceUrl, directStreams)
+                val directResolution = resolveProviderStreams(route, session, directDetails)
+                if (directResolution.streams.isNotEmpty()) {
+                    return providerResult(label, sourceUrl, directResolution)
                 }
             }
         }
@@ -674,48 +675,82 @@ class TvSourcesRepository(context: Context) {
             )
         }
 
-        val resolvedStreams = resolveProviderStreams(route, session, details)
-        return providerResult(label, sourceUrl, resolvedStreams)
+        val resolution = resolveProviderStreams(route, session, details)
+        return providerResult(label, sourceUrl, resolution)
     }
 
     private suspend fun resolveProviderStreams(
         route: TvRoute.Sources,
         session: SourceSession,
         details: MediaItem,
-    ): List<StreamSource> = if (route.episode == null) {
-        runCatching { session.awaitStreams(details, null) }.getOrElse { emptyList() }
-    } else {
-        val requestedSeason = route.episode.season
-        val requestedEpisode = route.episode.episode
-        if (requestedSeason == null || requestedEpisode == null) {
-            emptyList()
-        } else {
-            val matches = details.episodes.filter {
-                it.season == requestedSeason && it.episode == requestedEpisode
-            }
-            coroutineScope {
-                matches.map { providerEpisode ->
-                    async {
-                        runCatching { session.awaitStreams(details, providerEpisode) }
-                            .getOrElse { emptyList() }
-                    }
-                }.awaitAll().flatten()
-            }
+    ): ProviderStreamsResolution {
+        val requestedEpisode = route.episode
+        if (requestedEpisode == null) {
+            return resolveProviderCandidates(
+                session = session,
+                details = details,
+                candidates = listOf(null),
+                matchStrategy = "movie-or-live",
+            )
         }
+
+        val episodeMatch = matchProviderEpisodes(
+            requested = requestedEpisode,
+            catalogEpisodes = route.media.episodes,
+            providerEpisodes = details.episodes,
+        )
+        if (episodeMatch.episodes.isEmpty()) {
+            val requestedCoordinate = episodeCoordinate(requestedEpisode)
+            val providerCoordinates = details.episodes
+                .take(8)
+                .joinToString(",") { episodeCoordinate(it) }
+                .ifBlank { "none" }
+            val message = "No provider episode match for $requestedCoordinate; " +
+                "provider episodes=${details.episodes.size} sample=$providerCoordinates"
+            NustrimDiagnostics.log(
+                "CLOUDSTREAM_EPISODE_NO_MATCH",
+                "provider=${session.displayName} $message",
+            )
+            return ProviderStreamsResolution(message = message)
+        }
+
+        NustrimDiagnostics.log(
+            "CLOUDSTREAM_EPISODE_MATCH",
+            "provider=${session.displayName} requested=${episodeCoordinate(requestedEpisode)} " +
+                "strategy=${episodeMatch.strategy} candidates=${episodeMatch.episodes.size}",
+        )
+        return resolveProviderCandidates(
+            session = session,
+            details = details,
+            candidates = episodeMatch.episodes,
+            matchStrategy = episodeMatch.strategy,
+        )
     }
 
     private fun providerResult(
         label: String,
         sourceUrl: String,
-        resolvedStreams: List<StreamSource>,
+        resolution: ProviderStreamsResolution,
     ): SourceResolveResult {
+        val resolvedStreams = resolution.streams
         val playableStreams = resolvedStreams.filter { it.playable && it.url.isNotBlank() }
+        val resultMessage = buildList {
+            resolution.message.takeIf { it.isNotBlank() }?.let(::add)
+            if (resolvedStreams.isNotEmpty() && playableStreams.isEmpty()) {
+                add("Provider returned ${resolvedStreams.size} result(s), but 0 supported playable links")
+            }
+        }.joinToString(" · ")
         return SourceResolveResult(
             attempts = listOf(
                 TvSourceAttempt(
                     sourceLabel = label,
-                    status = if (playableStreams.isEmpty()) TvSourceAttemptStatus.EMPTY else TvSourceAttemptStatus.SUCCESS,
+                    status = when {
+                        playableStreams.isNotEmpty() -> TvSourceAttemptStatus.SUCCESS
+                        resolution.failed -> TvSourceAttemptStatus.ERROR
+                        else -> TvSourceAttemptStatus.EMPTY
+                    },
                     streamCount = playableStreams.size,
+                    message = resultMessage,
                 ),
             ),
             streams = playableStreams.map { stream ->
@@ -727,6 +762,131 @@ class TvSourcesRepository(context: Context) {
             },
         )
     }
+
+    private suspend fun resolveProviderCandidates(
+        session: SourceSession,
+        details: MediaItem,
+        candidates: List<MediaEpisode?>,
+        matchStrategy: String,
+    ): ProviderStreamsResolution {
+        val results = coroutineScope {
+            candidates.map { providerEpisode ->
+                async {
+                    runCatching { session.awaitStreams(details, providerEpisode) }
+                }
+            }.awaitAll()
+        }
+        val streams = results.flatMap { it.getOrElse { emptyList() } }
+            .distinctBy { stream ->
+                listOf(
+                    stream.url,
+                    stream.type,
+                    stream.name,
+                    stream.headers.entries.sortedBy { it.key.lowercase() }.joinToString(),
+                ).joinToString("|")
+            }
+        val failures = results.mapNotNull { it.exceptionOrNull() }
+        failures.forEach { error ->
+            NustrimDiagnostics.error(
+                "CLOUDSTREAM_LOADLINKS_ERROR",
+                error,
+                "provider=${session.displayName} strategy=$matchStrategy",
+            )
+        }
+        NustrimDiagnostics.log(
+            "CLOUDSTREAM_LINKS_RESULT",
+            "provider=${session.displayName} strategy=$matchStrategy " +
+                "candidates=${candidates.size} results=${streams.size} failures=${failures.size}",
+        )
+        return ProviderStreamsResolution(
+            streams = streams,
+            failed = failures.size == results.size && results.isNotEmpty(),
+            message = when {
+                failures.isEmpty() -> ""
+                failures.size == results.size -> failures.first().toDiagnosticMessage()
+                else -> "${failures.size} of ${results.size} matched episode variant(s) failed"
+            },
+        )
+    }
+
+    private fun matchProviderEpisodes(
+        requested: MediaEpisode,
+        catalogEpisodes: List<MediaEpisode>,
+        providerEpisodes: List<MediaEpisode>,
+    ): ProviderEpisodeMatch {
+        if (providerEpisodes.isEmpty()) return ProviderEpisodeMatch()
+
+        requested.id.takeIf { it.isNotBlank() }?.let { requestedId ->
+            providerEpisodes.filter { it.id == requestedId }
+                .takeIf { it.isNotEmpty() }
+                ?.let { return ProviderEpisodeMatch(it, "provider-data-id") }
+        }
+
+        val exactCoordinates = providerEpisodes.filter {
+            requested.season != null && requested.episode != null &&
+                it.season == requested.season && it.episode == requested.episode
+        }
+        if (exactCoordinates.isNotEmpty()) {
+            return ProviderEpisodeMatch(exactCoordinates, "exact-season-episode")
+        }
+
+        meaningfulEpisodeTitle(requested.title)?.let { requestedTitle ->
+            providerEpisodes.filter {
+                meaningfulEpisodeTitle(it.title) == requestedTitle
+            }.takeIf { it.isNotEmpty() }?.let {
+                return ProviderEpisodeMatch(it, "catalogue-episode-title")
+            }
+        }
+
+        requested.episode?.let { episodeNumber ->
+            val numberMatches = providerEpisodes.filter { it.episode == episodeNumber }
+            val positiveSeasons = numberMatches.mapNotNull { it.season?.takeIf { season -> season > 0 } }.distinct()
+            if (numberMatches.isNotEmpty() && positiveSeasons.isEmpty()) {
+                return ProviderEpisodeMatch(numberMatches, "episode-number-provider-season-missing")
+            }
+            if (requested.season != null &&
+                numberMatches.isNotEmpty() &&
+                positiveSeasons == listOf(requested.season)
+            ) {
+                return ProviderEpisodeMatch(numberMatches, "episode-number-single-provider-season")
+            }
+        }
+
+        val catalogIndex = catalogEpisodes.indexOfFirst {
+            it.id == requested.id ||
+                (requested.season != null && requested.episode != null &&
+                    it.season == requested.season && it.episode == requested.episode)
+        }
+        val providerOrdinals = providerEpisodes
+            .distinctBy { it.id.takeIf(String::isNotBlank) ?: episodeCoordinate(it) }
+        if (catalogIndex >= 0 &&
+            catalogEpisodes.size == providerOrdinals.size &&
+            catalogIndex < providerOrdinals.size
+        ) {
+            return ProviderEpisodeMatch(
+                episodes = listOf(providerOrdinals[catalogIndex]),
+                strategy = "catalogue-ordinal-equal-count",
+            )
+        }
+
+        return ProviderEpisodeMatch()
+    }
+
+    private fun meaningfulEpisodeTitle(title: String): String? {
+        val normalized = normalizeTitle(title)
+        if (normalized.isBlank() || GENERIC_EPISODE_TITLE_REGEX.matches(normalized)) return null
+        return normalized
+    }
+
+    private fun episodeCoordinate(episode: MediaEpisode): String = buildString {
+        append("S")
+        append(episode.season?.toString() ?: "?")
+        append("E")
+        append(episode.episode?.toString() ?: "?")
+    }
+
+    private fun Throwable.toDiagnosticMessage(): String =
+        message.orEmpty().ifBlank { this::class.java.simpleName }
 
     private fun chooseConservativeMatch(
         requested: MediaItem,
@@ -791,6 +951,17 @@ class TvSourcesRepository(context: Context) {
         val publishedIncrementally: Boolean = false,
     )
 
+    private data class ProviderStreamsResolution(
+        val streams: List<StreamSource> = emptyList(),
+        val failed: Boolean = false,
+        val message: String = "",
+    )
+
+    private data class ProviderEpisodeMatch(
+        val episodes: List<MediaEpisode> = emptyList(),
+        val strategy: String = "none",
+    )
+
     private fun cached(key: String): TvSourcesSnapshot? = synchronized(snapshotCache) {
         val cached = snapshotCache[key] ?: return@synchronized null
         if (System.currentTimeMillis() >= cached.expiresAtMs) {
@@ -831,6 +1002,7 @@ class TvSourcesRepository(context: Context) {
         private val NON_ALPHANUMERIC_REGEX = Regex("[^a-z0-9]+")
         private val MULTI_SPACE_REGEX = Regex("\\s+")
         private val YEAR_REGEX = Regex("\\b(19|20)\\d{2}\\b")
+        private val GENERIC_EPISODE_TITLE_REGEX = Regex("(?:s\\d+\\s*)?(?:e|ep|episode)\\s*\\d+")
         private val negativeProviderCache = java.util.concurrent.ConcurrentHashMap<String, Long>()
         private val snapshotCache = object : LinkedHashMap<String, CachedSnapshot>(24, 0.75f, true) {
             override fun removeEldestEntry(

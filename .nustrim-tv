@@ -1,6 +1,9 @@
 generation=cleanroom-v1
 reference=nuvio-tv-0.8.6-beta
-subsystem=12.24-sidebar-clean
+subsystem=12.25-cloudstream-links-fix
+cloudstream-episode-match=provider-id,exact-coordinate,metadata-title,missing-season-number,equal-count-ordinal
+cloudstream-loadlinks-errors=diagnostics-preserved
+cloudstream-empty-result=reason-visible-before-tab-removal
 player-episodes-tab=visible-for-episode-playback
 player-episodes-metadata=background-details-hydration
 player-episodes-continue-watching=full-catalogue-restored

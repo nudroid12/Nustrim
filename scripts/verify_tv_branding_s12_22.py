@@ -19,10 +19,11 @@ checks = {
             'versionName = "0.57.21-tv-cleanroom-s12.22-branding"',
             'versionName = "0.57.22-tv-cleanroom-s12.23-player-episodes"',
             'versionName = "0.57.23-tv-cleanroom-s12.24-sidebar-clean"',
+            'versionName = "0.57.24-tv-cleanroom-s12.25-cloudstream-links-fix"',
         )
     ),
     "S12.22 or later version code": any(
-        f"versionCode = {code}" in read("app/build.gradle.kts") for code in (144, 145, 146)
+        f"versionCode = {code}" in read("app/build.gradle.kts") for code in (144, 145, 146, 147)
     ),
     "branding marker": "branding-source=user-approved-blue-cyan-nustrim-logo" in read(".nustrim-tv"),
     "launcher resource": 'android:icon="@drawable/nustrim_app_icon"' in read("app/src/main/AndroidManifest.xml"),

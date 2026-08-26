@@ -2,6 +2,7 @@ package app.nudroidlabs.nustrim.core.source.cloudstream
 
 import android.os.Handler
 import android.os.Looper
+import app.nudroidlabs.nustrim.core.diagnostics.NustrimDiagnostics
 import app.nudroidlabs.nustrim.core.model.MediaCatalog
 import app.nudroidlabs.nustrim.core.model.MediaEpisode
 import app.nudroidlabs.nustrim.core.model.MediaItem
@@ -209,6 +210,10 @@ class CloudStreamProviderSession(
     ) {
         launch(onSuccess, onError) {
             itemUnsupportedTransport[item.id]?.let { reason ->
+                NustrimDiagnostics.log(
+                    "CLOUDSTREAM_UNSUPPORTED_TRANSPORT",
+                    "provider=${provider.name} reason=$reason",
+                )
                 return@launch listOf(
                     StreamSource(
                         name = "Unsupported CloudStream transport",
@@ -233,6 +238,10 @@ class CloudStreamProviderSession(
             }
 
             if (data.isNullOrBlank()) {
+                NustrimDiagnostics.log(
+                    "CLOUDSTREAM_LOADLINKS_NO_DATA",
+                    "provider=${provider.name} item=${item.title}",
+                )
                 return@launch listOf(
                     StreamSource(
                         name = "No direct loadLinks data",
@@ -245,11 +254,28 @@ class CloudStreamProviderSession(
             val links = Collections.synchronizedList(mutableListOf<com.lagradost.cloudstream3.utils.ExtractorLink>())
             val subtitles = Collections.synchronizedList(mutableListOf<com.lagradost.cloudstream3.SubtitleFile>())
 
-            provider.loadLinks(
-                data = data,
-                isCasting = false,
-                subtitleCallback = { subtitles += it },
-                callback = { links += it }
+            NustrimDiagnostics.log(
+                "CLOUDSTREAM_LOADLINKS_START",
+                "provider=${provider.name} mode=${if (episode == null) "item" else "episode"}",
+            )
+            val accepted = try {
+                provider.loadLinks(
+                    data = data,
+                    isCasting = false,
+                    subtitleCallback = { subtitles += it },
+                    callback = { links += it }
+                )
+            } catch (error: Throwable) {
+                NustrimDiagnostics.error(
+                    "CLOUDSTREAM_LOADLINKS_ERROR",
+                    error,
+                    "provider=${provider.name}",
+                )
+                throw error
+            }
+            NustrimDiagnostics.log(
+                "CLOUDSTREAM_LOADLINKS_RESULT",
+                "provider=${provider.name} accepted=$accepted links=${links.size} subtitles=${subtitles.size}",
             )
 
             val mapped = links.map { link ->
