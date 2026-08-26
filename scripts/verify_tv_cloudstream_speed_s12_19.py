@@ -36,8 +36,9 @@ check("post-S12.19 version", version in {
     "0.57.20-tv-cleanroom-s12.21-subtitle-language-split",
     "0.57.21-tv-cleanroom-s12.22-branding",
     "0.57.22-tv-cleanroom-s12.23-player-episodes",
+    "0.57.23-tv-cleanroom-s12.24-sidebar-clean",
 })
-check("post-S12.19 versionCode", any(f"versionCode = {code}" in gradle for code in (141, 142, 143, 144, 145)))
+check("post-S12.19 versionCode", any(f"versionCode = {code}" in gradle for code in (141, 142, 143, 144, 145, 146)))
 check("Repository cache is app-private", "context.applicationContext.cacheDir" in cache)
 check("Repository cache is URL keyed", 'MessageDigest.getInstance("SHA-256")' in cache)
 check("Repository cache uses a temporary commit file", 'target.name + ".tmp"' in cache and "renameTo(target)" in cache)

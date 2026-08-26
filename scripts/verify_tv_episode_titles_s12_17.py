@@ -37,9 +37,10 @@ check(
         "0.57.20-tv-cleanroom-s12.21-subtitle-language-split",
         "0.57.21-tv-cleanroom-s12.22-branding",
         "0.57.22-tv-cleanroom-s12.23-player-episodes",
+        "0.57.23-tv-cleanroom-s12.24-sidebar-clean",
     },
 )
-check("post-S12.17 versionCode", any(f"versionCode = {code}" in gradle for code in (140, 141, 142, 143, 144, 145)))
+check("post-S12.17 versionCode", any(f"versionCode = {code}" in gradle for code in (140, 141, 142, 143, 144, 145, 146)))
 check("Stremio catalog parses video title", 'title = video.optString("title"' in stremio_parser)
 check("Catalog metadata remains first authority", "item.episodes.none(::needsCatalogTitle)" in details)
 check("Cinemeta is catalog fallback", "InstalledSourceStore.CINEMETA_URL" in details)

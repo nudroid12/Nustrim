@@ -23,10 +23,20 @@ entry = read("app/src/main/java/app/nudroidlabs/nustrim/tv/player/TvPlayerEntry.
 screen = read("app/src/main/java/app/nudroidlabs/nustrim/tv/player/TvPlayerScreen.kt")
 panels = read("app/src/main/java/app/nudroidlabs/nustrim/tv/player/TvPlayerPanels.kt")
 
-check("S12.23 marker", "subsystem=12.23-player-episodes" in marker)
-check("target version", version == "0.57.22-tv-cleanroom-s12.23-player-episodes")
-check("target version name", 'versionName = "0.57.22-tv-cleanroom-s12.23-player-episodes"' in gradle)
-check("target version code", "versionCode = 145" in gradle)
+check("S12.23 feature marker", "player-episodes-tab=visible-for-episode-playback" in marker)
+check(
+    "S12.23 or later version",
+    version in {
+        "0.57.22-tv-cleanroom-s12.23-player-episodes",
+        "0.57.23-tv-cleanroom-s12.24-sidebar-clean",
+    },
+)
+check(
+    "S12.23 or later version name",
+    'versionName = "0.57.22-tv-cleanroom-s12.23-player-episodes"' in gradle
+    or 'versionName = "0.57.23-tv-cleanroom-s12.24-sidebar-clean"' in gradle,
+)
+check("S12.23 or later version code", any(f"versionCode = {code}" in gradle for code in (145, 146)))
 check("details repository hydrates shallow series metadata", "TvDetailsRepository" in entry)
 check("hydration is limited to episode playback", "if (activeRequest.episode == null)" in entry)
 check("complete media replaces shallow episode media", "episodeMedia = detailedMedia!!" in entry)

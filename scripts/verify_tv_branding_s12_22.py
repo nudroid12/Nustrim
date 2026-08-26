@@ -18,16 +18,20 @@ checks = {
         for name in (
             'versionName = "0.57.21-tv-cleanroom-s12.22-branding"',
             'versionName = "0.57.22-tv-cleanroom-s12.23-player-episodes"',
+            'versionName = "0.57.23-tv-cleanroom-s12.24-sidebar-clean"',
         )
     ),
     "S12.22 or later version code": any(
-        f"versionCode = {code}" in read("app/build.gradle.kts") for code in (144, 145)
+        f"versionCode = {code}" in read("app/build.gradle.kts") for code in (144, 145, 146)
     ),
     "branding marker": "branding-source=user-approved-blue-cyan-nustrim-logo" in read(".nustrim-tv"),
     "launcher resource": 'android:icon="@drawable/nustrim_app_icon"' in read("app/src/main/AndroidManifest.xml"),
     "launch background": "@drawable/nustrim_launch_background" in read("app/src/main/res/values/styles.xml"),
     "launch background colour shape": '<shape android:shape="rectangle">' in launch_background and '<solid android:color="#02030B"' in launch_background,
-    "sidebar mark": "R.drawable.nustrim_brand_mark" in read("app/src/main/java/app/nudroidlabs/nustrim/tv/shell/TvSidebar.kt"),
+    "sidebar branding follows current contract": (
+        "R.drawable.nustrim_brand_mark" in read("app/src/main/java/app/nudroidlabs/nustrim/tv/shell/TvSidebar.kt")
+        or "branding-sidebar=removed-by-user-request" in read(".nustrim-tv")
+    ),
     "mobile mark": "painterResource(R.drawable.nustrim_brand_mark)" in read("app/src/main/java/app/nudroidlabs/nustrim/ui/NustrimApp.kt"),
     "brand mark asset": (ROOT / "app/src/main/res/drawable-nodpi/nustrim_brand_mark.webp").stat().st_size > 10_000,
     "app icon asset": (ROOT / "app/src/main/res/drawable-nodpi/nustrim_app_icon.webp").stat().st_size > 10_000,
