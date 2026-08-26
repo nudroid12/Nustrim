@@ -36,9 +36,10 @@ check(
         "0.57.24-tv-cleanroom-s12.25-cloudstream-links-fix",
         "0.57.25-tv-cleanroom-s12.26-tv-integrations",
         "0.57.26-tv-cleanroom-s12.27-cloudstream-runtime-links",
+        "0.57.27-tv-cleanroom-s12.28-player-episode-focus",
     },
 )
-check("S12.21 or later versionCode", any(f"versionCode = {code}" in gradle for code in (143, 144, 145, 146, 147, 148, 149)))
+check("S12.21 or later versionCode", any(f"versionCode = {code}" in gradle for code in (143, 144, 145, 146, 147, 148, 149, 150)))
 check("Malay and Indonesian remain separate settings", '"ms" to "Malay"' in settings and '"id" to "Indonesian"' in settings)
 check("Malay ISO 639-1 maps to ms", '"ms", "msa", "may", "malay", "melayu" -> "ms"' in language)
 check("Indonesian ISO 639-1 maps to id", '"id", "in", "ind", "indonesian", "indonesia" -> "id"' in language)

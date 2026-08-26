@@ -41,6 +41,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
@@ -95,6 +96,9 @@ fun TvPlayerEpisodesPanel(
     }
 
     val season = catalogue.seasons[selectedSeasonIndex]
+    val seasonRequesters = remember(catalogue.parentKey, seasonKeys) {
+        catalogue.seasons.map { FocusRequester() }
+    }
 
     TvPlayerSidePanelScaffold(
         title = "Episodes",
@@ -126,6 +130,7 @@ fun TvPlayerEpisodesPanel(
                 TvPanelChip(
                     text = item.label,
                     selected = index == selectedSeasonIndex,
+                    focusRequester = seasonRequesters[index],
                     onFocus = { pendingSeasonIndex = index },
                     onClick = { selectedSeasonIndex = index },
                 )
@@ -155,6 +160,7 @@ fun TvPlayerEpisodesPanel(
                     episode = episode,
                     current = episode.providerEpisodeId == currentEpisodeId,
                     focusRequester = requesters[index],
+                    upFocusRequester = seasonRequesters[selectedSeasonIndex].takeIf { index == 0 },
                     onClick = { onEpisodeSelected(episode) },
                 )
             }
@@ -559,6 +565,7 @@ private fun TvEpisodePanelRow(
     episode: TvCanonicalEpisode,
     current: Boolean,
     focusRequester: FocusRequester,
+    upFocusRequester: FocusRequester?,
     onClick: () -> Unit,
 ) {
     var focused by remember { mutableStateOf(false) }
@@ -566,6 +573,10 @@ private fun TvEpisodePanelRow(
         modifier = Modifier
             .fillMaxWidth()
             .focusRequester(focusRequester)
+            .then(
+                if (upFocusRequester != null) Modifier.focusProperties { up = upFocusRequester }
+                else Modifier,
+            )
             .onFocusChanged { focused = it.isFocused }
             .clip(RoundedCornerShape(16.dp))
             .background(
@@ -869,12 +880,14 @@ private fun subtitleTrackDescription(track: TvPlayerTrack): String = buildString
 private fun TvPanelChip(
     text: String,
     selected: Boolean,
+    focusRequester: FocusRequester? = null,
     onFocus: () -> Unit,
     onClick: () -> Unit,
 ) {
     var focused by remember { mutableStateOf(false) }
     Box(
         modifier = Modifier
+            .then(focusRequester?.let { Modifier.focusRequester(it) } ?: Modifier)
             .onFocusChanged {
                 focused = it.isFocused
                 if (it.isFocused) onFocus()

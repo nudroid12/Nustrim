@@ -30,8 +30,9 @@ check("S12.26 marker", "integrations-tv-tmdb=progressive-details-enrichment" in 
 check("S12.26 version", version in {
     "0.57.25-tv-cleanroom-s12.26-tv-integrations",
     "0.57.26-tv-cleanroom-s12.27-cloudstream-runtime-links",
+    "0.57.27-tv-cleanroom-s12.28-player-episode-focus",
 })
-check("S12.26 versionCode", any(f"versionCode = {code}" in gradle for code in (148, 149)))
+check("S12.26 versionCode", any(f"versionCode = {code}" in gradle for code in (148, 149, 150)))
 check("TV snapshot carries TMDB metadata", "val tmdbMetadata: TmdbMetadata?" in models)
 check("TV snapshot carries MDBList ratings", "val mdbListRatings: List<MdbListRating>" in models)
 check("TV snapshot exposes progressive loading", "val integrationsLoading: Boolean" in models)

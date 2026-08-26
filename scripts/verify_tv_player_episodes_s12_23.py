@@ -32,6 +32,7 @@ check(
         "0.57.24-tv-cleanroom-s12.25-cloudstream-links-fix",
         "0.57.25-tv-cleanroom-s12.26-tv-integrations",
         "0.57.26-tv-cleanroom-s12.27-cloudstream-runtime-links",
+        "0.57.27-tv-cleanroom-s12.28-player-episode-focus",
     },
 )
 check(
@@ -40,9 +41,10 @@ check(
     or 'versionName = "0.57.23-tv-cleanroom-s12.24-sidebar-clean"' in gradle
     or 'versionName = "0.57.24-tv-cleanroom-s12.25-cloudstream-links-fix"' in gradle
     or 'versionName = "0.57.25-tv-cleanroom-s12.26-tv-integrations"' in gradle
-    or 'versionName = "0.57.26-tv-cleanroom-s12.27-cloudstream-runtime-links"' in gradle,
+    or 'versionName = "0.57.26-tv-cleanroom-s12.27-cloudstream-runtime-links"' in gradle
+    or 'versionName = "0.57.27-tv-cleanroom-s12.28-player-episode-focus"' in gradle,
 )
-check("S12.23 or later version code", any(f"versionCode = {code}" in gradle for code in (145, 146, 147, 148, 149)))
+check("S12.23 or later version code", any(f"versionCode = {code}" in gradle for code in (145, 146, 147, 148, 149, 150)))
 check("details repository hydrates shallow series metadata", "TvDetailsRepository" in entry)
 check("hydration is limited to episode playback", "if (activeRequest.episode == null)" in entry)
 check("complete media replaces shallow episode media", "episodeMedia = detailedMedia!!" in entry)

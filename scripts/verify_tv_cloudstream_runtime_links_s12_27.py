@@ -26,12 +26,18 @@ provider = read(
     "app/src/main/java/app/nudroidlabs/nustrim/core/source/cloudstream/CloudStreamProviderSession.kt"
 )
 
-check("S12.27 marker", "subsystem=12.27-cloudstream-runtime-links" in marker)
+check(
+    "S12.27 feature marker",
+    "cloudstream-provider-entry=search-without-main-page-preflight" in marker,
+)
 check(
     "S12.27 version",
-    version == "0.57.26-tv-cleanroom-s12.27-cloudstream-runtime-links",
+    version in {
+        "0.57.26-tv-cleanroom-s12.27-cloudstream-runtime-links",
+        "0.57.27-tv-cleanroom-s12.28-player-episode-focus",
+    },
 )
-check("S12.27 versionCode", "versionCode = 149" in gradle)
+check("S12.27 versionCode", any(f"versionCode = {code}" in gradle for code in (149, 150)))
 check(
     "loaded plugin containers bypass main page",
     "if (session is CloudStreamProviderContainerSession)" in repository

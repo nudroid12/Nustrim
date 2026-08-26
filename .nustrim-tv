@@ -1,6 +1,8 @@
 generation=cleanroom-v1
 reference=nuvio-tv-0.8.6-beta
-subsystem=12.27-cloudstream-runtime-links
+subsystem=12.28-player-episode-focus
+player-episode-first-up=active-season-tab
+player-season-focus-requester=stable-per-season
 cloudstream-provider-entry=search-without-main-page-preflight
 cloudstream-repository-selection=enabled-type-and-history-aware-up-to-48
 cloudstream-late-callback=bounded-1500ms
