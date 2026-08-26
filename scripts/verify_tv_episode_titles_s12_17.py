@@ -17,6 +17,7 @@ def check(name: str, condition: bool) -> None:
 
 
 details = read("app/src/main/java/app/nudroidlabs/nustrim/tv/details/TvDetailsRepository.kt")
+episode_enrichment = details.split("private suspend fun enrichFromCatalogMetadata", 1)[1]
 stremio_parser = read("app/src/main/java/app/nudroidlabs/nustrim/core/source/stremio/StremioParser.kt")
 builder = read("app/src/main/java/app/nudroidlabs/nustrim/tv/episode/TvEpisodeCatalogueBuilder.kt")
 local_store = read("app/src/main/java/app/nudroidlabs/nustrim/core/library/LocalMediaStore.kt")
@@ -39,9 +40,10 @@ check(
         "0.57.22-tv-cleanroom-s12.23-player-episodes",
         "0.57.23-tv-cleanroom-s12.24-sidebar-clean",
         "0.57.24-tv-cleanroom-s12.25-cloudstream-links-fix",
+        "0.57.25-tv-cleanroom-s12.26-tv-integrations",
     },
 )
-check("post-S12.17 versionCode", any(f"versionCode = {code}" in gradle for code in (140, 141, 142, 143, 144, 145, 146, 147)))
+check("post-S12.17 versionCode", any(f"versionCode = {code}" in gradle for code in (140, 141, 142, 143, 144, 145, 146, 147, 148)))
 check("Stremio catalog parses video title", 'title = video.optString("title"' in stremio_parser)
 check("Catalog metadata remains first authority", "item.episodes.none(::needsCatalogTitle)" in details)
 check("Cinemeta is catalog fallback", "InstalledSourceStore.CINEMETA_URL" in details)
@@ -50,7 +52,11 @@ check("Cinemeta title search fallback", "findCinemetaMatch" in details and "sear
 check("Catalog metadata has bounded wait", "CATALOG_METADATA_TIMEOUT_MS = 8_000L" in details)
 check("Catalog episodes merge by coordinates", "catalogByCoordinate[season to number]" in details)
 check("Catalog title replaces generic title", "title = catalogEpisode.title.ifBlank" in details)
-check("TMDB is not used for episode titles", "TmdbClient" not in details and "tmdbEnrichmentEnabled" not in details)
+check(
+    "TMDB is not used for episode titles",
+    "TmdbClient" not in episode_enrichment
+    and "tmdbEnrichmentEnabled" not in episode_enrichment,
+)
 check("Canonical title reaches provider episode", "providerEpisode = canonicalProviderEpisode" in builder)
 check("Duplicate merge keeps canonical provider title", "providerEpisode = first.providerEpisode.copy(" in builder)
 check("Generic provider mismatch is corrected", "genericNumber != episodeNumber" in builder)

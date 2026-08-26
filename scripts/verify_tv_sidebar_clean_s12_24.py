@@ -25,12 +25,14 @@ check("S12.24 marker", "branding-sidebar=removed-by-user-request" in marker)
 check("target version", version in {
     "0.57.23-tv-cleanroom-s12.24-sidebar-clean",
     "0.57.24-tv-cleanroom-s12.25-cloudstream-links-fix",
+    "0.57.25-tv-cleanroom-s12.26-tv-integrations",
 })
 check("target version name", any(name in gradle for name in (
     'versionName = "0.57.23-tv-cleanroom-s12.24-sidebar-clean"',
     'versionName = "0.57.24-tv-cleanroom-s12.25-cloudstream-links-fix"',
+    'versionName = "0.57.25-tv-cleanroom-s12.26-tv-integrations"',
 )))
-check("target version code", any(f"versionCode = {code}" in gradle for code in (146, 147)))
+check("target version code", any(f"versionCode = {code}" in gradle for code in (146, 147, 148)))
 check("sidebar branding removal marker", "branding-sidebar=removed-by-user-request" in marker)
 check("sidebar does not reference brand drawable", "R.drawable.nustrim_brand_mark" not in sidebar)
 check("sidebar does not render brand name", 'text = "NUSTRIM"' not in sidebar)

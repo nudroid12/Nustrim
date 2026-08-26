@@ -34,16 +34,24 @@ fun TvDetailsEntry(
 
     LaunchedEffect(route.stableKey, reloadToken) {
         state = TvDetailsUiState.Loading
-        state = runCatching { repository.load(route, forceRefresh = reloadToken > 0) }
-            .fold(
-                onSuccess = { TvDetailsUiState.Ready(it) },
-                onFailure = {
-                    TvDetailsUiState.Error(
-                        it.message?.takeIf { message -> message.isNotBlank() }
-                            ?: "Details could not be loaded from this source.",
+        runCatching { repository.load(route, forceRefresh = reloadToken > 0) }
+            .onSuccess { baseSnapshot ->
+                state = TvDetailsUiState.Ready(baseSnapshot)
+                if (baseSnapshot.integrationsLoading) {
+                    state = TvDetailsUiState.Ready(
+                        repository.enrichIntegrations(
+                            snapshot = baseSnapshot,
+                            forceRefresh = reloadToken > 0,
+                        ),
                     )
-                },
-            )
+                }
+            }
+            .onFailure {
+                state = TvDetailsUiState.Error(
+                    it.message?.takeIf { message -> message.isNotBlank() }
+                        ?: "Details could not be loaded from this source.",
+                )
+            }
     }
 
     TvDetailsScreen(

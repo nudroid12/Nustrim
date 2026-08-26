@@ -57,6 +57,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.nudroidlabs.nustrim.core.model.MediaType
+import app.nudroidlabs.nustrim.core.integrations.MdbListRating
 import app.nudroidlabs.nustrim.tv.episode.TvCanonicalEpisode
 import app.nudroidlabs.nustrim.tv.episode.TvEpisodeSeason
 import app.nudroidlabs.nustrim.tv.focus.TvFocusRegistry
@@ -306,7 +307,7 @@ private fun DetailsHero(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .height(540.dp)
+            .height(590.dp)
             .padding(start = 56.dp, end = 56.dp, bottom = 34.dp),
         verticalArrangement = Arrangement.Bottom,
     ) {
@@ -390,7 +391,11 @@ private fun DetailsHero(
                 color = Color(0xFFF0F0F2),
                 fontSize = 16.sp,
                 lineHeight = 22.sp,
-                maxLines = 6,
+                maxLines = if (
+                    snapshot.integrationsLoading ||
+                    snapshot.mdbListRatings.isNotEmpty() ||
+                    snapshot.integrationMessage.isNotBlank()
+                ) 4 else 6,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.fillMaxWidth(0.62f),
             )
@@ -398,6 +403,108 @@ private fun DetailsHero(
         }
 
         MetaLine(snapshot)
+        IntegrationSummary(snapshot)
+    }
+}
+
+@Composable
+private fun IntegrationSummary(snapshot: TvDetailsSnapshot) {
+    if (snapshot.integrationsLoading) {
+        Spacer(Modifier.height(10.dp))
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(15.dp),
+                color = Color.White,
+                strokeWidth = 2.dp,
+            )
+            Text(
+                text = "Loading TMDB and MDBList...",
+                color = Color(0xFFB9BBC1),
+                fontSize = 12.sp,
+            )
+        }
+    }
+
+    if (snapshot.mdbListRatings.isNotEmpty()) {
+        Spacer(Modifier.height(10.dp))
+        LazyRow(
+            modifier = Modifier.fillMaxWidth(0.70f),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            itemsIndexed(
+                items = snapshot.mdbListRatings,
+                key = { _, rating -> "${rating.source}|${rating.value}|${rating.score}" },
+            ) { _, rating ->
+                RatingChip(rating)
+            }
+        }
+    }
+
+    if (snapshot.integrationMessage.isNotBlank()) {
+        Spacer(Modifier.height(8.dp))
+        Text(
+            text = snapshot.integrationMessage,
+            color = Color(0xFFE0B4B4),
+            fontSize = 11.sp,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.fillMaxWidth(0.68f),
+        )
+    }
+}
+
+@Composable
+private fun RatingChip(rating: MdbListRating) {
+    Column(
+        modifier = Modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color(0xD922242A))
+            .border(1.dp, Color(0xFF50535B), RoundedCornerShape(12.dp))
+            .padding(horizontal = 12.dp, vertical = 7.dp),
+    ) {
+        Text(
+            text = ratingLabel(rating.source),
+            color = Color(0xFFB9BBC1),
+            fontSize = 10.sp,
+            maxLines = 1,
+        )
+        Text(
+            text = ratingValue(rating),
+            color = Color.White,
+            fontSize = 15.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+        )
+    }
+}
+
+private fun ratingLabel(source: String): String = when (source.trim().lowercase()) {
+    "imdb" -> "IMDb"
+    "tmdb" -> "TMDB"
+    "tomatoes", "rottentomatoes" -> "Rotten Tomatoes"
+    "popcorn", "tomatoesaudience", "rottentomatoesaudience", "audience" -> "RT Audience"
+    "metacritic" -> "Metacritic"
+    "metacriticuser", "metacritic_user" -> "Metacritic User"
+    "trakt" -> "Trakt"
+    "letterboxd" -> "Letterboxd"
+    "myanimelist", "mal" -> "MyAnimeList"
+    "rogerebert", "roger_ebert" -> "RogerEbert"
+    else -> source.replaceFirstChar { it.uppercase() }
+}
+
+private fun ratingValue(rating: MdbListRating): String {
+    val raw = rating.value ?: rating.score ?: return "N/A"
+    return when (rating.source.trim().lowercase()) {
+        "tomatoes", "rottentomatoes", "popcorn", "tomatoesaudience",
+        "rottentomatoesaudience", "audience", "metacritic", "trakt" -> "${raw.toInt()}%"
+        else -> if (raw % 1.0 == 0.0) {
+            raw.toInt().toString()
+        } else {
+            String.format(java.util.Locale.US, "%.1f", raw)
+        }
     }
 }
 

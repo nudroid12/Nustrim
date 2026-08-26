@@ -26,12 +26,21 @@ provider = read(
     "app/src/main/java/app/nudroidlabs/nustrim/core/source/cloudstream/CloudStreamProviderSession.kt"
 )
 
-check("S12.25 feature marker", "subsystem=12.25-cloudstream-links-fix" in marker)
+check(
+    "S12.25 feature marker",
+    "cloudstream-loadlinks-errors=diagnostics-preserved" in marker,
+)
 check(
     "S12.25 version",
-    version == "0.57.24-tv-cleanroom-s12.25-cloudstream-links-fix",
+    version in {
+        "0.57.24-tv-cleanroom-s12.25-cloudstream-links-fix",
+        "0.57.25-tv-cleanroom-s12.26-tv-integrations",
+    },
 )
-check("S12.25 versionCode", "versionCode = 147" in gradle)
+check(
+    "S12.25 versionCode",
+    any(f"versionCode = {code}" in gradle for code in (147, 148)),
+)
 check("provider data ID match", '"provider-data-id"' in repository)
 check("exact season and episode match", '"exact-season-episode"' in repository)
 check("catalogue title match", '"catalogue-episode-title"' in repository)

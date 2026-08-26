@@ -1,6 +1,11 @@
 generation=cleanroom-v1
 reference=nuvio-tv-0.8.6-beta
-subsystem=12.25-cloudstream-links-fix
+subsystem=12.26-tv-integrations
+integrations-tv-tmdb=progressive-details-enrichment
+integrations-tv-tmdb-fields=title,overview,poster,backdrop,logo,year,genres,runtime,cast
+integrations-tv-mdblist=selected-provider-rating-chips
+integrations-tv-cache=credential-and-provider-aware-15m
+integrations-tv-identity=source-playback-id-preserved
 cloudstream-episode-match=provider-id,exact-coordinate,metadata-title,missing-season-number,equal-count-ordinal
 cloudstream-loadlinks-errors=diagnostics-preserved
 cloudstream-empty-result=reason-visible-before-tab-removal

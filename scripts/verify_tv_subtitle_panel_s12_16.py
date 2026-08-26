@@ -63,6 +63,10 @@ require(
     or (
         'versionName = "0.57.24-tv-cleanroom-s12.25-cloudstream-links-fix"' in gradle
         and "versionCode = 147" in gradle
+    )
+    or (
+        'versionName = "0.57.25-tv-cleanroom-s12.26-tv-integrations"' in gradle
+        and "versionCode = 148" in gradle
     ),
 )
 require("safe subtitle panel width", 'width = 860.dp' in panels and 'width = 1_040.dp' not in panels)
